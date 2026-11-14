@@ -88,6 +88,8 @@ pub fn estimate(env: &OnsetEnvelope) -> Tempo {
 mod tests {
     use super::*;
     use crate::onset;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     /// Clicks on every beat; every second beat (the backbeat) is `accent` times louder.
     fn click_track(bpm: f64, seconds: f64, sr: u32, accent: f32) -> Vec<f32> {

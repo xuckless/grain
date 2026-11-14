@@ -85,6 +85,17 @@ pub struct Project {
     pub analysis: Analysis,
 }
 
+/// Progress of one import, reported as it advances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export)]
+pub enum ImportStage {
+    Decoding,
+    Separating { segment: u32, of: u32 },
+    Analyzing,
+    Caching,
+}
+
 /// Song audio as the host hands it to [`build`].
 pub enum SongAudio {
     Unseparated { mix: StereoAudio },

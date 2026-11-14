@@ -39,6 +39,8 @@ pub fn fold_octave(cents: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn conversions_round_trip() {

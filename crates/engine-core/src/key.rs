@@ -114,6 +114,8 @@ mod tests {
     use super::*;
     use crate::note::midi_to_hz;
     use crate::pitch::tests::harmonic;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn detects_key_of_a_scale_with_tonic_emphasis() {

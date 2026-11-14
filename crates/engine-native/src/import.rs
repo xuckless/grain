@@ -4,20 +4,9 @@ use crate::cache::{Lookup, StemCache, UNSEPARATED};
 use crate::decode;
 use crate::separate::Demucs;
 use anyhow::Result;
-use engine_core::project::{self, Project, SongAudio, SongSource};
+use engine_core::project::{self, ImportStage, Project, SongAudio, SongSource};
 use engine_core::WORKING_SAMPLE_RATE;
-use serde::Serialize;
 use std::path::Path;
-
-/// Progress of one import, reported as it advances.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind")]
-pub enum ImportStage {
-    Decoding,
-    Separating { segment: usize, of: usize },
-    Analyzing,
-    Caching,
-}
 
 pub enum Separation<'a> {
     Model(&'a mut Demucs),
@@ -55,7 +44,10 @@ pub fn import_song(
     let audio = match separation {
         Separation::Model(model) => SongAudio::Separated {
             stems: model.separate(&mix, |segment, of| {
-                progress(ImportStage::Separating { segment, of })
+                progress(ImportStage::Separating {
+                    segment: segment as u32,
+                    of: of as u32,
+                })
             })?,
         },
         Separation::Disabled => SongAudio::Unseparated { mix },

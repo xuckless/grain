@@ -5,6 +5,8 @@ members = [
     "crates/engine-ml",
     "crates/engine-native",
     "crates/cli",
+    "crates/ingest",
+    "crates/engine-wasm",
 ]
 
 [workspace.package]

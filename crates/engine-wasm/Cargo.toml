@@ -1,0 +1,20 @@
+[package]
+name = "engine-wasm"
+description = "wasm-bindgen API over engine-core/engine-ml for the web build (main thread + AudioWorklet)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+engine-core.workspace = true
+engine-ml.workspace = true
+wasm-bindgen = "=0.2.130"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

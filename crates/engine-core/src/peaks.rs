@@ -18,6 +18,8 @@ pub fn peaks(samples: &[f32]) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
     #[test]
     fn min_max_per_block() {
         let mut x = vec![0.0f32; 2048];

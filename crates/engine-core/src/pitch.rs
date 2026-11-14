@@ -235,6 +235,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::note::{cents, midi_to_hz};
     use std::f32::consts::PI;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     pub fn sine(hz: f32, seconds: f32, sr: u32) -> Vec<f32> {
         (0..(seconds * sr as f32) as usize)

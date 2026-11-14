@@ -168,6 +168,8 @@ fn median(values: &[f32]) -> f32 {
 pub(crate) mod tests {
     use super::*;
     use crate::key::Mode;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     pub const C_MAJOR: Key = Key {
         tonic: 0,

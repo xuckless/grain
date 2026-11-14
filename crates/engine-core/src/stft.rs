@@ -130,6 +130,8 @@ pub fn reflect_pad(signal: &[f32], left: usize, right: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn round_trip_reconstructs_signal() {

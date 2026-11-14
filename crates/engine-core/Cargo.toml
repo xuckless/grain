@@ -10,3 +10,6 @@ realfft = "3"
 serde = { version = "1", features = ["derive"] }
 ts-rs = "10"
 thiserror = "2"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -377,6 +377,8 @@ mod tests {
     use super::*;
     use crate::melody::segment;
     use crate::melody::tests::{synthetic_track, C_MAJOR};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     fn reference() -> (PitchTrack, Vec<Note>) {
         let track = synthetic_track(
