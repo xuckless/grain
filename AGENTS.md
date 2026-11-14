@@ -1,0 +1,304 @@
+# AGENTS.md
+
+Guidance for humans and coding agents working in this repository.
+
+> **Status:** planning. The only code today is `main.py`, a PyQt5 prototype that compares two recordings by running YIN pitch detection on 1-second frames. Treat it as a reference for what the product should do, not as the base to build on. Project-level decisions are recorded in [§0](#0-decisions-locked). Anything still marked **(proposed)** is a default that applies until the owner decides otherwise.
+
+---
+
+## Ground rules (mandatory, they override everything else in this file)
+
+1. **NO IMPLICIT STATE MACHINES.** Any stateful behavior (transport, recording, import jobs, model downloads, UI modes, etc.) must be modeled as an explicit state machine: one enum of states, explicit transitions, and illegal transitions rejected. Do not derive state from combinations of booleans, nullable fields or flags.
+2. **ANY STATE THAT IS NOT EXPLICITLY DEFINED IS NOT PART OF THE CODEBASE.** If a state is not declared in a type, it does not exist. Code must not depend on undeclared or emergent states.
+3. **CODE DUPLICATION IS STRICTLY FORBIDDEN.** Logic lives in exactly one place. Shared DSP and analysis code lives in `engine-core`, shared UI in `packages/ui`, and shared types are generated once (Rust → TS). Before adding code, search for an existing implementation and reuse or extend it.
+4. **THE IMPLEMENTATION SHOULD BE THE SIMPLEST POSSIBLE IMPLEMENTATION OF A PARTICULAR TASK DEFINED.** No speculative abstraction, generality or configurability beyond what the current task requires. Upgrades listed elsewhere in this file (e.g. a better model) are added when that task is scheduled, not before.
+
+---
+
+## 0. Decisions (locked)
+
+| Topic | Decision | Consequences |
+|---|---|---|
+| License | **Open source, GPL-3.0** (`LICENSE`) | GPL code is allowed (e.g. Rubber Band). Every dependency must be GPL-compatible: MIT, Apache-2.0, BSD and LGPL are fine; proprietary SDKs are not. |
+| Non-commercial weights | **Opt-in download only** | CC-BY-NC weights (MuScriptor, MMS aligner, some RoFormer checkpoints) are never bundled or downloaded by default. The model manager shows their license and requires the user to accept it. Every feature must work with the default permissive or GPL models. |
+| Compute | **Local first** | Every feature runs on the user's machine. A remote or GPU-sidecar `Inference` backend is an optional add-on, never required. On the web, heavy models run on WebGPU, and features too heavy for the machine are disabled with an explanation. |
+| UI | **Svelte 5 + TypeScript** in **Tauri 2** (desktop) and Vite (web) | One shared UI package. Real-time views use Canvas or WebGL. |
+| Engine | **Rust** | See §2. |
+| YouTube import | **Desktop only**, using a local `yt-dlp` sidecar | The web version supports local file import only. No hosted ingest service. |
+| Platforms (v1) | **macOS (Apple Silicon), Windows, Linux, Web** | ML execution providers: CoreML on macOS, DirectML (or CUDA if present) on Windows, CUDA/ROCm or CPU on Linux, WebGPU with a WASM fallback on the web. |
+| Accounts / storage | **Local only**, with no backend | Desktop stores projects as files. The web version uses OPFS, plus export and import as a single project archive. |
+| First milestone | **F1 (stems) + timeline + F2 (scoring)** | See §11. |
+
+---
+
+## 1. Product
+
+The product is a singing and music workstation. It is a desktop app with a web version, built on one shared engine.
+
+| # | Feature | Summary |
+|---|---------|---------|
+| F1 | **Import & stem split** | Paste a YouTube link. The app gets the audio, separates it into stems (vocals, drums, bass, guitar, piano, other), optionally transcribes the stems to MIDI, and lays them out on a multitrack timeline like GarageBand. Each track has mute, solo, volume and pan. |
+| F2 | **Performance scoring** | The user records or imports their own singing of the song. The app aligns it to the original vocal and shows scores (pitch, timing, stability) plus a graph of where they were sharp, flat, early or late. |
+| F3 | **Live karaoke** | Lyrics are fetched on demand and synced to the music. The user sings along live. A scrolling note lane shows the reference vocal notes and the user's live pitch, and highlights hits and misses as they happen. |
+| F4 | **Auto-tune** | Pitch correction based on DSP, not ML. It snaps the voice to the song's key or scale, with adjustable retune speed and humanize controls. It runs live (low latency) and offline (high quality). |
+| F5 | **AI production** | AI voice enhancement (denoise, de-reverb, restoration). It also generates melodies, backing tracks and missing instruments to turn a rough vocal into a fairly complete song. |
+
+The source audio is lossy (YouTube Opus/AAC at about 128–160 kbps). That is accepted: every algorithm must cope with codec artifacts, and nothing should assume lossless input.
+
+---
+
+## 2. Architecture
+
+```
+┌───────────────────────────── UI (shared web frontend) ─────────────────────────────┐
+│  Timeline / mixer · Karaoke lane · Score graphs · Lyrics · Autotune panel          │
+│  Svelte 5 + TypeScript, Canvas2D/WebGL for timeline & pitch lanes                  │
+└───────────────▲─────────────────────────────────────────────▲──────────────────────┘
+                │ Tauri IPC (desktop)                         │ wasm-bindgen + postMessage (web)
+┌───────────────┴──────────────┐                ┌─────────────┴───────────────────────┐
+│ Desktop host (Tauri 2, Rust) │                │ Web host (browser)                  │
+│  engine-native: cpal audio   │                │  AudioWorklet ← engine.wasm (DSP)   │
+│  ort (ONNX Runtime) for ML   │                │  Web Worker  ← onnxruntime-web      │
+│  symphonia decode            │                │               (WebGPU → WASM fallbk)│
+└───────────────▲──────────────┘                └─────────────▲───────────────────────┘
+                │            same Rust crate: engine-core     │
+                └───────────────────┬─────────────────────────┘
+                                    │ HTTP (optional, opt-in; never required)
+                   ┌────────────────┴────────────────┐
+                   │ Optional services / sidecars    │
+                   │  (yt-dlp is a desktop sidecar)  │
+                   │  ml-heavy: Python, GPU          │
+                   │   (ACE-Step, RoFormer, enhance) │
+                   └─────────────────────────────────┘
+```
+
+### Language: Rust
+
+Rust is the default for the engine. C++ was the alternative. Rust wins on four counts:
+- **Web is a first-class target.** `wasm32-unknown-unknown` with `wasm-bindgen` is far simpler than Emscripten. Pure-Rust crates compile to WASM without a libc.
+- **Real-time safety.** Ownership rules make the audio-thread rules in §9 much easier to enforce.
+- **Ecosystem:** `cpal` for audio I/O, `symphonia` for decoding, `rubato` for resampling, `realfft`/`rustfft` for FFTs, `rtrb` for lock-free ring buffers, `ort` for ONNX Runtime, and `wgpu` if we need it.
+- **Cargo workspace.** One build covers native, WASM and the Tauri host.
+
+C++ libraries are allowed only behind a `-sys` crate, and only if they build for `wasm32-unknown-unknown` or are native-only. Many C++ libraries need libc++, which is painful on wasm32. Prefer a Rust port, or our own implementation, for anything that has to run on the web.
+
+### UI: Svelte 5 frontend in a Tauri shell
+
+The same TypeScript UI runs in Tauri on desktop and in the browser on the web. The waveform, timeline and pitch lanes are drawn with Canvas2D or WebGL, because the DOM is too slow at 60 fps with many notes. Native-Rust UIs (egui, iced, Slint) were rejected because the web version would then need either a second UI or a weaker canvas UI.
+
+### Where ML runs
+
+| Model class | Desktop | Web | Notes |
+|---|---|---|---|
+| Pitch (RMVPE/FCPE/SwiftF0, <30 MB) | local `ort` | local onnxruntime-web | Must be local for live karaoke |
+| Separation, light (HTDemucs, ~80 MB/model) | local `ort` (CoreML/DirectML/CUDA EP) | local WebGPU (WASM fallback, slow) | A 3–4 min song takes tens of seconds on GPU and several minutes on CPU |
+| Separation, best (BS/Mel-RoFormer, 200–600 MB) | local (GPU strongly recommended) | local WebGPU if the device can handle it, else unavailable | Optional remote backend |
+| Transcription (basic-pitch) | local | local | Small model, Apache-2.0 |
+| Generation (ACE-Step), heavy enhancement | local Python GPU sidecar (opt-in install) | unavailable unless the user configures a remote backend | Python-only, large VRAM |
+
+The engine exposes one trait, so features never depend on where a model runs:
+
+```rust
+pub trait Inference: Send + Sync {
+    fn run(&self, model: ModelId, inputs: TensorMap) -> BoxFuture<Result<TensorMap>>;
+}
+// impls: OrtInference (native), WebOnnxInference (JS bridge), RemoteInference (HTTP)
+```
+
+---
+
+## 3. Repository layout (target)
+
+```
+crates/
+  engine-core/     # pure Rust, no I/O, no threads. DSP, pitch, scoring, autotune, mixer graph, project model.
+                   # MUST compile for wasm32-unknown-unknown. No std::fs, no std::thread, no tokio.
+  engine-ml/       # Inference trait, model registry, pre/post-processing (STFT, chunking, overlap-add)
+  engine-native/   # cpal I/O, symphonia decode, ort backend, file/project storage
+  engine-wasm/     # wasm-bindgen API, AudioWorklet processor glue, SharedArrayBuffer rings
+  ingest/          # yt-dlp/ffmpeg sidecar orchestration (desktop only, behind a Cargo feature)
+apps/
+  desktop/         # Tauri 2 app (src-tauri uses engine-native)
+  web/             # Vite + Svelte 5 app; loads engine-wasm + onnxruntime-web; projects in OPFS
+packages/
+  ui/              # shared Svelte 5 components (timeline, karaoke lane, graphs)
+  engine-api/      # TS types for the engine API, generated from Rust (ts-rs or specta)
+services/
+  ml-sidecar/      # opt-in local Python (FastAPI) sidecar for models we cannot export to ONNX: ACE-Step, etc.
+models/            # model manifest (name, url, sha256, license, input spec). Weights are NOT committed.
+prototype/         # main.py moves here once the new engine reaches parity
+docs/research/     # longer notes, benchmarks, model evaluations
+```
+
+**Dependency rule:** `engine-core` depends on nothing platform-specific. `engine-native` and `engine-wasm` depend on `engine-core`, and never the other way round. The UI only talks to the engine through the API in `packages/engine-api`.
+
+---
+
+## 4. F1: Import and stem separation
+
+### 4.1 Ingest
+1. Normalize the URL. Use `yt-dlp -f bestaudio --no-playlist` to fetch the best audio-only stream (usually Opus in WebM, about 160 kbps, or AAC in M4A).
+2. Decode with ffmpeg to **44.1 kHz stereo f32 WAV**, the working format for all models. Keep the original file and record its codec and bitrate in project metadata.
+3. Pull metadata (title, artist, duration, chapters) from yt-dlp's `--dump-json`. Lyrics lookup (F3) uses it.
+4. **Desktop only.** Desktop runs `yt-dlp` and `ffmpeg` as bundled sidecar binaries. The web build has no URL import (browsers cannot download from YouTube because of CORS and bot protection, and we do not host an ingest service). In the web build the URL field is hidden behind the `ingest` feature flag. yt-dlp breaks often, so it must update itself; pin a minimum version and offer "update extractor" in the UI.
+5. Local file import (mp3/m4a/wav/flac/ogg) is always supported and works without any network.
+
+> ⚖️ Downloading from YouTube is against YouTube's Terms of Service, and the audio is usually copyrighted. That is why ingest runs only on the user's machine, for their personal use. Keep it isolated in the `ingest` crate (a Cargo feature) so builds can leave it out entirely.
+
+### 4.2 Separation pipeline
+- **Default model (proposed):** `htdemucs_6s` (Demucs v4, MIT), which gives 6 stems: vocals, drums, bass, guitar, piano, other. Use `htdemucs_ft` when only 4 stems are needed, since it is better quality.
+- **High-quality vocals:** BS-RoFormer or Mel-RoFormer checkpoints (via ZFTurbo's *Music-Source-Separation-Training*). These lead the MVSEP vocal leaderboard. Check each checkpoint's license, because they vary.
+- **Best result:** a two-stage cascade. (1) A RoFormer model splits vocals from the instrumental. (2) HTDemucs splits the instrumental into drums, bass and the rest. Optionally, a karaoke model then separates lead vocal from backing vocals. F2 and F3 depend on that lead-vocal stem.
+- **Chunking:** split into overlapping segments (HTDemucs trains on 7.8 s segments; use about 25% overlap with a linear or triangular crossfade). Run segments in batches, then overlap-add. Shift trick (random time shifts averaged) is optional and gives a small quality gain at about 2× compute.
+- **STFT/iSTFT runs outside the ONNX graph,** in `engine-ml`, because ONNX's STFT op support is uneven, especially on WebGPU. Export the models without their spectral front-end.
+- **Caching:** cache stems by `sha256(source audio) + model id + version`. Never separate the same song twice.
+- **Quality:** report a reconstruction residual (mix minus the sum of stems) and per-stem energy, so the UI can mark near-empty stems such as "piano: likely absent".
+
+### 4.3 Transcription (stems → MIDI), optional layer
+- `basic-pitch` (Spotify, Apache-2.0, small, ONNX/TFLite) runs on each pitched stem and outputs editable MIDI regions.
+- Drums: onset detection on the drum stem, with a simple kick, snare and hat classifier (spectral centroid and band energy).
+- Better multi-instrument models exist (YourMT3+, MuScriptor 2026). MuScriptor's weights are **CC-BY-NC**, so offer it only as an opt-in download (§0).
+
+### 4.4 Analysis extracted on import (used by every feature)
+- **Tempo and beat grid:** onset envelope, then autocorrelation or tempogram, then dynamic-programming beat tracking (Ellis 2007). Downbeats come from a beat-tracking model or a heuristic.
+- **Key and scale:** chroma (CQT) from the *instrumental* stem, correlated against Krumhansl–Schmuckler profiles for all 24 keys. Store the top 3 keys with confidences, plus key changes over sliding windows. Auto-tune (F4) uses this key.
+- **Reference vocal pitch track:** RMVPE (built for vocals in polyphonic music) on the lead-vocal stem, 10 ms hop. Output: f0 (Hz), voicing probability and periodicity.
+- **Reference note sequence:** see §6.2.
+
+### 4.5 Timeline
+- The project model is tracks, then clips (audio or MIDI), then automation. It is serializable (serde, MessagePack on disk, JSON for debugging).
+- The mixer graph runs in `engine-core`: per-track gain, pan, mute/solo, a few insert FX slots, and a master bus with a limiter.
+- Waveform peaks are precomputed at several zoom levels (min/max pyramids) so the UI never scans raw samples.
+
+---
+
+## 5. F2: Performance scoring (offline)
+
+**Input:** the user's recording, either imported or recorded in the app. **Reference:** the lead-vocal stem's f0 and note sequence.
+
+1. **Pre-process the user's take.** High-pass at 70 Hz and normalize loudness. If the take was recorded over speakers, the backing track bleeds into the mic; run a vocal-isolation pass on the take, or warn the user.
+2. **Pitch track** with the same estimator as the reference (RMVPE), 10 ms hop. Never compare outputs from different estimators.
+3. **Alignment:**
+   - Recorded in the app against the backing track: the offset is known from the round-trip latency measurement (§9), so align directly.
+   - Imported take: cross-correlate onset envelopes for a coarse offset. Then run **DTW** on chroma or f0 features with a tight Sakoe-Chiba band to absorb tempo drift. Report timing deviation separately; do not let DTW hide it.
+4. **Per-frame metrics** (voiced frames in both tracks only):
+   - Pitch error in cents: `1200·log2(f_user/f_ref)`. Optionally fold octaves (`mod 1200` into ±600) so a man singing a female part an octave down is not penalized. This is a user setting, on by default.
+   - Hit: |error| ≤ tolerance (difficulty presets: 50, 35 and 25 cents).
+5. **Per-note metrics** (using the reference note segmentation): mean cents error, % of note duration hit, onset timing error (ms), pitch stability (standard deviation of cents within the note, excluding detected vibrato), vibrato rate and extent (fit a 4–8 Hz sinusoid to detrended f0).
+6. **Scores (0–100):** pitch accuracy, timing, stability, and coverage (% of reference voiced time the user also sang). The overall score is a weighted sum, with the weights in a config file. Keep the formulas documented and deterministic; never use an ML "vibe score".
+7. **Visualization:** reference notes drawn as bars on a piano-roll background, the user's f0 as a line colored by error (green, yellow, red), a cents-error strip below, and per-section score cards. Clicking a note plays that section of both takes A/B.
+
+---
+
+## 6. F3: Live karaoke
+
+### 6.1 Lyrics (fetched on demand)
+1. **LRCLIB** (`https://lrclib.net/api/get?artist_name=&track_name=&album_name=&duration=`) is free, needs no API key, and returns line-synced LRC. Fall back to `/api/search`. Cache results locally. Send a proper User-Agent naming the app, as LRCLIB asks.
+2. Line timing → **word timing.** Run forced alignment on the separated vocal stem: CTC forced alignment (a wav2vec2-style acoustic model plus the known lyric text) inside each LRC line window. If no synced lyrics exist, transcribe with Whisper word timestamps and fuzzy-match against the plain lyrics. Check model licenses: Meta's MMS aligner weights are CC-BY-NC, so the default is an MIT or Apache aligner, or Whisper (MIT). MMS is available only as an opt-in download.
+3. Fetch only when a song enters karaoke mode, never during import. The user can manually nudge the global offset (±ms) and edit individual lines.
+4. Do not bundle or redistribute lyric text. Fetch it at runtime and cache it per user.
+
+### 6.2 Reference notes (the bars in the karaoke lane)
+Convert the reference f0 track into discrete notes, in the style of UltraStar or SingStar:
+- Median-filter f0 (about 50 ms window), convert to fractional MIDI pitch, and drop frames below the voicing threshold.
+- Segment with an HMM, or with a simpler change-point rule: start a new note when the pitch moves more than 70 cents from the running note median for at least 60 ms, or at a voicing gap of at least 40 ms.
+- Snap each note to the nearest semitone, biased toward the detected key's scale. Merge notes shorter than 80 ms into their neighbors.
+- Optionally use word boundaries from the lyrics alignment as extra split points, so each syllable gets its own note.
+- Save the notes as editable MIDI on a hidden "Reference Vocal" track.
+
+### 6.3 Live pitch path (latency-critical)
+- Mic input, then a ring buffer, then a pitch estimator, then UI updates at 60 Hz.
+- **Estimator:** start with **YIN/pYIN in Rust** (cheap, predictable, about 1 frame of latency). Use a 2048-sample window (~46 ms at 44.1 kHz) with a 256–512-sample hop, sized for the voice range (65–1100 Hz). Add **SwiftF0** (~96k parameters, ~42× faster than CREPE on CPU) through ONNX as the robust option. The live path must not depend on GPU inference.
+- **Target end-to-end display latency is ≤ 80 ms.** Audio scheduling must be sample-accurate. The UI only interpolates between engine timestamps; it never decides musical time.
+- **Bleed:** the mic hears the backing track unless the user wears headphones. Default flow: strongly recommend headphones. Fallbacks are browser `echoCancellation: true`, or our own AEC using the known backing signal as the reference, which is a later feature.
+- **Live scoring** uses §5's per-frame rules, with lag compensation: measured input latency is subtracted before comparing against the reference.
+
+### 6.4 Display
+- A horizontal scrolling lane. The y-axis is semitones, auto-ranged to the song's vocal range, with octave folding on by default. Reference notes are bars. The user's pitch is a trailing line or blob. A note fills in as the user hits it, and a combo or streak counter runs alongside.
+- Two lyric lines, with word-level karaoke wipe on the current one.
+- Render with Canvas or WebGL in one requestAnimationFrame loop. Never create DOM elements per note.
+
+---
+
+## 7. F4: Auto-tune (DSP)
+
+**Signal flow:** detect f0 → choose a target pitch → smooth it → pitch-shift by the ratio.
+
+1. **Detection:** the same YIN estimator as §6.3 for live use, RMVPE for offline.
+2. **Target selection:** quantize to the nearest note in the active scale. The key and scale are auto-detected (§4.4) and can be overridden. Modes: chromatic, major/minor, custom, and "follow reference melody", which snaps to the reference note at that moment, a karaoke-specific mode. Hysteresis of about 15 cents at note boundaries stops the output flickering between two notes.
+3. **Retune speed:** smooth the correction with a one-pole filter on the target. Time constant 0 ms gives the hard "T-Pain" effect; 50–400 ms sounds natural. **Humanize** reduces correction on sustained notes and leaves the natural vibrato in. Unvoiced frames (consonants, breaths) pass through uncorrected.
+4. **Shifter:**
+   - **Live:** **TD-PSOLA**, our own implementation. It preserves formants automatically, adds roughly one pitch period plus the analysis window of latency, and costs little on the CPU. Place pitch marks with the YIN period and a peak-picking pass.
+   - **Offline high quality:** a phase-vocoder or spectral shifter with formant preservation (spectral envelope from cepstral liftering), or WORLD-style analysis and synthesis. Signalsmith Stretch (MIT) is the quality benchmark; we can use it natively through a `-sys` crate, and its official Web Audio/WASM build works for web prototypes. Rubber Band (GPL) is allowed because the project is GPL. It is native-only; check whether it builds for wasm before relying on it on the web.
+5. **Parameters exposed:** key, scale, retune speed, humanize, formant shift, mix (wet/dry), and an editable correction curve ("graphical mode", later).
+
+---
+
+## 8. F5: AI production
+
+| Task | Approach (proposed) | License note |
+|---|---|---|
+| Denoise (live and offline) | **DeepFilterNet** (has a Rust implementation; real-time on CPU; 48 kHz) | MIT/Apache |
+| De-reverb, restoration, bandwidth extension | Resemble-Enhance or a similar speech/vocal enhancer (server) | check per model |
+| Vocal chain (DSP, ours) | HPF → de-esser → compressor → EQ → saturation → reverb/delay, with presets per genre. Presets are chosen by measuring the vocal (loudness, spectral tilt, sibilance energy) | n/a |
+| Generate backing track from a vocal | **ACE-Step 1.5** (MIT, verify the weights license before integrating): vocal-to-BGM, "lego" (add a single instrument track), repaint, extract. Conditioned on the vocal stem plus a text prompt plus the detected tempo and key. Runs as an opt-in local Python GPU sidecar, installed by the model manager. The lego and complete tasks reportedly need the XL-base checkpoint. | MIT |
+| Melody / harmony | Rule-based first: harmonies at diatonic thirds and sixths from the reference notes, pitch-shifted with §7. Then model-based (ACE-Step, or a MIDI model generating into the timeline) | |
+| Missing instruments | ACE-Step lego conditioned on the existing stems. Results land as new audio tracks on the timeline | |
+| Voice conversion (later) | RVC-style models | Only on the user's own voice, or with consent |
+
+Generated audio always lands as **new, non-destructive tracks** and never overwrites anything. Store the model, the prompt and the seed with each generated clip so results can be reproduced.
+
+---
+
+## 9. Real-time audio rules (non-negotiable)
+
+On the audio thread (cpal callback / AudioWorklet `process()`):
+- **No allocation, locks, syscalls, logging or panics.** Preallocate everything. Use `rtrb` or SPSC rings for audio data and lock-free triple buffers for parameters and UI snapshots.
+- **No ML inference** on the audio thread. Inference runs on a worker thread, and results come back through rings.
+- Block sizes vary. AudioWorklet's render quantum is 128 frames; do not assume more. Desktop targets 128–256 frames.
+- **Latency calibration:** measure round-trip latency with a loopback chirp test when the user first records, and store it per device. Recordings are compensated automatically.
+- Use `f32` everywhere in DSP. Keep the internal sample rate the same as the device rate; resample files on load with `rubato`, never in the callback.
+- **Web:** `SharedArrayBuffer` needs cross-origin isolation, so the web host must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
+
+---
+
+## 10. Engineering conventions
+
+- **Testing:**
+  - DSP code gets golden-file tests: synthetic signals (sines, chirps, vibrato, PSOLA round-trip) with tolerances in cents or dB, not exact equality.
+  - Pitch estimators are benchmarked on MIR-1K / PTDB-TUG excerpts kept in `docs/research`.
+  - Separation is checked with SDR on a handful of MUSDB18-HQ tracks (not committed; a download script is fine).
+  - Every `engine-core` test must also pass under `wasm32` (`wasm-pack test --node` or `wasm-bindgen-test`).
+- **Determinism:** the offline analysis code (scoring, note segmentation, key detection) must give identical output for identical input on every platform. No `HashMap` iteration order in outputs, and seeds are fixed.
+- **Models:** each model is registered in `models/manifest.toml` with its source URL, sha256, **license**, input and output spec, sample rate, and a `distribution` field (`default`, or `opt-in` for NC weights). CI fails on an unknown license or on an NC model marked `default`.
+- **Errors:** `thiserror` in libraries and `anyhow` only in binaries. Engine API errors are typed and mirrored in TypeScript.
+- **Dependency licenses:** `cargo deny` checks that every crate is GPL-compatible, and `license-checker` does the same for npm packages.
+- **Style:** `cargo fmt`, `cargo clippy -D warnings`, and Prettier plus ESLint for TypeScript. Public engine API types carry `#[derive(Serialize, Deserialize, TS)]`.
+- **Performance budgets:**
+  - Live path (pitch + autotune + mixer) under 25% of one core at 128-frame buffers.
+  - 4-minute song import, desktop with a GPU: separation under 60 s.
+  - Timeline steady at 60 fps with 12 tracks.
+
+---
+
+## 11. Build order
+
+1. **M0, engine skeleton:** the Cargo workspace, plus `engine-core` with YIN, a WAV/symphonia loader and a simple mixer. It must run in a cpal CLI *and* an AudioWorklet demo. Port `main.py`'s comparison so the result can be checked against the prototype. CI builds for macOS, Windows, Linux and wasm32.
+2. **M1, first milestone: F1 + timeline + F2**
+   - Import local files, and on desktop YouTube via `yt-dlp`.
+   - HTDemucs separation through `ort` (desktop) and onnxruntime-web (web), with the stem cache.
+   - Tempo, key and RMVPE reference-vocal analysis, plus reference note segmentation.
+   - Svelte multitrack timeline: waveforms, mute, solo, gain, pan, transport, and a hidden reference-vocal MIDI track.
+   - Record or import a take, then alignment, offline scoring and the score graph from §5.
+   - Project save and load: files on desktop, OPFS plus archive export on the web.
+3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
+4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
+5. **M4, quality:** RoFormer vocal cascade, basic-pitch MIDI layers, and a model manager with opt-in NC downloads.
+6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar.
+
+---
+
+## 12. Open decisions
+
+- [ ] Project archive format: MessagePack plus FLAC stems in a zip, or a SQLite bundle?
+- [ ] Minimum hardware for the web build (WebGPU required, or a WASM-only slow path)?
