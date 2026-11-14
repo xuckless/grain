@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FrameComparison, NoteResult, Project, ScoreReport } from "@workstation/engine-api";
+  import { frameFeedback, noteFeedback } from "./feedback";
   import { dot, dotBar, fit } from "./grain";
   import { reveal } from "./motion";
   import { colour, feedback } from "./theme";
@@ -20,36 +21,17 @@
   const STRIP = 72;
   /** Cents shown at the top/bottom of the error strip. */
   const STRIP_RANGE = 100;
-  /** A missed frame within this many cents still reads as "near". */
-  const NEAR_CENTS = 100;
-  /** Fraction of a note sung in tune for it to count as a hit. */
-  const HIT_RATIO = 0.6;
 
   let canvas = $state<HTMLCanvasElement | undefined>();
   let width = $state(0);
   const height = ROLL + STRIP;
   const duration = $derived(project.frames / project.sample_rate);
 
-  function noteColour(result: NoteResult): string {
-    switch (result.kind) {
-      case "Missed":
-        return feedback.miss;
-      case "Sung":
-        return result.hit_ratio >= HIT_RATIO ? feedback.hit : feedback.near;
-    }
-  }
+  const noteColour = (result: NoteResult): string => feedback[noteFeedback(result)];
 
   function frameColour(f: FrameComparison): string | undefined {
-    switch (f.kind) {
-      case "Hit":
-        return feedback.hit;
-      case "Miss":
-        return Math.abs(f.cents) <= NEAR_CENTS ? feedback.near : feedback.miss;
-      case "ReferenceOnly":
-      case "UserOnly":
-      case "Silent":
-        return undefined;
-    }
+    const fb = frameFeedback(f);
+    return fb ? feedback[fb] : undefined;
   }
 
   $effect(() => {

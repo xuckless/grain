@@ -1,39 +1,33 @@
 <script lang="ts">
-  import type { Difficulty, EngineHost, Latency, OctaveMode, PlayerCommand, ScoreSettings, TakeAdded, TransportSnapshot } from "@workstation/engine-api";
+  import type { EngineHost, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
   import Grain from "./Grain.svelte";
   import Menu from "./Menu.svelte";
+  import RecordingSetup from "./RecordingSetup.svelte";
+  import SettingsControls from "./SettingsControls.svelte";
   import ScoreGraph from "./ScoreGraph.svelte";
-  import Toggle from "./Toggle.svelte";
   import { services } from "./context";
   import { Breath, dotMeter, fit, PitchTrail } from "./grain";
   import { celebrate, detailDelay, dur, enter } from "./motion";
+  import { applyTake, armTake, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
   import { errorMessage, type Session } from "./state";
   import {
     auditionCommands,
     auditionEndCommands,
     auditionNext,
-    backingCommands,
-    backingNote,
-    backingOptions,
-    backingRestoreCommands,
     beatsLeft,
-    calibrationNext,
-    defaultBacking,
     isCapturing,
-    LATENCY_NUDGE_MS,
     noteSpan,
     observeAudition,
     observeRecording,
     recordingNext,
     type Audition,
     type AuditionEvent,
-    type Backing,
-    type Calibration,
-    type CalibrationEvent,
     type Recording,
     type RecordingEvent,
   } from "./takes";
   import { colour, stemHue } from "./theme";
+  import { pitchFeedback } from "./feedback";
+  import { noteAt } from "./karaoke";
 
   /**
    * The Score view. Before a take: the reference melody plays as a pitch trail (design:
@@ -53,33 +47,32 @@
     onSeek: (frame: number) => void;
   } = $props();
 
-  const { burst, toast } = services();
+  const { burst } = services();
   // The host is fixed for the app's lifetime.
   // svelte-ignore state_referenced_locally
   const mic = host.microphone;
 
-  let difficulty = $state<Difficulty>("Medium");
-  let octave = $state<OctaveMode>("Fold");
-  const difficulties = [
-    { id: "Easy", label: "Easy" },
-    { id: "Medium", label: "Medium" },
-    { id: "Hard", label: "Hard" },
-  ] as const satisfies readonly { id: Difficulty; label: string }[];
-  const settings = (): ScoreSettings => ({ difficulty, octave });
+  /** Copied: the session's settings are a reactive proxy, which hosts can't post or clone. */
+  const settings = () => ({ ...session.settings });
 
   const project = $derived(session.project);
   const score = $derived(session.score);
   const notes = $derived(project.analysis.reference_notes);
   const duration = $derived(project.frames / project.sample_rate);
+  // The reference melody, looping from when the view opened.
   const trail = $derived.by(() => {
     const pitch = project.analysis.reference_pitch;
+    const t0 = performance.now();
     return new PitchTrail(
       notes,
+      (now) => (((now - t0) / 1000) % duration + duration) % duration,
+      0.7,
       (s) => {
         const f = pitch.frames[Math.round(s / pitch.hop_seconds)];
-        return f?.kind === "Voiced" ? f.midi : null;
+        if (f?.kind !== "Voiced") return null;
+        const n = noteAt(notes, s);
+        return { seconds: s, midi: f.midi, feedback: pitchFeedback(f.midi, n < 0 ? null : notes[n].midi) };
       },
-      duration,
     );
   });
   const listening = new Breath();
@@ -87,23 +80,7 @@
 
   // ---- Commands -------------------------------------------------------------------------------
 
-  /** Sends commands in order. The engine rejects illegal ones; the transport poll shows the truth. */
-  async function run(commands: PlayerCommand[]) {
-    for (const command of commands) {
-      try {
-        await host.send(command);
-      } catch (e) {
-        console.warn(errorMessage(e));
-      }
-    }
-  }
-
-  /** A take was added: it becomes the shown, scored take and the song has unsaved changes. */
-  function taken(added: TakeAdded) {
-    session.project = added.project;
-    session.score = { kind: "scored", take: added.take, report: added.report };
-    if (session.save.kind === "clean") session.save = { kind: "dirty" };
-  }
+  const run = (commands: PlayerCommand[]) => runCommands(host, commands);
 
   async function rescore(take: number) {
     session.score = { kind: "scoring" };
@@ -114,8 +91,7 @@
     }
   }
 
-  function setSettings(next: () => void) {
-    next();
+  function settingsChanged() {
     if (score.kind === "scored") void rescore(score.take);
   }
 
@@ -125,7 +101,7 @@
     session.score = { kind: "scoring" };
     try {
       const outcome = await host.scoreTake(settings());
-      if (outcome.kind === "scored") taken(outcome.added);
+      if (outcome.kind === "scored") applyTake(session, outcome.added);
       else session.score = before;
     } catch (e) {
       session.score = { kind: "failed", message: errorMessage(e) };
@@ -133,13 +109,6 @@
   }
 
   // ---- Recording ------------------------------------------------------------------------------
-
-  const backings = $derived(backingOptions(project));
-  /** Decided once per song from the stem levels measured at import or load. */
-  const suggested = $derived(defaultBacking(project.analysis.accompaniment));
-  let chosen = $state<Backing | null>(null);
-  const backing = $derived(chosen ?? suggested);
-  const note = $derived(backing === suggested ? backingNote(project.analysis.accompaniment) : null);
 
   let recording = $state<Recording>({ kind: "idle" });
   let level = $state(0);
@@ -154,23 +123,19 @@
   async function record() {
     if (mic.kind !== "available" || !recordingEvent({ kind: "arm" })) return;
     await stopAudition();
-    await run(backingCommands(project, backing));
     try {
-      await mic.start();
+      await armTake(host, project, effectiveBacking(session));
     } catch (e) {
-      await run(backingRestoreCommands(project));
       recordingEvent({ kind: "fail", message: errorMessage(e) });
     }
   }
 
   async function stopRecording() {
     if (mic.kind !== "available" || !recordingEvent({ kind: "stop" })) return;
-    // Put the vocal back before the host snapshots the project into the new take's result.
-    await run(backingRestoreCommands(project));
     session.score = { kind: "scoring" };
     try {
-      const added = await mic.finish(settings());
-      taken(added);
+      const added = await finishTake(host, project, settings());
+      applyTake(session, added);
       recordingEvent({ kind: "captured", take: added.take });
     } catch (e) {
       session.score = { kind: "failed", message: errorMessage(e) };
@@ -180,8 +145,7 @@
 
   async function cancelRecording() {
     if (mic.kind !== "available" || !recordingEvent({ kind: "cancel" })) return;
-    await mic.cancel();
-    await run(backingRestoreCommands(project));
+    await cancelTake(host, project);
   }
 
   // The transport ends the count-in, and stopping the song (or its end) stops the take.
@@ -195,16 +159,12 @@
   // Input level while the microphone is open.
   $effect(() => {
     if (!isCapturing(recording) || mic.kind !== "available") return;
-    let alive = true;
-    const poll = async () => {
-      if (!alive) return;
+    const stop = eachFrame(async () => {
       level = await mic.level().catch(() => 0);
       listening.intensity = 0.35 + 0.65 * Math.min(1, level * 4);
-      requestAnimationFrame(poll);
-    };
-    requestAnimationFrame(poll);
+    });
     return () => {
-      alive = false;
+      stop();
       level = 0;
       listening.intensity = 1;
     };
@@ -221,51 +181,7 @@
 
   const beats = $derived(beatsLeft(snapshot.transport, project.analysis.tempo.bpm, snapshot.sample_rate));
 
-  // ---- Latency calibration --------------------------------------------------------------------
-
-  let calibration = $state<Calibration>({ kind: "idle" });
-  let latency = $state<Latency | null>(null);
-  $effect(() => {
-    if (mic.kind === "available") mic.latency().then((l) => (latency = l), (e) => console.warn(errorMessage(e)));
-  });
-
-  function calibrationEvent(e: CalibrationEvent): boolean {
-    const next = calibrationNext(calibration, e);
-    if (!next) return false;
-    calibration = next;
-    return true;
-  }
-
-  async function calibrate() {
-    if (mic.kind !== "available" || isCapturing(recording) || !calibrationEvent({ kind: "start" })) return;
-    await stopAudition();
-    try {
-      latency = await mic.measureLatency();
-      calibrationEvent({ kind: "done", latency });
-    } catch (e) {
-      calibrationEvent({ kind: "fail", message: errorMessage(e) });
-    }
-  }
-
-  async function nudge(ms: number) {
-    if (mic.kind !== "available" || !latency) return;
-    try {
-      latency = await mic.setLatency(latency.ms + ms);
-    } catch (e) {
-      toast(`Couldn't change the latency: ${errorMessage(e)}`, "error");
-    }
-  }
-
-  function describeLatency(l: Latency): string {
-    switch (l.source.kind) {
-      case "Default":
-        return "estimated, not calibrated";
-      case "Measured":
-        return "measured";
-      case "Manual":
-        return "set by hand";
-    }
-  }
+  let calibrating = $state(false);
 
   // ---- A/B audition ---------------------------------------------------------------------------
 
@@ -304,14 +220,13 @@
     return () => clearTimeout(t);
   });
 
-  const busy = $derived(isCapturing(recording) || score.kind === "scoring" || calibration.kind === "measuring");
+  const busy = $derived(isCapturing(recording) || score.kind === "scoring" || calibrating);
   const stage = $derived(isCapturing(recording) ? "recording" : score.kind);
 </script>
 
 <section class="score">
   <div class="controls">
-    <Menu label="Difficulty" value={difficulty} options={difficulties} onPick={(d) => setSettings(() => (difficulty = d))} />
-    <Toggle checked={octave === "Fold"} label="Octave folding" onToggle={(on) => setSettings(() => (octave = on ? "Fold" : "Strict"))} />
+    <SettingsControls {session} onChange={settingsChanged} />
     {#if project.takes.length > 0}
       <Menu label="Take" value={shown} options={takes} onPick={(id) => id !== "" && !busy && void rescore(Number(id))} />
     {/if}
@@ -332,43 +247,9 @@
     {/if}
   </div>
 
-  {#if mic.kind === "available"}
-    <div class="setup">
-      <div class="row">
-        <Menu
-          label="Backing"
-          value={backing}
-          options={backings.filter((b) => b.available)}
-          onPick={(b) => (chosen = b)}
-        />
-        {#if note}<span class="muted">{note}</span>{/if}
-      </div>
-      <div class="row">
-        <span class="label">Latency</span>
-        {#if latency}
-          <button class="press icon quiet" aria-label="{LATENCY_NUDGE_MS} ms less" disabled={busy} onclick={() => nudge(-LATENCY_NUDGE_MS)}>−</button>
-          <span class="value-sm">{latency.ms.toFixed(0)} ms</span>
-          <button class="press icon quiet" aria-label="{LATENCY_NUDGE_MS} ms more" disabled={busy} onclick={() => nudge(LATENCY_NUDGE_MS)}>+</button>
-          <span class="muted">{describeLatency(latency)}</span>
-        {/if}
-        <button class="press raised calibrate" onclick={calibrate} disabled={busy}>
-          {calibration.kind === "measuring" ? "Listening…" : "Calibrate"}
-        </button>
-      </div>
-      <p class="muted hint">
-        {#if calibration.kind === "measuring"}
-          Playing a short chirp. Keep still and quiet.
-        {:else if calibration.kind === "failed"}
-          {calibration.message}
-        {:else if calibration.kind === "measured"}
-          Measured {calibration.latency.ms.toFixed(0)} ms. Plug your headphones back in to record.
-        {:else}
-          Calibrate once per microphone and output: unplug your headphones, or hold them against the microphone, so it can
-          hear the test chirp.
-        {/if}
-      </p>
-    </div>
-  {/if}
+  <div class="setup">
+    <RecordingSetup {host} {session} busy={isCapturing(recording) || score.kind === "scoring"} bind:calibrating beforeCalibrate={stopAudition} />
+  </div>
 
   <!-- Score states crossfade with overlap (rule 16). -->
   <div class="stage">
@@ -464,31 +345,7 @@
     flex-wrap: wrap;
   }
   .setup {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
     margin-top: -12px;
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .calibrate {
-    height: 36px;
-    padding: 0 14px;
-    border-radius: 10px;
-    margin-left: 12px;
-  }
-  .value-sm {
-    min-width: 56px;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-    font-weight: 500;
-  }
-  .hint {
-    max-width: 640px;
   }
   .spacer {
     flex: 1;

@@ -232,11 +232,6 @@ impl FrameTotals {
             self.hit + self.miss + self.reference_only,
         )
     }
-
-    /// Share of the reference's voiced frames sung in tune (0–100): the live karaoke score.
-    pub fn in_tune(&self) -> f32 {
-        Self::ratio(self.hit, self.hit + self.miss + self.reference_only)
-    }
 }
 
 /// Offset (seconds) at which the take's pitch contour best agrees with the reference: each

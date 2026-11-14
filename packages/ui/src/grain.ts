@@ -5,6 +5,7 @@
 
 import type { Action } from "svelte/action";
 import type { Note } from "@workstation/engine-api";
+import type { Feedback } from "./feedback";
 import { colour, feedback, spectrum, stemHue } from "./theme";
 import { dur, reducedMotion } from "./motion";
 
@@ -388,61 +389,112 @@ export class Dissolve implements Behaviour {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Pitch trail: the karaoke lane. Reference notes scroll right to left as dotted bars; the head
-// (at 70% width) leaves a trail of grains coloured hit / near / miss against the note under it.
+// Pitch trail: the karaoke lane (design: Particles → Pitch trail). Reference notes scroll right
+// to left as dotted bars past the playhead; each sung pitch leaves grains at its song time,
+// coloured hit / near / miss, which scroll with the notes and fade. Notes judged by a live
+// performance fill with their verdict. The y-axis is semitones, ranged to the song's notes.
 
 const TRAIL_PX_PER_SECOND = 110;
 const TRAIL_LIFE_S = 2.6;
-/** A head within this many semitones of the note is a hit; within NEAR, near. */
-const HIT_SEMITONES = 0.5;
-const NEAR_SEMITONES = 1.5;
+/** Semitones of headroom above and below the song's range. */
+const TRAIL_MARGIN = 2;
+
+/** A sung pitch at a song time. `feedback`: its verdict, `null` when there's nothing to sing. */
+export type TrailPoint = { seconds: number; midi: number; feedback: Feedback | null };
 
 export class PitchTrail implements Behaviour {
-  private parts: { born: number; y: number; vy: number; r: number; c: string }[] = [];
-  private start = performance.now();
+  private parts: { seconds: number; born: number; y: number; vy: number; r: number; c: string }[] = [];
+  private queued: TrailPoint[] = [];
+  private last: TrailPoint | null = null;
+  private song = 0;
+  private readonly lo: number;
+  private readonly hi: number;
+  private geometry = { headX: 0, y: (_midi: number) => 0 };
+  /** Verdicts of judged notes (index-aligned with `notes`), drawn as filled bars. */
+  fills: readonly (Feedback | null)[] = [];
 
   /**
-   * `pitchAt(seconds)`: the sung pitch (fractional MIDI) at song time, or null when silent.
-   * Song time loops over `duration`.
+   * `clock(now)`: the song time (seconds) at animation time `now` (ms). `head`: playhead
+   * position as a fraction of the width. `sample(seconds)`: a point to draw at each frame (the
+   * Score preview, which plays the reference melody); live performances `add` points instead.
    */
   constructor(
     private readonly notes: readonly Note[],
-    private readonly pitchAt: (seconds: number) => number | null,
-    private readonly duration: number,
-  ) {}
+    private readonly clock: (now: number) => number,
+    private readonly head = 0.7,
+    private readonly sample?: (seconds: number) => TrailPoint | null,
+  ) {
+    let lo = Infinity, hi = -Infinity;
+    for (const n of notes) {
+      lo = Math.min(lo, n.midi);
+      hi = Math.max(hi, n.midi);
+    }
+    this.lo = lo - TRAIL_MARGIN;
+    this.hi = Math.max(hi + TRAIL_MARGIN, this.lo + 2 * TRAIL_MARGIN);
+  }
+
+  /** Queues sung points for the next frame. */
+  add(points: readonly TrailPoint[]): void {
+    this.queued.push(...points);
+  }
+
+  /** Forgets the trail (a new performance). */
+  clear(): void {
+    this.parts = [];
+    this.queued = [];
+    this.last = null;
+  }
+
+  /** Canvas position of the playhead at the last sung pitch (or mid-height), for bursts. */
+  headPoint(): { x: number; y: number } {
+    const { headX, y } = this.geometry;
+    return { x: headX, y: y(this.last?.midi ?? (this.lo + this.hi) / 2) };
+  }
 
   draw(c: Ctx, w: number, h: number, _t: number, now: number): void {
     if (this.notes.length === 0) return;
-    const song = (((now - this.start) / 1000) % this.duration + this.duration) % this.duration;
-    const lo = Math.min(...this.notes.map((n) => n.midi)) - 2;
-    const hi = Math.max(...this.notes.map((n) => n.midi)) + 2;
-    const y = (midi: number) => h - 12 - ((midi - lo) / (hi - lo)) * (h - 24);
-    const headX = w * 0.7;
+    const song = this.clock(now);
+    // A seek backwards leaves grains in the future: start the trail afresh.
+    if (song < this.song - 0.25) this.clear();
+    this.song = song;
+    const { lo, hi } = this;
+    const y = (midi: number) => h - 12 - ((Math.min(hi, Math.max(lo, midi)) - lo) / (hi - lo)) * (h - 24);
+    const headX = w * this.head;
     const x = (seconds: number) => headX + (seconds - song) * TRAIL_PX_PER_SECOND;
+    this.geometry = { headX, y };
 
-    let under: Note | undefined;
-    for (const n of this.notes) {
+    // Octave guides (every C), faint.
+    for (let m = Math.ceil(lo); m <= hi; m++) if (m % 12 === 0) for (let gx = 0; gx < w; gx += 8) dot(c, gx, y(m), 0.5, colour.disabled);
+    // The playhead.
+    for (let gy = 6; gy < h - 6; gy += 6) dot(c, headX, gy, 0.6, colour.disabled);
+
+    this.notes.forEach((n, i) => {
       const x0 = x(n.start), x1 = x(n.end);
-      if (x1 < 0 || x0 > w) continue;
-      dotBar(c, Math.max(0, x0), Math.min(w, x1), y(n.midi), colour.muted);
-      if (n.start <= song && song <= n.end) under = n;
-    }
+      if (x1 < 0 || x0 > w) return;
+      const fill = this.fills[i];
+      dotBar(c, Math.max(0, x0), Math.min(w, x1), y(n.midi), fill ? feedback[fill] : colour.muted, fill ? 1.1 : 0.9);
+    });
 
-    const sung = this.pitchAt(song);
-    if (sung !== null) {
-      const d = under ? Math.abs(sung - under.midi) : Infinity;
-      const col = d <= HIT_SEMITONES ? feedback.hit : d <= NEAR_SEMITONES ? feedback.near : feedback.miss;
+    const sampled = this.sample?.(song);
+    if (sampled) this.queued.push(sampled);
+    for (const p of this.queued) {
+      const col = p.feedback ? feedback[p.feedback] : colour.muted;
       if (!reducedMotion()) {
-        for (let i = 0; i < 2; i++) this.parts.push({ born: now, y: y(sung) + rand(-1.5, 1.5), vy: rand(-0.12, 0.12), r: col === feedback.hit ? 2.3 : 1.7, c: col });
+        for (let i = 0; i < 2; i++) this.parts.push({ seconds: p.seconds, born: now, y: y(p.midi) + rand(-1.5, 1.5), vy: rand(-0.12, 0.12), r: p.feedback === "hit" ? 2.3 : 1.7, c: col });
       }
-      dot(c, headX, y(sung), 4.5, col);
+      this.last = p;
     }
+    this.queued = [];
+
     this.parts = this.parts.filter((p) => now - p.born < TRAIL_LIFE_S * 1000);
     for (const p of this.parts) {
       const age = (now - p.born) / 1000;
       const life = 1 - age / TRAIL_LIFE_S;
-      dot(c, headX - age * TRAIL_PX_PER_SECOND, p.y + p.vy * age * 60, Math.max(0.3, p.r * life), p.c);
+      dot(c, x(p.seconds), p.y + p.vy * age * 60, Math.max(0.3, p.r * life), p.c);
     }
+    // The head: the latest sung pitch, while it's current.
+    const l = this.last;
+    if (l && song - l.seconds < 0.25) dot(c, x(l.seconds), y(l.midi), 4.5, l.feedback ? feedback[l.feedback] : colour.muted);
   }
 }
 

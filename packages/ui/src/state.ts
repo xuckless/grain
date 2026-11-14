@@ -1,7 +1,8 @@
 // Every app-level UI state is declared here (AGENTS.md ground rules 1–2). Component-local
 // states (menus, sliders, toasts) are declared as unions in their components.
 
-import type { ImportStage, Project, ScoreReport, TransportSnapshot } from "@workstation/engine-api";
+import type { ImportStage, Project, ScoreReport, ScoreSettings, TransportSnapshot } from "@workstation/engine-api";
+import type { Backing } from "./takes";
 
 /** Import progress: `Starting` until the host reports its first engine stage. */
 export type ImportProgress = { kind: "Starting" } | ImportStage;
@@ -26,16 +27,24 @@ export type ViewDef = { id: ViewId; label: string; availability: Availability };
 export const VIEWS: readonly ViewDef[] = [
   { id: "Mix", label: "Mix", availability: { kind: "ready" } },
   { id: "Score", label: "Score", availability: { kind: "ready" } },
-  { id: "Karaoke", label: "Karaoke", availability: { kind: "unavailable", reason: "Live lyrics and a pitch lane, coming in M2." } },
+  { id: "Karaoke", label: "Karaoke", availability: { kind: "ready" } },
   { id: "AutoTune", label: "Auto-tune", availability: { kind: "unavailable", reason: "Pitch correction to the song's key, coming in M3." } },
   { id: "Pitch", label: "Pitch", availability: { kind: "unavailable", reason: "Note-by-note pitch editing, coming in M4." } },
   { id: "Produce", label: "Produce", availability: { kind: "unavailable", reason: "AI vocal enhancement and backing tracks, coming in M5." } },
 ];
 
-export type Session = { project: Project; score: ScoreState; save: SaveState; view: ViewId };
+/** `settings`: difficulty and octave folding, shared by Score and Karaoke. `backing`: what the
+ * singer hears while recording, `null` until they pick one (the song's default applies). */
+/** The views for a song: Karaoke needs a reference melody to sing against. */
+export function viewsFor(project: Project): readonly ViewDef[] {
+  if (project.analysis.reference_notes.length > 0) return VIEWS;
+  return VIEWS.map((v) => (v.id === "Karaoke" ? { ...v, availability: { kind: "unavailable", reason: "No vocal melody was found in this song to sing along to." } } : v));
+}
+
+export type Session = { project: Project; score: ScoreState; save: SaveState; view: ViewId; settings: ScoreSettings; backing: Backing | null };
 
 export function newSession(project: Project): Session {
-  return { project, score: { kind: "none" }, save: { kind: "clean" }, view: "Mix" };
+  return { project, score: { kind: "none" }, save: { kind: "clean" }, view: "Mix", settings: { difficulty: "Medium", octave: "Fold" }, backing: null };
 }
 
 /** Song position (seconds) of the playhead. A count-in holds its start position; the
@@ -102,11 +111,11 @@ export function errorMessage(e: unknown): string {
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-/** Readout time, `01:24.3`. */
-export function formatTime(seconds: number): string {
+/** Readout time, `01:24.3` (`digits` decimals of a second). */
+export function formatTime(seconds: number, digits = 1): string {
   const m = Math.floor(seconds / 60);
   const s = seconds - 60 * m;
-  return `${pad2(m)}:${s.toFixed(1).padStart(4, "0")}`;
+  return `${pad2(m)}:${s.toFixed(digits).padStart(3 + digits, "0")}`;
 }
 
 /** Song length, `3:45`. */

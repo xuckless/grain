@@ -2,6 +2,7 @@
   import type { EngineHost, MixParams, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
   import Grain from "./Grain.svelte";
   import Icon from "./Icon.svelte";
+  import KaraokeView from "./KaraokeView.svelte";
   import MixView from "./MixView.svelte";
   import ScoreView from "./ScoreView.svelte";
   import Tabs from "./Tabs.svelte";
@@ -9,7 +10,7 @@
   import { services } from "./context";
   import { Orb } from "./grain";
   import { enter, iconSwap, popover, pulse, receiveShared, sendShared } from "./motion";
-  import { formatTime, songTitle, transportSeconds, type Session, type ViewId } from "./state";
+  import { formatTime, songTitle, transportSeconds, viewsFor, type Session, type ViewId } from "./state";
 
   let {
     host,
@@ -149,11 +150,13 @@
   </TopBar>
 
   <div class="body">
-    <Tabs view={session.view} onSelect={onView} />
+    <Tabs views={viewsFor(project)} view={session.view} onSelect={onView} />
     <div class="stage">
       {#key session.view}
         <div class="layer" transition:enter>
-          {#if session.view === "Score"}
+          {#if session.view === "Karaoke"}
+            <KaraokeView {host} {session} {snapshot} />
+          {:else if session.view === "Score"}
             <ScoreView {host} {session} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else}
             <MixView {project} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} {onMix} />

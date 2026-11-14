@@ -1,13 +1,13 @@
 <script lang="ts">
   import { popover } from "./motion";
-  import { VIEWS, type ViewDef, type ViewId } from "./state";
+  import type { ViewDef, ViewId } from "./state";
 
   /**
    * Session view tabs (design: Components → Views). The indicator slides with ease-in-out
    * (rule 9). Views that aren't built yet stay visible but disabled; hovering, focusing or
    * pressing one shows why in a popover that grows from the tab (rules 10–12).
    */
-  let { view, onSelect }: { view: ViewId; onSelect: (id: ViewId) => void } = $props();
+  let { views, view, onSelect }: { views: readonly ViewDef[]; view: ViewId; onSelect: (id: ViewId) => void } = $props();
 
   const TAB_W = 104;
   const GAP = 4;
@@ -15,7 +15,7 @@
   type Tip = { kind: "hidden" } | { kind: "shown"; id: ViewId };
   let tip = $state<Tip>({ kind: "hidden" });
 
-  const index = $derived(VIEWS.findIndex((v) => v.id === view));
+  const index = $derived(views.findIndex((v) => v.id === view));
 
   function show(v: ViewDef) {
     if (v.availability.kind === "unavailable") tip = { kind: "shown", id: v.id };
@@ -27,7 +27,7 @@
 
 <div class="tabs" role="tablist" aria-label="Session view">
   <span class="indicator" aria-hidden="true" style:transform="translateX({index * (TAB_W + GAP)}px)"></span>
-  {#each VIEWS as v (v.id)}
+  {#each views as v (v.id)}
     {@const ready = v.availability.kind === "ready"}
     <div class="slot">
       <button
