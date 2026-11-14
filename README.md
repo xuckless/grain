@@ -9,7 +9,7 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 | Path | What |
 |---|---|
 | `crates/engine-core` | DSP and analysis: YIN, STFT, resampling, tempo, key, melody notes, DTW alignment, scoring, mixer/transport, project model. Also builds for wasm32. |
-| `crates/engine-ml` | HTDemucs host processing (STFT outside the graph, chunking, overlap-add) |
+| `crates/engine-ml` | Model host processing (HTDemucs, RoFormer, RMVPE, basic-pitch) and the model registry compiled from `models/manifest.toml` |
 | `crates/engine-native` | Desktop host: decode, resample, cpal playback, ONNX Runtime, stem cache |
 | `crates/engine-wasm` | Web bindings (main thread + AudioWorklet) |
 | `crates/ingest` | YouTube audio through `yt-dlp` + `ffmpeg`: bundled sidecars, else `PATH` (desktop only) |
@@ -27,11 +27,19 @@ python3 scripts/fetch_models.py   # weights → models/weights/ (optional; witho
 pnpm install
 ```
 
-`fetch_models.py` downloads HTDemucs and RMVPE. The Best-vocals model (Mel-Band RoFormer) is
-not hosted as ONNX: the script downloads its checkpoint to `models/build/` and prints the export
-command (`scripts/export_melband_roformer.py`, needs PyTorch). The desktop app reads weights from
-its data folder (`~/Library/Application Support/dev.workstation.app/models` on macOS); debug
-builds also read `models/weights/`.
+In the app, **Models** (top right, on Home and in a song) lists every model in
+`models/manifest.toml` with its size, licence and state, and downloads, verifies (SHA-256) and
+deletes them. The desktop app keeps them in its data folder
+(`~/Library/Application Support/dev.workstation.app/models` on macOS; debug builds also read
+`models/weights/`), the web app in the browser's private storage (OPFS; `pnpm dev:web` also serves
+`models/weights/`). Restricted (non-commercial, `opt-in`) models ask you to accept their licence
+first. Downloads only come from Hugging Face and GitHub.
+
+`fetch_models.py` downloads the same models for development (HTDemucs, RMVPE, basic-pitch). The
+Best-vocals model (Mel-Band RoFormer) is not hosted as ONNX: if it isn't built yet, the script
+downloads its checkpoint to `models/build/` and prints the export command
+(`scripts/export_melband_roformer.py`, needs PyTorch). MuScriptor (CC-BY-NC-4.0) is listed but
+gated on Hugging Face and PyTorch-only, so it can't be downloaded yet.
 
 ## Run
 
@@ -106,6 +114,35 @@ Open a song and go to **Auto-tune**.
 - **Hear yourself live** monitors the microphone over the song, dry or **Tuned**. Use headphones: speakers feed back. The hint shows how far behind you the monitor is (about 32 ms for the tuner, plus your devices' latency).
 - Pick a take and **Apply to take…** to render a tuned copy, "Take 2 (tuned)", with the high-quality offline shifter. The original is kept. The copy is saved with the song, scored in **Score**, and you can compare it under **Hear**: the song, the original take, or the tuned one in place of the vocal. Before you apply, the graph shows your pitch (grey), the notes it is pulled to, and the corrected pitch (pink).
 
+## Pitch editor
+
+Open a song and go to **Pitch**. **Source** picks a take (the newest by default) or the vocal stem.
+
+- Each sung note is a blob of dots (thicker where it's louder) on a piano roll, with the scale's
+  notes as dotted rows, your pitch in grey and the edited pitch over it.
+- **Drag a note up or down** to change its pitch: it snaps to **Scale notes** or **Semitones**
+  (Snap menu); hold **⌥ Alt** for free cents. Drag it **sideways** to move it in time, or by an
+  **edge** to stretch it (0.5–2×). Click selects (⇧/⌘ adds), ⌘A selects all, Esc clears.
+- **Split notes** (Tool menu) splits where you click; **Merge with next** joins a selected note
+  with the following one.
+- The sliders work on the selection, or on every note when none is selected: **Pitch centre**
+  (how far each note is pulled to its scale note), **Pitch drift** (flattens slow wander),
+  **Vibrato** (0–200%), **Glide in** (how fast the pitch moves in from the previous note),
+  **Formant**. **Correct pitch** does centre 100% + drift 50% in one go. **Delete** resets the
+  selected notes; ⌘Z / ⇧⌘Z undo and redo.
+- Edits are kept with the song (Save) and never touch the audio. **Render as a take** makes
+  "Take 2 (edited)" (or "Vocal stem (edited)"), re-rendering only the changed notes. It is scored
+  like any take; compare it under **Hear**.
+- From **Auto-tune**, **Edit curve…** opens the take in the editor with every note set where
+  auto-tune would pull it, so you can adjust the correction note by note.
+
+## MIDI
+
+In **Mix**, **MIDI** on a track transcribes it: pitched tracks with basic-pitch (download it in
+**Models** first), the drum stem with a built-in kick/snare/hat classifier. The notes appear as a
+lane under the track; **Export .mid** saves a Standard MIDI File at the song's tempo, and **Redo**
+transcribes again.
+
 ## Checks
 
 ```bash
@@ -113,9 +150,9 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p engine-core --target wasm32-unknown-unknown   # engine-core DSP tests under Node
 pnpm types && pnpm wasm && pnpm check && pnpm build:web
-pnpm --filter @workstation/ui test                   # recording, calibration and A/B state machines
+pnpm --filter @workstation/ui test                   # recording, calibration, A/B, pitch editor, model manager
 python3 scripts/fetch_models.py --check
-cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights)
+cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights); a real model download
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and Linux.

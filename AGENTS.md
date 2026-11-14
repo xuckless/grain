@@ -170,6 +170,13 @@ docs/research/     # longer notes, benchmarks, model evaluations
 - `basic-pitch` (Spotify, Apache-2.0, small, ONNX/TFLite) runs on each pitched stem and outputs editable MIDI regions.
 - Drums: onset detection on the drum stem, with a simple kick, snare and hat classifier (spectral centroid and band energy).
 - Better multi-instrument models exist (YourMT3+, MuScriptor 2026). MuScriptor's weights are **CC-BY-NC**, so offer it only as an opt-in download (§0).
+- **As built (M4):**
+  - **Model:** `nmp.onnx` from spotify/basic-pitch (LICENSE: Apache-2.0, Copyright 2022 Spotify AB; the weights ship in that repository), pinned to commit `fa5997a`, 230 kB, registered as `basic_pitch`. I/O was inspected with onnxruntime: input `serving_default_input_2:0 [N,43844,1]`; outputs `StatefulPartitionedCall:1` note and `:2` onset `[N,172,88]`, `:0` contour `[N,172,264]` (unused).
+  - **Port:** `engine-ml::basic_pitch` ports `inference.py`'s windowing (half-overlap padding, 30-frame overlap trim, the window-offset frame times) and `note_creation.py`'s decoder (inferred onsets, onset peaks ≥ 0.5, frames ≥ 0.3, 11-frame minimum, energy tolerance 11, the melodia trick). The melodia loop walks cells strongest-first instead of repeating arg-max, which is equivalent because energy only ever drops. On the same input it gives the reference decoder's notes (19 events against its 20; the difference is frame-time rounding).
+  - **Hosts:** native ort in batches of 8 windows (`engine-native::transcribe`); web onnxruntime-web (WASM EP), batching the same way, with the windowing and decoding in wasm. **Accuracy:** note F1 1.000 (onset ±50 ms, pitch exact) on a 10-note synthetic pluck melody with 1/k² harmonics. With much stronger 1/k harmonics the model also hears the 5th harmonic (+28 st), exactly as the reference does; that's the model, not the port.
+  - **Drums:** `engine-core::drums`: peaks of the onset envelope (≥ 12% of the loudest, ≥ 1.5× the ±0.5 s average, 50 ms apart), each classified on one 2048-sample FFT by energy share: < 150 Hz ≥ 40% → kick (36), ≥ 5 kHz ≥ 60% → closed hat (42), else snare (38). It gets 8/8 synthetic hits right, each within 30 ms. It is blind to toms, cymbals and simultaneous hits (one class per onset).
+  - **Project and files:** `Project.transcriptions` (one `Transcription { source: TrackSource, method, notes: Vec<MidiNote> }` per track, `#[serde(default)]`). `midi::method_for` picks drums vs basic-pitch for both hosts. `midi::smf` writes type 0, 480 PPQ, at the detected tempo, drums on channel 10.
+  - **UI:** Mix view "MIDI" per track, a per-track `MidiJob` (Idle | Transcribing | NeedsModel | Failed), a dot-grain lane under the track (pitch-spread; drums on hat/snare/kick rows), Redo, and Export .mid (desktop save dialog; web download). `TranscribeOutcome::NeedsModel` points to the Models panel.
 
 ### 4.4 Analysis extracted on import (used by every feature)
 - **Tempo and beat grid:** onset envelope, then autocorrelation or tempogram, then dynamic-programming beat tracking (Ellis 2007). Downbeats come from a beat-tracking model or a heuristic.
@@ -278,6 +285,26 @@ Offline, note-based editing of a **monophonic** vocal (the user's take or the vo
 4. **Rendering:** turn the edits into a time-varying pitch-ratio curve (plus a time map for timing edits), then run M3's offline high-quality shifter with formant preservation. Re-render only the edited regions, and crossfade at their boundaries.
 5. **Shared code:** the target-note and scale snapping is the same code as auto-tune §7 step 2. Live auto-tune is just this editor's "Correct pitch" applied in real time with a smoothing filter, so the two share one engine module.
 
+### 7.1.1 As built (M4)
+- **Edit list** (`engine-core::edit`, kept as `Project.pitch_edits`, one `PitchEdit` per `EditSource` (Take | VocalStem), `#[serde(default)]`):
+  - Each `EditNote` holds its sung span and centre (median voiced pitch), and what changed: `pitch` (target centre), `drift` (share kept), `modulation` (0–2), `transition` (glide seconds), `formant`, and `out_start`/`out_end` (timing).
+  - `analyze` = §6.2's `melody::segment` + medians; snapping is `tune::Scale::snap`, with the scale defaulting to auto-tune's (`Project.tune.scale`).
+  - `EditOp` lists every edit: MovePitch (Free | Semitone | Scale snap), Correct (centre %, drift %), SetModulation, SetTransition, SetFormant, MoveTime, Stretch, Split, Merge, Reset, SetScale. Unknown ids do nothing; time edits clamp between the neighbours, to 0.5–2× and ≥ 50 ms.
+- **Curves:** per sung frame inside a note, `offset + (drift−1)(d−centre) + (modulation−1)(m−d)`. Here `d` is the ±75 ms moving average of the note's voiced pitch (drift) and `m` the sung pitch, so `m − d` is the vibrato. The offset ramps over `transition` from the previous note's offset (if that note ends < 0.1 s before) or from 0. The time map anchors `(out_start→start, out_end→end)` per note plus the song ends.
+- **Rendering:**
+  - `stretch::warp` (WSOLA, 23 ms Hann frames, ±¼-frame search) re-times only the changed stretch and copies the rest bit-for-bit, with 10 ms crossfades.
+  - The curves are moved onto the output timeline, then `shift::shift_curves` (the M3 phase vocoder with a per-frame formant curve) runs only on spans with a non-zero curve (±100 ms), with 20 ms crossfades.
+  - **Accuracy:** a +2 st note lands within 5 ¢ (the test passes); the untouched note is **bit-identical**.
+  - The result is a new take, `TakeSource::Edited { from }`, "<source> (edited)", re-tracked and scored like a tuned take.
+- **Hosts:** `PitchEditor` (`open` / `apply` / `set` / `fromTune` / `render`) over shared project-level helpers (`edit::open`, `apply_op`, `store`, `seed_from_tune`, `render_source`). Desktop decodes just the take or the vocal stem (`StemCache::track_audio`); web uses the song it holds.
+- **UI** (`PitchView.svelte`, state in `pitch.ts`):
+  - **State machines:** `Loading` (Loading | Ready | Failed); `Selection` (None | Notes); `Drag`: Idle | Pressing (direction undecided until 5 px) | Pitch | Time | Stretch | Panning (with rubber band, rule 19). While held, the blob follows the pointer directly (rule 14); the engine applies the op on release. `RenderState`: Idle | Rendering | Rendered | Failed.
+  - **Undo/redo:** `History` keeps snapshots of the edit list (100 steps; a slider drag coalesces into one step by key); `set` hands a restored list back to the engine.
+  - **Drawing:** blobs are dots along the note line, rows by loudness (`edit::amplitude`), with scale rows from the engine's `scale_mask`.
+  - **Keys:** ⌘Z/⇧⌘Z (and ⌘Y), ⌘A, Delete/Backspace resets the selected notes (it doesn't remove them, so the audio isn't cut), Esc.
+  - **Source:** the newest original take by default, else the vocal stem; the source stays selected after rendering.
+- **M3's editable correction curve:** Auto-tune's "Edit curve…" calls `edit::from_tune`. It seeds the take's edit list with each note's centre moved to the target auto-tune would pull most of its frames to (× mix) and the formant setting, then opens it in the Pitch view. One mechanism, no second curve editor. Retune speed and humanize aren't carried over: in the editor, glides and drift take their place.
+
 ### 7.2 As built (M3)
 - **Target selection** (`engine-core::tune`, shared by live, offline and M4): `Scale` (Chromatic | Key | Custom pitch-class mask) with `snap`; `TuneMode` (Scale | FollowMelody, the reference note in the singer's octave, the scale where the melody rests); `Tuner`, one frame at a time, allocation-free, with an explicit `Target` (Free | Holding) and 15 ¢ hysteresis (`HYSTERESIS`). Retune is a one-pole filter on the *correction* (target − sung), so vibrato faster than the time constant survives; 0 ms snaps. Humanize lengthens the time constant by up to 400 ms as a note is held (full after 0.25 s). Unvoiced frames reset it and pass through. `correction_curve` runs the tuner over a take; `preview` gives the graph's sung, target and corrected curves; `render` makes the tuned take.
 - **Settings live on the project** (`Project.tune`, the detected key at import; `#[serde(default)]` chromatic for older projects), so they save with the song. The hosts' `setTune` updates the project and the live tuner together.
@@ -372,7 +399,10 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
   - Separation is checked with SDR on a handful of MUSDB18-HQ tracks (not committed; a download script is fine).
   - Every `engine-core` test must also pass under `wasm32` (`wasm-pack test --node` or `wasm-bindgen-test`).
 - **Determinism:** the offline analysis code (scoring, note segmentation, key detection) must give identical output for identical input on every platform. No `HashMap` iteration order in outputs, and seeds are fixed.
-- **Models:** each model is registered in `models/manifest.toml` with its source URL, sha256, **license**, input and output spec, sample rate, and a `distribution` field (`default`, or `opt-in` for NC weights). CI fails on an unknown license or on an NC model marked `default`.
+- **Models:** each model is registered in `models/manifest.toml` with its source URL, sha256, size, **license**, input and output spec, sample rate, and a `distribution` field (`default`, or `opt-in` for NC weights). CI fails on an unknown license, on an NC model marked `default`, or on a downloadable file without a sha256. A `[model.build]` table marks locally exported models; `manual = "…"` marks models that can't be fetched (and says why).
+  - **Model manager (M4):** `engine-ml::models` compiles the manifest in (`include_str!` + `toml`), so desktop, web and the tests read the one file. It also holds the `ModelState` machine (NotDownloaded → Downloading{received,total} → Verifying → Ready | Failed; Deleted → NotDownloaded; a retry from Failed), the streaming SHA-256 and the host allow-list (`huggingface.co`, `github.com`, `raw.githubusercontent.com`, https only).
+  - Desktop `engine-native::models` downloads with ureq (native TLS) into app data as `.part` files and renames them only after every checksum matches. Web `apps/web/src/models.ts` streams into OPFS through the wasm checksum and writes a `<id>.ok` marker only after verifying. A failure deletes what was written. After a change, separation and pitch look for their weights again.
+  - Opt-in models need `acceptLicense`, which the UI only passes from the licence dialog. `ModelEntry.removable` tells the app's own downloads from weights it can't delete (a development checkout).
 - **Errors:** `thiserror` in libraries and `anyhow` only in binaries. Engine API errors are typed and mirrored in TypeScript.
 - **Dependency licenses:** `cargo deny` checks that every crate is GPL-compatible, and `license-checker` does the same for npm packages.
 - **Style:** `cargo fmt`, `cargo clippy -D warnings`, and Prettier plus ESLint for TypeScript. Public engine API types carry `#[derive(Serialize, Deserialize, TS)]`.
@@ -396,7 +426,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ✅ done (desktop, opt-in "Best vocals"; web is Fast-only) |
 | **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | ✅ done (UltraStar-style word timing; ML alignment later) |
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | ✅ done (see §7.2) |
-| **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | planned (needs M3's offline shifter) |
+| **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | ✅ done (see §7.1.1, §4.3, §10) |
 | **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | planned |
 
 ### Milestone details
@@ -434,13 +464,22 @@ Keep this table current: update the Status column whenever a milestone moves.
      - Karaoke's live score is a preview: frames only, no timing or stability. Each run's full report is in Score.
 4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter. **Done** (see §7.2).
    - **Still open in M3:**
-     - The editable correction curve ("graphical mode", §7 step 5) arrives with M4's pitch editor, which drives the same `tune` and `shift` modules.
+     - ~~The editable correction curve~~: done in M4 as Auto-tune's "Edit curve…", which opens the correction in the pitch editor (§7.1.1).
      - The live monitor and the accuracy tests have been checked on synthetic voices and the benchmarks only. Real-mic feel (the 31.5 ms plus device latency) needs a listen on hardware.
      - The live path follows YIN, so it inherits YIN's octave slips on breathy notes. Offline tuned takes use the take's stored pitch (RMVPE on desktop).
      - Desktop monitoring needs the microphone to run at the output's rate; otherwise it reports Failed instead of resampling live.
      - Custom notes start from all twelve; they don't start from the current key.
      - Projects saved before M3 open with chromatic auto-tune settings.
-5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up.
+5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up. **Done** (see §7.1.1, §4.3, §10).
+   - **Checked:** engine tests (edit curves, render accuracy, WSOLA, drums, SMF, model registry and state machine, checksum failure, a real download from GitHub, basic-pitch F1), UI state tests, and the web build end to end in headless Chrome. That run imported a synthetic song, transcribed the vocal stem, downloaded basic-pitch from GitHub into OPFS (with the dev copy blocked), and in the Pitch view did Correct pitch, ⌘Z, a mouse drag to the next scale note, and Render.
+   - **Still open in M4:**
+     - **MuScriptor** is registered (CC-BY-NC-4.0, opt-in) but can't be fetched: the Hugging Face repo is gated (anonymous downloads get 401) and ships PyTorch safetensors only. Wiring it up needs an ONNX export and a way to pass the user's Hugging Face token. The licence-acceptance dialog is in place for any downloadable opt-in model.
+     - The Mel-Band RoFormer stays a local build (`[model.build]`): the panel shows the export command instead of a download.
+     - The pitch editor uses the take's stored pitch track (RMVPE on desktop, YIN on web). There are no amplitude, sibilant or polyphonic tools, and no per-note transition *handles* on the canvas: glides are set with the Glide-in slider.
+     - Moving a note in time re-times its audio (WSOLA), but the scored pitch of the new take is re-tracked, not mapped, so a moved note scores where it now sits.
+     - Drum transcription is the simple classifier; toms, cymbals and flams need a model.
+     - basic-pitch on web runs on the WASM EP (the model is tiny). Native runs on ORT CPU; there's no CoreML (§4.2).
+     - Real-hardware listening checks (the edited takes' sound, and dragging feel on a trackpad) are still to do; the tests are synthetic.
 6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar.
 
 ---
