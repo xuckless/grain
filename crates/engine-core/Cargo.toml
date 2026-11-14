@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 realfft = "3"
+rubato = "0.16"
 serde = { version = "1", features = ["derive"] }
 ts-rs = "10"
 thiserror = "2"

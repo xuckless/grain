@@ -3,7 +3,6 @@
 use anyhow::{bail, Context, Result};
 use engine_core::audio::StereoAudio;
 use engine_core::project::SongAudio;
-use rubato::{FftFixedIn, Resampler};
 use std::fs::File;
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;
@@ -85,45 +84,13 @@ pub fn decode(path: &Path) -> Result<StereoAudio> {
 }
 
 pub fn resample(audio: &StereoAudio, sample_rate: u32) -> Result<StereoAudio> {
-    if audio.sample_rate == sample_rate {
-        return Ok(audio.clone());
-    }
-    const CHUNK: usize = 4096;
-    let mut resampler = FftFixedIn::<f32>::new(
-        audio.sample_rate as usize,
-        sample_rate as usize,
-        CHUNK,
-        2,
-        2,
-    )?;
-    let delay = resampler.output_delay();
-    let expected = (audio.len() as u64 * sample_rate as u64 / audio.sample_rate as u64) as usize;
-    let mut out = [
-        Vec::with_capacity(expected + CHUNK),
-        Vec::with_capacity(expected + CHUNK),
-    ];
-    let mut pos = 0;
-    while pos < audio.len() {
-        let end = (pos + CHUNK).min(audio.len());
-        let mut chunk = [
-            audio.left[pos..end].to_vec(),
-            audio.right[pos..end].to_vec(),
-        ];
-        chunk.iter_mut().for_each(|c| c.resize(CHUNK, 0.0));
-        let produced = resampler.process(&chunk, None)?;
-        for (o, p) in out.iter_mut().zip(produced) {
-            o.extend(p);
-        }
-        pos = end;
-    }
-    // Flush the filter delay with silence.
-    while out[0].len() < expected + delay {
-        let silence = vec![vec![0.0f32; CHUNK]; 2];
-        for (o, p) in out.iter_mut().zip(resampler.process(&silence, None)?) {
-            o.extend(p);
-        }
-    }
-    let [left, right] = out.map(|o| o[delay..delay + expected].to_vec());
+    let [left, right]: [Vec<f32>; 2] = engine_core::resample::resample(
+        &[&audio.left, &audio.right],
+        audio.sample_rate,
+        sample_rate,
+    )?
+    .try_into()
+    .expect("two channels in, two out");
     Ok(StereoAudio {
         sample_rate,
         left,

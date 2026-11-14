@@ -989,6 +989,7 @@ name = "engine-core"
 version = "0.1.0"
 dependencies = [
  "realfft",
+ "rubato",
  "serde",
  "thiserror 2.0.21",
  "ts-rs",
@@ -1016,7 +1017,6 @@ dependencies = [
  "hound",
  "ort",
  "rtrb",
- "rubato",
  "serde",
  "serde_json",
  "sha2",
