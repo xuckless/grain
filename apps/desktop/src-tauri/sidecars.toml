@@ -1,0 +1,51 @@
+# Third-party binaries bundled with the desktop app (AGENTS.md §4.1), fetched by
+# scripts/fetch_sidecars.py into binaries/ with Tauri's target-triple names and checked
+# against the pinned sha256 before use. Bundled only by `tauri build --config
+# tauri.bundle.conf.json`; plain builds find the tools on PATH instead.
+#
+# yt-dlp: official standalone release binaries; sha256 copied from that release's SHA2-256SUMS.
+# ffmpeg/ffprobe: FFmpeg publishes no binaries. eugeneware/ffmpeg-static is the one GitHub
+#   release that covers every target with a stable tag; sha256 are GitHub's own release-asset
+#   digests. FFmpeg is LGPL-2.1+, these static builds include GPL components; both are fine
+#   for this GPL-3.0 project. The matching LICENSE file is bundled next to the binaries.
+
+[yt-dlp]
+version = "2026.10.26"
+license = "Unlicense"
+source = "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26"
+
+[ffmpeg]
+version = "b6.1.1 release (its macOS binaries report FFmpeg 6.0)"
+license = "GPL-3.0 (FFmpeg LGPL-2.1+, static build with GPL components)"
+source = "https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1"
+
+# One entry per Rust target triple: url + sha256 for each bundled file.
+[target.aarch64-apple-darwin]
+yt-dlp = { url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_macos", sha256 = "0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa" }
+ffmpeg = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64", sha256 = "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584" }
+ffprobe = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64", sha256 = "bb2db6f5d8cef919da12fbf592119a987202a8c060a886f3cab091f9cab90b64" }
+license = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/darwin-arm64.LICENSE", sha256 = "cb48bf09a11f5fb576cddb0431c8f5ed0a60157a9ec942adffc13907cbe083f2" }
+
+[target.x86_64-apple-darwin]
+yt-dlp = { url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_macos", sha256 = "0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa" }
+ffmpeg = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64", sha256 = "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894" }
+ffprobe = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64", sha256 = "fa3add0ce901f7241abe0dfc0155d958fc834aca3f8ce61f87cc712ae669c1e0" }
+license = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/darwin-x64.LICENSE", sha256 = "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af" }
+
+[target.x86_64-pc-windows-msvc]
+yt-dlp = { url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe", sha256 = "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d" }
+ffmpeg = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64", sha256 = "04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00" }
+ffprobe = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-win32-x64", sha256 = "3a7e2dc003dc2cd1472827e4c7c4f056ae1ae0ae7c5bbc580c99b49827351ba4" }
+license = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.LICENSE", sha256 = "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903" }
+
+[target.x86_64-unknown-linux-gnu]
+yt-dlp = { url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux", sha256 = "767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795" }
+ffmpeg = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64", sha256 = "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99" }
+ffprobe = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-x64", sha256 = "4f231a1960d83e403d08f7971e271707bec278a9ae18e21b8b5b03186668450d" }
+license = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/linux-x64.LICENSE", sha256 = "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903" }
+
+[target.aarch64-unknown-linux-gnu]
+yt-dlp = { url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux_aarch64", sha256 = "e87e9533e89fe5889abaa21f5114dfe7756d6aa6219b83551add04d48b18e483" }
+ffmpeg = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-arm64", sha256 = "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce" }
+ffprobe = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-linux-arm64", sha256 = "d17ae9b4c297d48e2521ba14e417bb0537c6ff77c584cdbcd6bb0d8d0307a2e8" }
+license = { url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/linux-arm64.LICENSE", sha256 = "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903" }

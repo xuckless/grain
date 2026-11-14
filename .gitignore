@@ -220,3 +220,6 @@ stem-cache/
 
 # Local test audio (copyrighted; never commit)
 samples/
+
+# Desktop sidecars (scripts/fetch_sidecars.py)
+apps/desktop/src-tauri/binaries/
