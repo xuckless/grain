@@ -250,6 +250,40 @@ Generated audio always lands as **new, non-destructive tracks** and never overwr
 
 ---
 
+## 8.5 UI motion rules (mandatory for all UI work)
+
+All durations, easings and transitions live in **one** module, `packages/ui/src/motion.ts` (tokens + Svelte transition/action helpers), so the no-duplication rule applies here too. Components never hard-code a duration or easing. Visual design is still to come; these rules apply regardless of the look.
+
+| # | Rule | How |
+|---|------|-----|
+| 1 | **Ease-out for entrances** | Anything appearing uses an ease-out curve (`cubicOut`/`quartOut`). |
+| 2 | **Dropdowns at 150–250 ms** | Menus, selects and popovers open in 150–250 ms (token `dur.menu` = 200 ms). |
+| 3 | **Stagger list rows by 30 ms** | Lists (tracks, stems, songs, score rows) enter with `delay = index × 30 ms`, capped so a long list finishes in under 300 ms. |
+| 4 | **Scale to 0.97 on press** | Pressable elements scale to 0.97 while `:active` / pointer down. |
+| 5 | **Stretch moving knobs 12%** | Slider and toggle thumbs stretch up to 12% along the direction of travel while moving, then settle back. |
+| 6 | **Stagger as details settle** | When a panel opens, its container comes in first, then its inner details follow in a short stagger. |
+| 7 | **Arcs for object movement** | Objects that travel across the screen (e.g. a clip dropped onto another track) follow a slight curved path, not a straight line. |
+| 8 | **Pulse to confirm success** | Completed actions (stems ready, export saved, note hit) get one brief scale/opacity pulse. |
+| 9 | **Ease-in-out for moves** | Elements already on screen that move or resize use ease-in-out. |
+| 10 | **Start popovers at 0.95** | Popovers and menus enter from `scale: 0.95, opacity: 0`. |
+| 11 | **Enter from the trigger** | Popovers and menus scale from the element that opened them (`transform-origin` set to the trigger side). |
+| 12 | **Exit to the trigger** | They also close back toward that trigger. |
+| 13 | **No bounce on everyday UI** | No overshoot or spring bounce on routine controls. Bounce is only for rare celebratory moments (e.g. the final score reveal). |
+| 14 | **Don't tween while held** | During a drag or scrub (knobs, faders, playhead, clip drag), the element follows the pointer directly with no animation. Animation applies only after release. |
+| 15 | **Make exits 20% shorter** | Exit duration = entrance duration × 0.8, derived from tokens and never written separately. |
+| 16 | **Overlap old & new states** | State swaps (views, tabs, content) crossfade with old and new overlapping, never out-then-in with a blank gap. |
+| 17 | **Masks for reveals & colour** | Reveals (waveform drawing in, karaoke lyric wipe, colour changes) use clip-path or mask wipes rather than fades. |
+| 18 | **Crossfade icons + blur** | Icon swaps (play ↔ pause, mute on/off) crossfade with a slight scale and a 2–4 px blur. |
+| 19 | **Rubber band past bounds** | Dragging or scrolling past a limit (timeline start, fader max, zoom limits) gives with damped resistance, then springs back on release. |
+| 20 | **Reuse the same layoutId** | An element that appears in two places (song card → open project, clip → editor) animates between them as one shared element: Svelte `crossfade` with a shared key, or FLIP. Never fade one out and the other in. |
+
+**Also:**
+- Respect `prefers-reduced-motion`: collapse animations to opacity-only or instant.
+- Animate only `transform`, `opacity`, `filter` and `clip-path`; never layout properties.
+- Canvas views (timeline, karaoke lane) follow the same tokens in their own render loop. Rule 14 always applies to playhead scrubbing.
+
+---
+
 ## 9. Real-time audio rules (non-negotiable)
 
 On the audio thread (cpal callback / AudioWorklet `process()`):
