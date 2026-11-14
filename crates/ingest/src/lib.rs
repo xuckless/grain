@@ -12,13 +12,32 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// Both binaries looked up on `PATH`.
+    /// Both binaries looked up on [`search_path`].
     pub fn from_path() -> Self {
         Self {
             yt_dlp: "yt-dlp".into(),
             ffmpeg: "ffmpeg".into(),
         }
     }
+}
+
+/// Common package-manager bin directories. Apps launched from Finder get a minimal `PATH`
+/// (`/usr/bin:/bin:...`), so Homebrew-installed tools would otherwise be invisible.
+const EXTRA_BIN_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+/// The inherited `PATH` with [`EXTRA_BIN_DIRS`] appended. Set on the yt-dlp child, so it is
+/// used both to find yt-dlp itself and by yt-dlp to find ffmpeg and its JS runtime.
+fn search_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    for extra in EXTRA_BIN_DIRS {
+        let extra = PathBuf::from(extra);
+        if !dirs.contains(&extra) {
+            dirs.push(extra);
+        }
+    }
+    std::env::join_paths(dirs).expect("PATH entries contain no separator")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +119,7 @@ fn arguments(url: &str, out_dir: &Path, ffmpeg: &Path) -> Vec<String> {
 pub fn download(tools: &Tools, url: &str, out_dir: &Path) -> Result<Downloaded, IngestError> {
     let url = normalize_url(url)?;
     let output = Command::new(&tools.yt_dlp)
+        .env("PATH", search_path())
         .args(arguments(&url, out_dir, &tools.ffmpeg))
         .output()
         .map_err(|source| IngestError::Spawn {
