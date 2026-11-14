@@ -2,6 +2,7 @@
 //! timeline so frame `i` of a take lines up with frame `i` of the song, and kept with their pitch
 //! contour so they can be re-scored without their audio.
 
+use crate::edit::EditSource;
 use crate::pitch::{PitchFrame, PitchTrack};
 use crate::player::{MixParams, PlayerTrack, TrackMode};
 use crate::project::{PitchTracker, Project, ScoreError, TrackedPitch};
@@ -22,6 +23,8 @@ pub enum TakeSource {
     Imported { name: String },
     /// Take `from` run through auto-tune (AGENTS.md §7); the original is kept.
     Tuned { from: u32 },
+    /// A take or the vocal stem with pitch-editor edits rendered (AGENTS.md §7.1).
+    Edited { from: EditSource },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -146,6 +149,14 @@ pub fn add_take(
             .iter()
             .find(|t| t.id == *from)
             .map_or_else(|| format!("Take {id}"), |t| format!("{} (tuned)", t.name)),
+        TakeSource::Edited { from } => match from {
+            EditSource::VocalStem => "Vocal stem (edited)".to_string(),
+            EditSource::Take { id: from } => project
+                .takes
+                .iter()
+                .find(|t| t.id == *from)
+                .map_or_else(|| format!("Take {id}"), |t| format!("{} (edited)", t.name)),
+        },
         TakeSource::Recorded { .. } | TakeSource::Imported { .. } => format!("Take {id}"),
     };
     project.takes.push(Take {

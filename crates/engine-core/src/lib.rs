@@ -6,6 +6,7 @@
 pub mod align;
 pub mod audio;
 pub mod cue;
+pub mod edit;
 pub mod key;
 pub mod live;
 pub mod lyrics;
@@ -21,6 +22,7 @@ pub mod resample;
 pub mod score;
 pub mod shift;
 pub mod stft;
+pub mod stretch;
 pub mod take;
 pub mod tempo;
 pub mod tune;

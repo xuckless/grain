@@ -36,13 +36,42 @@ pub fn shift(
     hop_seconds: f64,
     formant_semitones: f32,
 ) -> Vec<f32> {
+    shift_with(signal, sample_rate, hop_seconds, |x| {
+        (at(correction, x), formant_semitones)
+    })
+}
+
+/// [`shift`] with the formant shift as a curve too (per-note formants, AGENTS.md §7.1):
+/// `formant[i]` semitones around time `i · hop_seconds`, 0 outside the curve.
+pub fn shift_curves(
+    signal: &[f32],
+    sample_rate: u32,
+    correction: &[f32],
+    formant: &[f32],
+    hop_seconds: f64,
+) -> Vec<f32> {
+    shift_with(signal, sample_rate, hop_seconds, |x| {
+        (at(correction, x), at(formant, x))
+    })
+}
+
+/// The shifter, with `curves(x)` giving (pitch, formant) semitones at fractional curve index `x`.
+fn shift_with(
+    signal: &[f32],
+    sample_rate: u32,
+    hop_seconds: f64,
+    curves: impl Fn(f64) -> (f32, f32),
+) -> Vec<f32> {
     let stft = stft_for(sample_rate);
     let mut vocoder = Vocoder::new(&stft, sample_rate);
-    let formant = 2f32.powf(formant_semitones / 12.0);
     let frame_seconds = stft.hop() as f64 / f64::from(sample_rate);
     stft.map(signal, |f, spectrum| {
-        let semitones = at(correction, f as f64 * frame_seconds / hop_seconds);
-        vocoder.frame(spectrum, 2f32.powf(semitones / 12.0), formant);
+        let (semitones, formant) = curves(f as f64 * frame_seconds / hop_seconds);
+        vocoder.frame(
+            spectrum,
+            2f32.powf(semitones / 12.0),
+            2f32.powf(formant / 12.0),
+        );
     })
 }
 

@@ -1,6 +1,7 @@
 //! Project model shared by every host, plus the song analysis run on import (AGENTS.md §4.4–4.5).
 
 use crate::audio::StereoAudio;
+use crate::edit::PitchEdit;
 use crate::key::{self, KeyCandidate};
 use crate::lyrics::ProjectLyrics;
 use crate::melody::{self, Note};
@@ -167,6 +168,9 @@ pub struct Project {
     /// projects saved before auto-tune existed.
     #[serde(default)]
     pub tune: TuneSettings,
+    /// Pitch-editor edit lists, at most one per source (see [`crate::edit`]).
+    #[serde(default)]
+    pub pitch_edits: Vec<PitchEdit>,
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
@@ -266,6 +270,7 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
         analysis,
         takes: Vec::new(),
         lyrics: ProjectLyrics::NotFetched,
+        pitch_edits: Vec::new(),
     }
 }
 
