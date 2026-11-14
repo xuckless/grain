@@ -16,6 +16,7 @@ pub mod peaks;
 pub mod pitch;
 pub mod player;
 pub mod project;
+pub mod psola;
 pub mod resample;
 pub mod score;
 pub mod shift;
