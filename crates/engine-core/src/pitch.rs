@@ -32,7 +32,8 @@ pub struct Estimate {
     pub aperiodicity: f32,
 }
 
-/// A reusable YIN estimator for frames of one fixed length.
+/// A reusable YIN estimator for frames of one fixed length. Every buffer is allocated up front,
+/// so [`Yin::estimate`] never allocates and can run on an audio thread (AGENTS.md §9).
 pub struct Yin {
     window: usize,
     forward: Arc<dyn RealToComplex<f32>>,
@@ -40,7 +41,12 @@ pub struct Yin {
     time: Vec<f32>,
     spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
+    /// The mean-removed frame.
+    frame: Vec<f32>,
+    /// Running sum of squares, `head[j] = Σ_{i<j} x_i²`.
+    head: Vec<f32>,
     diff: Vec<f32>,
+    cmnd: Vec<f32>,
 }
 
 impl Yin {
@@ -55,7 +61,10 @@ impl Yin {
             time: forward.make_input_vec(),
             spectrum: forward.make_output_vec(),
             scratch: vec![Complex32::default(); scratch_len],
+            frame: vec![0.0; window],
+            head: vec![0.0; window + 1],
             diff: vec![0.0; window],
+            cmnd: vec![1.0; window],
             forward,
             inverse,
         }
@@ -88,10 +97,11 @@ impl Yin {
 
         let mean = frame.iter().sum::<f32>() / w as f32;
         self.time.iter_mut().for_each(|v| *v = 0.0);
-        for (t, x) in self.time.iter_mut().zip(frame) {
+        for ((t, c), x) in self.time.iter_mut().zip(self.frame.iter_mut()).zip(frame) {
             *t = x - mean;
+            *c = *t;
         }
-        let x: Vec<f32> = self.time[..w].to_vec();
+        let x = &self.frame;
 
         // Linear autocorrelation r(τ) = IFFT(|FFT(x)|²) with zero padding to >= 2W.
         self.forward
@@ -106,7 +116,7 @@ impl Yin {
         let scale = 1.0 / self.time.len() as f32;
 
         // d(τ) = Σ_{j<W-τ} x_j² + Σ_{j>=τ} x_j² − 2 r(τ)
-        let mut head = vec![0.0f32; w + 1];
+        let head = &mut self.head;
         for j in 0..w {
             head[j + 1] = head[j] + x[j] * x[j];
         }
@@ -118,7 +128,8 @@ impl Yin {
         }
 
         // Cumulative mean normalized difference.
-        let mut cmnd = vec![1.0f32; tau_max + 1];
+        let cmnd = &mut self.cmnd[..=tau_max];
+        cmnd[0] = 1.0;
         let mut running = 0.0f32;
         for (tau, (c, d)) in cmnd.iter_mut().zip(&self.diff).enumerate().skip(1) {
             running += d;
