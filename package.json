@@ -1,0 +1,14 @@
+{
+  "name": "music-workstation",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "wasm": "wasm-pack build crates/engine-wasm --target web --release",
+    "types": "cargo test -q -p engine-core export_bindings",
+    "check": "pnpm -r check",
+    "build:web": "pnpm wasm && pnpm --filter web build",
+    "dev:web": "pnpm wasm && pnpm --filter web dev",
+    "dev:desktop": "pnpm --filter desktop tauri dev",
+    "build:desktop": "pnpm --filter desktop tauri build"
+  }
+}
