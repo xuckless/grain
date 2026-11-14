@@ -216,3 +216,6 @@ models/weights/
 apps/desktop/src-tauri/gen/
 crates/engine-wasm/pkg/
 stem-cache/
+
+# Local test audio (copyrighted; never commit)
+samples/

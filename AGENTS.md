@@ -232,6 +232,24 @@ Convert the reference f0 track into discrete notes, in the style of UltraStar or
    - **Offline high quality:** a phase-vocoder or spectral shifter with formant preservation (spectral envelope from cepstral liftering), or WORLD-style analysis and synthesis. Signalsmith Stretch (MIT) is the quality benchmark; we can use it natively through a `-sys` crate, and its official Web Audio/WASM build works for web prototypes. Rubber Band (GPL) is allowed because the project is GPL. It is native-only; check whether it builds for wasm before relying on it on the web.
 5. **Parameters exposed:** key, scale, retune speed, humanize, formant shift, mix (wet/dry), and an editable correction curve ("graphical mode", later).
 
+### 7.1 Pitch editor (Melodyne-style, simplified), milestone M4
+
+Offline, note-based editing of a **monophonic** vocal (the user's take or the vocal stem). It's less sophisticated than Melodyne: no polyphonic (DNA) editing and no amplitude or sibilant tools, but the core workflow is the same.
+
+1. **Analysis:** RMVPE f0 track plus note segmentation, reusing §6.2's segmentation code (one implementation, no copy). Each note is a "blob" that stores start, end, its pitch centre (median cents), drift (a slow curve), modulation (vibrato, the f0 detrended against drift), and its amplitude envelope for drawing.
+2. **Display:** a piano roll in the Pitch view. Blobs are drawn as dot-grain shapes in the stem's hue, sized by amplitude. The continuous f0 line sits on top, and scale lines come from the detected key.
+3. **Edits** (all non-destructive; stored as an edit list in the project):
+   - Drag a blob up or down: snap to a semitone or to the scale; Alt-drag moves it freely in cents.
+   - Drag it left or right, or drag its edges: move the note in time or stretch it.
+   - **Pitch centre** tool: % correction toward the target note, applied to the selection or the whole take.
+   - **Pitch drift** tool: % flattening of the slow drift inside a note.
+   - **Modulation** tool: % scaling of vibrato, from 0% (flat) up to 200%.
+   - **Split / merge** notes; **transition** handles that set how fast the pitch glides between neighbouring notes.
+   - **Formant** offset per note.
+   - Select all and "Correct pitch" applies centre plus drift correction in one step.
+4. **Rendering:** turn the edits into a time-varying pitch-ratio curve (plus a time map for timing edits), then run M3's offline high-quality shifter with formant preservation. Re-render only the edited regions, and crossfade at their boundaries.
+5. **Shared code:** the target-note and scale snapping is the same code as auto-tune §7 step 2. Live auto-tune is just this editor's "Correct pitch" applied in real time with a smoothing filter, so the two share one engine module.
+
 ---
 
 ## 8. F5: AI production
@@ -315,7 +333,23 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
 
 ---
 
-## 11. Build order
+## 11. Roadmap
+
+Keep this table current: update the Status column whenever a milestone moves.
+
+| Milestone | Scope | Status |
+|---|---|---|
+| **M0** engine skeleton | Cargo workspace, YIN, mixer, decode, CLI with prototype parity, wasm32 build | ✅ done |
+| **M1** F1 + timeline + F2 | Import (file + YouTube), HTDemucs, tempo/key, reference notes, timeline, offline scoring | ✅ mostly done (leftovers below) |
+| **UI** Grain design pass | Home → Session, blended title bar, view tabs, shared particle module, desktop save/open, recents | 🔄 in progress |
+| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | ⏭ next |
+| **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ⏭ next, alongside M1 leftovers |
+| **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | planned |
+| **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | planned |
+| **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | planned (needs M3's offline shifter) |
+| **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | planned |
+
+### Milestone details
 
 1. **M0, engine skeleton:** the Cargo workspace, plus `engine-core` with YIN, a WAV/symphonia loader and a simple mixer. It must run in a cpal CLI *and* an AudioWorklet demo. Port `main.py`'s comparison so the result can be checked against the prototype. CI builds for macOS, Windows, Linux and wasm32.
 2. **M1, first milestone: F1 + timeline + F2**
@@ -336,7 +370,7 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
      - No CI workflow yet.
 3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
 4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
-5. **M4, quality:** RoFormer vocal cascade, basic-pitch MIDI layers, and a model manager with opt-in NC downloads.
+5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up.
 6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar.
 
 ---
