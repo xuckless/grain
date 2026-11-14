@@ -194,10 +194,31 @@ const VOICING_THRESHOLD: f32 = 0.25;
 /// Frames quieter than this RMS (about -50 dBFS) are unvoiced.
 const SILENCE_RMS: f32 = 0.003;
 
+/// The [`track`] verdict for one analysis window: voiced (YIN over [`VOICE_RANGE`], loud and
+/// periodic enough) or not. Shared by the offline tracker and the live one (`crate::live`).
+pub(crate) fn frame_pitch(yin: &mut Yin, frame: &[f32], sample_rate: u32) -> PitchFrame {
+    let rms = (frame.iter().map(|v| v * v).sum::<f32>() / frame.len() as f32).sqrt();
+    match yin.estimate(frame, sample_rate, VOICE_RANGE) {
+        Some(e) if rms >= SILENCE_RMS && e.aperiodicity <= VOICING_THRESHOLD => {
+            PitchFrame::Voiced {
+                midi: hz_to_midi(e.hz),
+            }
+        }
+        _ => PitchFrame::Unvoiced,
+    }
+}
+
+/// Window and hop (samples) of [`track`] at `sample_rate`.
+pub(crate) fn track_geometry(sample_rate: u32) -> (usize, usize) {
+    (
+        (TRACK_WINDOW_SECONDS * sample_rate as f64) as usize,
+        (TRACK_HOP_SECONDS * sample_rate as f64) as usize,
+    )
+}
+
 /// Pitch contour of a mono signal using [`VOICE_RANGE`].
 pub fn track(signal: &[f32], sample_rate: u32) -> PitchTrack {
-    let window = (TRACK_WINDOW_SECONDS * sample_rate as f64) as usize;
-    let hop = (TRACK_HOP_SECONDS * sample_rate as f64) as usize;
+    let (window, hop) = track_geometry(sample_rate);
     let mut yin = Yin::new(window);
     let mut frame = vec![0.0f32; window];
     let count = signal.len() / hop + 1;
@@ -213,15 +234,7 @@ pub fn track(signal: &[f32], sample_rate: u32) -> PitchTrack {
                     0.0
                 };
             }
-            let rms = (frame.iter().map(|v| v * v).sum::<f32>() / window as f32).sqrt();
-            match yin.estimate(&frame, sample_rate, VOICE_RANGE) {
-                Some(e) if rms >= SILENCE_RMS && e.aperiodicity <= VOICING_THRESHOLD => {
-                    PitchFrame::Voiced {
-                        midi: hz_to_midi(e.hz),
-                    }
-                }
-                _ => PitchFrame::Unvoiced,
-            }
+            frame_pitch(&mut yin, &frame, sample_rate)
         })
         .collect();
     PitchTrack {

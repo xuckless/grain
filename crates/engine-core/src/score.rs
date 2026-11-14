@@ -154,6 +154,91 @@ pub struct ScoreReport {
     pub scores: Scores,
 }
 
+/// Pitch error of a sung frame against the reference, in cents (octave-folded when asked).
+fn error_cents(midi: f32, reference_midi: f32, octave: OctaveMode) -> f32 {
+    let c = 100.0 * (midi - reference_midi);
+    match octave {
+        OctaveMode::Fold => fold_octave(c),
+        OctaveMode::Strict => c,
+    }
+}
+
+/// §5's per-frame rule: how one sung frame compares with the reference frame at the same moment.
+/// The offline scorer and live karaoke (`crate::live`) both use it.
+pub fn compare_frame(
+    reference: PitchFrame,
+    user: PitchFrame,
+    settings: ScoreSettings,
+) -> FrameComparison {
+    match (reference, user) {
+        (PitchFrame::Voiced { midi: rm }, PitchFrame::Voiced { midi: um }) => {
+            let c = error_cents(um, rm, settings.octave);
+            if c.abs() <= settings.difficulty.tolerance_cents() {
+                FrameComparison::Hit { cents: c }
+            } else {
+                FrameComparison::Miss { cents: c }
+            }
+        }
+        (PitchFrame::Voiced { .. }, PitchFrame::Unvoiced) => FrameComparison::ReferenceOnly,
+        (PitchFrame::Unvoiced, PitchFrame::Voiced { .. }) => FrameComparison::UserOnly,
+        (PitchFrame::Unvoiced, PitchFrame::Unvoiced) => FrameComparison::Silent,
+    }
+}
+
+/// Counts of frame comparisons, and the frame-based scores derived from them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FrameTotals {
+    pub hit: u32,
+    pub miss: u32,
+    pub reference_only: u32,
+    pub user_only: u32,
+}
+
+impl FrameTotals {
+    pub fn of(frames: &[FrameComparison]) -> Self {
+        let mut t = Self::default();
+        frames.iter().for_each(|f| t.add(*f));
+        t
+    }
+
+    pub fn add(&mut self, frame: FrameComparison) {
+        match frame {
+            FrameComparison::Hit { .. } => self.hit += 1,
+            FrameComparison::Miss { .. } => self.miss += 1,
+            FrameComparison::ReferenceOnly => self.reference_only += 1,
+            FrameComparison::UserOnly => self.user_only += 1,
+            FrameComparison::Silent => {}
+        }
+    }
+
+    fn ratio(a: u32, b: u32) -> f32 {
+        if b > 0 {
+            100.0 * a as f32 / b as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// In-tune share of the frames where both sang (0–100).
+    pub fn pitch(&self) -> f32 {
+        Self::ratio(self.hit, self.hit + self.miss)
+    }
+
+    /// Share of the reference's voiced frames the user also sang (0–100).
+    pub fn coverage(&self) -> f32 {
+        Self::ratio(
+            self.hit + self.miss,
+            self.hit + self.miss + self.reference_only,
+        )
+    }
+
+    /// Share of the reference's voiced frames sung in tune (0–100): the live karaoke score.
+    pub fn in_tune(&self) -> f32 {
+        Self::ratio(self.hit, self.hit + self.miss + self.reference_only)
+    }
+}
+
 /// Offset (seconds) at which the take's pitch contour best agrees with the reference: each
 /// frame where both are voiced scores 1 at unison (octave-folded), falling to 0 at 100 cents.
 pub fn estimate_offset(reference: &PitchTrack, take: &PitchTrack) -> f64 {
@@ -226,31 +311,13 @@ pub fn score(
         frames: warp.iter().map(|j| shifted[*j]).collect(),
     };
     let tol = settings.difficulty.tolerance_cents();
-    let error = |midi: f32, reference_midi: f32| {
-        let c = 100.0 * (midi - reference_midi);
-        match settings.octave {
-            OctaveMode::Fold => fold_octave(c),
-            OctaveMode::Strict => c,
-        }
-    };
+    let error = |midi: f32, reference_midi: f32| error_cents(midi, reference_midi, settings.octave);
 
     let frames: Vec<FrameComparison> = reference
         .frames
         .iter()
         .zip(&user_pitch.frames)
-        .map(|(r, u)| match (r, u) {
-            (PitchFrame::Voiced { midi: rm }, PitchFrame::Voiced { midi: um }) => {
-                let c = error(*um, *rm);
-                if c.abs() <= tol {
-                    FrameComparison::Hit { cents: c }
-                } else {
-                    FrameComparison::Miss { cents: c }
-                }
-            }
-            (PitchFrame::Voiced { .. }, PitchFrame::Unvoiced) => FrameComparison::ReferenceOnly,
-            (PitchFrame::Unvoiced, PitchFrame::Voiced { .. }) => FrameComparison::UserOnly,
-            (PitchFrame::Unvoiced, PitchFrame::Unvoiced) => FrameComparison::Silent,
-        })
+        .map(|(r, u)| compare_frame(*r, *u, settings))
         .collect();
 
     let notes: Vec<NoteReport> = notes
@@ -261,10 +328,7 @@ pub fn score(
         })
         .collect();
 
-    let count = |f: fn(&FrameComparison) -> bool| frames.iter().filter(|c| f(c)).count() as f32;
-    let hits = count(|c| matches!(c, FrameComparison::Hit { .. }));
-    let compared = hits + count(|c| matches!(c, FrameComparison::Miss { .. }));
-    let reference_voiced = compared + count(|c| matches!(c, FrameComparison::ReferenceOnly));
+    let totals = FrameTotals::of(&frames);
     let sung: Vec<(f32, f32)> = notes
         .iter()
         .filter_map(|n| match n.result {
@@ -283,9 +347,7 @@ pub fn score(
             values.iter().sum::<f32>() / values.len() as f32
         }
     };
-    let ratio = |a: f32, b: f32| if b > 0.0 { 100.0 * a / b } else { 0.0 };
-    let pitch = ratio(hits, compared);
-    let coverage = ratio(compared, reference_voiced);
+    let (pitch, coverage) = (totals.pitch(), totals.coverage());
     let timing = mean(
         sung.iter()
             .map(|(o, _)| 100.0 * (1.0 - o.abs() / TIMING_ZERO_MS).max(0.0))

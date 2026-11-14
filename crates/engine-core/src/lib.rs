@@ -7,6 +7,8 @@ pub mod align;
 pub mod audio;
 pub mod cue;
 pub mod key;
+pub mod live;
+pub mod lyrics;
 pub mod melody;
 pub mod note;
 pub mod onset;

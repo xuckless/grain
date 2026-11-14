@@ -2,6 +2,7 @@
 
 use crate::audio::StereoAudio;
 use crate::key::{self, KeyCandidate};
+use crate::lyrics::ProjectLyrics;
 use crate::melody::{self, Note};
 use crate::onset;
 use crate::peaks::{peaks, SAMPLES_PER_PEAK};
@@ -158,6 +159,9 @@ pub struct Project {
     /// Sung takes, newest last (see [`crate::take`]).
     #[serde(default)]
     pub takes: Vec<Take>,
+    /// Karaoke lyrics, fetched on demand (see [`crate::lyrics`]).
+    #[serde(default)]
+    pub lyrics: ProjectLyrics,
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
@@ -254,6 +258,7 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
             .collect(),
         analysis: analyze(audio, reference),
         takes: Vec::new(),
+        lyrics: ProjectLyrics::NotFetched,
     }
 }
 
