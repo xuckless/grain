@@ -153,6 +153,7 @@ docs/research/     # longer notes, benchmarks, model evaluations
 - **STFT/iSTFT runs outside the ONNX graph,** in `engine-ml`, because ONNX's STFT op support is uneven, especially on WebGPU. Export the models without their spectral front-end.
 - **Caching:** cache stems by `sha256(source audio) + model id + version`. Never separate the same song twice.
 - **Quality:** report a reconstruction residual (mix minus the sum of stems) and per-stem energy, so the UI can mark near-empty stems such as "piano: likely absent".
+- **As built (M4a):** the user picks `SeparationQuality::Fast` (HTDemucs) or `BestVocals` per import. `BestVocals` is KimberleyJSN's Mel-Band RoFormer (MIT), exported by `scripts/export_melband_roformer.py` with STFT/iSTFT outside the graph. Its chunks step by `chunk − chunk/10` (overlap of exactly one fade) instead of the reference's half chunk, which needs about 45% fewer runs. Then HTDemucs runs on mix − vocals, and its vocal output folds into Other. Desktop only, on ORT CPU at about 13 s per 8 s chunk. CoreML split the graph into ~90 partitions and never finished; int8 dynamic quantization was no faster and lost accuracy. `scripts/reference_cascade.py` checks the port against the PyTorch code.
 
 ### 4.3 Transcription (stems → MIDI), optional layer
 - `basic-pitch` (Spotify, Apache-2.0, small, ONNX/TFLite) runs on each pitched stem and outputs editable MIDI regions.
@@ -342,8 +343,8 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M0** engine skeleton | Cargo workspace, YIN, mixer, decode, CLI with prototype parity, wasm32 build | ✅ done |
 | **M1** F1 + timeline + F2 | Import (file + YouTube), HTDemucs, tempo/key, reference notes, timeline, offline scoring | ✅ mostly done (leftovers below) |
 | **UI** Grain design pass | Home → Session, blended title bar, view tabs, shared particle module, desktop save/open, recents | 🔄 in progress |
-| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | ⏭ next |
-| **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ⏭ next, alongside M1 leftovers |
+| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | 🔄 DTW, RMVPE (desktop), CI file done; rest open (below) |
+| **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ✅ done (desktop, opt-in "Best vocals"; web is Fast-only) |
 | **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | planned |
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | planned |
 | **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | planned (needs M3's offline shifter) |
@@ -359,15 +360,13 @@ Keep this table current: update the Status column whenever a milestone moves.
    - Svelte multitrack timeline: waveforms, mute, solo, gain, pan, transport, and a hidden reference-vocal MIDI track.
    - Record or import a take, then alignment, offline scoring and the score graph from §5.
    - Project save and load: files on desktop, OPFS plus archive export on the web.
+   - **Done since:** RMVPE pitch on desktop and CLI (`Analysis.pitch_tracker` keeps reference and take on one tracker; web stays on YIN, since the model is 361 MB). Banded DTW after the coarse offset, with timing deviation reported apart from pitch. A CI workflow file.
    - **Still open in M1:**
-     - htdemucs_6s routes orchestral/choral material into `vocals` (matches Meta's PyTorch reference, so it is a model limit). The RoFormer vocal cascade (§4.2) is needed for non-pop music.
-     - Reference and take pitch use YIN, not RMVPE. Both sides use the same estimator, as §5 requires.
-     - Takes are aligned by a single offset, with no DTW.
-     - Takes can be imported but not recorded in the app.
+     - Takes can be imported but not recorded in the app (cpal / getUserMedia + AudioWorklet, Recording state machine, loopback latency calibration per device).
+     - No A/B take playback (click a note in the Score graph to hear reference vs take).
      - No web project persistence (OPFS/archive).
-     - No A/B take playback.
      - `yt-dlp`/`ffmpeg` are found on `PATH` instead of being bundled as sidecars.
-     - No CI workflow yet.
+     - The RoFormer cascade is slow on CPU (~7 min for a 4 min song, about 8 GB peak), so it is an opt-in "Best vocals" import. CoreML and int8 did not help (see §4.2). On eill-finale both the cascade and the PyTorch reference still keep nearly the whole song in Vocals: the "orchestral" material there reads as voice to both model families.
 3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
 4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
 5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up.

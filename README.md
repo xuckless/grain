@@ -8,7 +8,7 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 
 | Path | What |
 |---|---|
-| `crates/engine-core` | DSP and analysis: YIN, STFT, tempo, key, melody notes, scoring, mixer/transport, project model. Also builds for wasm32. |
+| `crates/engine-core` | DSP and analysis: YIN, STFT, resampling, tempo, key, melody notes, DTW alignment, scoring, mixer/transport, project model. Also builds for wasm32. |
 | `crates/engine-ml` | HTDemucs host processing (STFT outside the graph, chunking, overlap-add) |
 | `crates/engine-native` | Desktop host: decode, resample, cpal playback, ONNX Runtime, stem cache |
 | `crates/engine-wasm` | Web bindings (main thread + AudioWorklet) |
@@ -23,17 +23,24 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 You need Rust (with the `wasm32-unknown-unknown` target), `wasm-pack`, Node 22 and pnpm. YouTube import also needs `yt-dlp` and `ffmpeg` on `PATH`.
 
 ```bash
-python3 scripts/fetch_models.py   # separation weights → models/weights/ (optional; without them songs stay one mix track)
+python3 scripts/fetch_models.py   # weights → models/weights/ (optional; without them songs stay one mix track, pitch uses YIN)
 pnpm install
 ```
+
+`fetch_models.py` downloads HTDemucs and RMVPE. The Best-vocals model (Mel-Band RoFormer) is
+not hosted as ONNX: the script downloads its checkpoint to `models/build/` and prints the export
+command (`scripts/export_melband_roformer.py`, needs PyTorch). The desktop app reads weights from
+its data folder (`~/Library/Application Support/dev.workstation.app/models` on macOS); debug
+builds also read `models/weights/`.
 
 ## Run
 
 ```bash
 pnpm dev:web          # http://localhost:5173 (serves models/weights at /models)
 pnpm dev:desktop      # Tauri window
-cargo run --release -p music-cli -- import song.mp3 --model models/weights/htdemucs_6s.onnx
-cargo run --release -p music-cli -- score song.mp3 my-take.m4a --model models/weights/htdemucs_6s.onnx
+cargo run --release -p music-cli -- import song.mp3 --models models/weights [--quality best-vocals]
+cargo run --release -p music-cli -- score song.mp3 my-take.m4a --models models/weights
+cargo run --release -p music-cli -- pitch vocals.wav --models models/weights   # YIN vs RMVPE
 cargo run --release -p music-cli -- compare mine.wav artist.wav
 ```
 
@@ -45,7 +52,10 @@ cargo test --workspace
 cargo test -p engine-core --target wasm32-unknown-unknown   # engine-core DSP tests under Node
 pnpm types && pnpm wasm && pnpm check && pnpm build:web
 python3 scripts/fetch_models.py --check
+cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights)
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and Linux.
 
 The prototype is in `prototype/`. License: GPL-3.0.
 
