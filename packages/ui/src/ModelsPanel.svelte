@@ -1,11 +1,11 @@
 <script lang="ts">
-  import type { EngineHost, ModelEntry, ModelInfo } from "@workstation/engine-api";
-  import { dot, fit } from "./grain";
+  import type { EngineHost, GeneratorState, ModelEntry, ModelInfo } from "@workstation/engine-api";
+  import { dotFill } from "./grain";
   import { enter, popover } from "./motion";
   import { formatBytes, modelAction, modelSize, progress, stateLabel, withState, type Consent } from "./models";
   import type { Loading } from "./pitch";
+  import { generatorAction, generatorLabel } from "./produce";
   import { errorMessage } from "./state";
-  import { colour } from "./theme";
 
   /**
    * The model manager (AGENTS.md §10): every model in the manifest with its size, licence and
@@ -60,16 +60,32 @@
     await refresh();
   }
 
-  /** A dot bar lit up to `fraction`. */
-  function bar(canvas: HTMLCanvasElement, fraction: number) {
-    const draw = (f: number) => {
-      const w = canvas.clientWidth, h = 8;
-      const c = fit(canvas, w, h);
-      if (!c) return;
-      for (let x = 3; x <= w - 3; x += 6) dot(c, x, h / 2, 1.5, x / w <= f ? colour.text : colour.raised);
-    };
-    draw(fraction);
-    return { update: draw };
+  // ---- AI generation (the opt-in ACE-Step sidecar, AGENTS.md §8) ------------------------------
+
+  // svelte-ignore state_referenced_locally
+  const generator = host.producer.generator;
+  let gen = $state<GeneratorState>({ kind: "NotInstalled" });
+  type GenConsent = { kind: "none" } | { kind: "asking" };
+  let genConsent = $state<GenConsent>({ kind: "none" });
+  if (generator.kind === "available") void generator.state().then((s) => (gen = s));
+
+  async function install() {
+    genConsent = { kind: "none" };
+    if (generator.kind !== "available") return;
+    try {
+      gen = await generator.install((s) => (gen = s));
+    } catch (e) {
+      gen = { kind: "Failed", message: errorMessage(e), installed: false };
+    }
+  }
+
+  async function uninstall() {
+    if (generator.kind !== "available") return;
+    try {
+      gen = await generator.uninstall();
+    } catch (e) {
+      gen = { kind: "Failed", message: errorMessage(e), installed: true };
+    }
   }
 
   function keydown(e: KeyboardEvent) {
@@ -120,7 +136,7 @@
             </div>
             <p class="muted small">{m.task}</p>
             {#if p !== null}
-              <canvas class="bar" use:bar={p}></canvas>
+              <canvas class="bar" use:dotFill={p}></canvas>
             {/if}
             {#if entry.state.kind === "Failed"}
               <p class="small">{entry.state.message}</p>
@@ -134,6 +150,35 @@
           </li>
         {/each}
       </ul>
+    {/if}
+
+    {#if generator.kind === "available" && generator.where === "local"}
+      {@const action = generatorAction(gen)}
+      <section class="gen" in:enter>
+        <div class="head">
+          <span class="title">AI generation</span>
+          <span class="badge">MIT · opt-in</span>
+          <span class="spacer"></span>
+          <span class="mono small" class:muted={gen.kind !== "Ready"}>{generatorLabel(gen)}</span>
+          {#if action === "install"}
+            <button class="press primary" onclick={() => (genConsent = { kind: "asking" })}>Install AI generation (several GB)</button>
+          {:else if action === "retryInstall"}
+            <button class="press" onclick={() => (genConsent = { kind: "asking" })}>Retry install</button>
+          {:else if action === "uninstall"}
+            <button class="press quiet" onclick={uninstall}>Uninstall</button>
+          {/if}
+        </div>
+        <p class="muted small">ACE-Step 1.5 for backing tracks, single instruments and repainting in the Produce tab. It runs on this computer in a helper that starts for each generation and quits afterwards; it listens only on this computer, behind a one-time key.</p>
+        <p class="muted small">{generator.expectations}</p>
+        {#if gen.kind === "Failed"}<p class="small">{gen.message}</p>{/if}
+        {#if genConsent.kind === "asking"}
+          <div class="actions" transition:popover>
+            <span class="muted small">Downloads Python packages (PyPI, via uv) and ACE-Step's weights (Hugging Face). Needs uv installed.</span>
+            <button class="press quiet" onclick={() => (genConsent = { kind: "none" })}>Cancel</button>
+            <button class="press primary" onclick={install}>Install</button>
+          </div>
+        {/if}
+      </section>
     {/if}
 
     {#if consent.kind === "asking"}
@@ -240,6 +285,14 @@
     width: 100%;
     height: 8px;
     display: block;
+  }
+  .gen {
+    background: var(--c-raised);
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .consent {
     position: sticky;

@@ -28,7 +28,20 @@ export function dotBar(c: Ctx, x0: number, x1: number, y: number, col: string, r
   for (let x = x0; x <= x1; x += step) for (let k = 0; k < rows; k++) dot(c, x, y + (k - (rows - 1) / 2) * 4, r, col);
 }
 
-/** Sizes the canvas backing store to `w`×`h` CSS px (device pixel ratio capped at 2). */
+/** A row of dots across the canvas lit up to `fraction` (0–1): download progress, meters.
+ * `lit` defaults to the text colour. */
+export const dotFill: Action<HTMLCanvasElement, number | { fraction: number; lit: string }> = (canvas, value) => {
+  const draw = (v: number | { fraction: number; lit: string }) => {
+    const { fraction, lit } = typeof v === "number" ? { fraction: v, lit: colour.text } : v;
+    const w = canvas.clientWidth, h = 8;
+    const c = fit(canvas, w, h);
+    if (!c) return;
+    for (let x = 3; x <= w - 3; x += 6) dot(c, x, h / 2, 1.5, x / w <= fraction ? lit : colour.raised);
+  };
+  draw(value);
+  return { update: draw };
+};
+
 /** A horizontal input meter: `level` (0–1 peak) shown on a dB scale from −48 dB, lit dots
  * over a track of dim ones. */
 export function dotMeter(c: Ctx, w: number, h: number, level: number, lit: string, track: string): void {

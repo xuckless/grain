@@ -111,7 +111,11 @@
 
   function setMix(track: number, params: MixParams) {
     if (app.kind !== "session") return;
-    app.session.project.tracks[track].mix = params;
+    // Song tracks first, then takes (the player's order).
+    const p = app.session.project;
+    const target = track < p.tracks.length ? p.tracks[track] : p.takes[track - p.tracks.length];
+    if (!target) return;
+    target.mix = params;
     if (app.session.save.kind === "clean") app.session.save = { kind: "dirty" };
     void send({ kind: "SetMix", track, params });
   }

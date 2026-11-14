@@ -30,7 +30,7 @@ export const VIEWS: readonly ViewDef[] = [
   { id: "Karaoke", label: "Karaoke", availability: { kind: "ready" } },
   { id: "AutoTune", label: "Auto-tune", availability: { kind: "ready" } },
   { id: "Pitch", label: "Pitch", availability: { kind: "ready" } },
-  { id: "Produce", label: "Produce", availability: { kind: "unavailable", reason: "AI vocal enhancement and backing tracks, coming in M5." } },
+  { id: "Produce", label: "Produce", availability: { kind: "ready" } },
 ];
 
 /** `settings`: difficulty and octave folding, shared by Score and Karaoke. `backing`: what the

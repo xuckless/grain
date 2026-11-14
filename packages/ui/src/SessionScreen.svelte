@@ -2,6 +2,7 @@
   import type { EngineHost, MixParams, PlayerCommand, Project, TransportSnapshot } from "@workstation/engine-api";
   import AutoTuneView from "./AutoTuneView.svelte";
   import PitchView from "./PitchView.svelte";
+  import ProduceView from "./ProduceView.svelte";
   import Grain from "./Grain.svelte";
   import Icon from "./Icon.svelte";
   import KaraokeView from "./KaraokeView.svelte";
@@ -171,6 +172,8 @@
             <AutoTuneView {host} {session} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else if session.view === "Pitch"}
             <PitchView {host} {session} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
+          {:else if session.view === "Produce"}
+            <ProduceView {host} {session} {onMix} {onModels} />
           {:else if session.view === "Score"}
             <ScoreView {host} {session} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else}
