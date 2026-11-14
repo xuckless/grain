@@ -94,7 +94,8 @@ The same TypeScript UI runs in Tauri on desktop and in the browser on the web. T
 | Separation, light (HTDemucs, ~80 MB/model) | local `ort` (CPU; DirectML/CUDA EP where verified. **CoreML EP produces NaN on htdemucs_6s and is ~20× slower; do not enable until it passes the reference check**) | local WebGPU (WASM fallback, slow) | A 3–4 min song takes tens of seconds on GPU and several minutes on CPU |
 | Separation, best (BS/Mel-RoFormer, 200–600 MB) | local (GPU strongly recommended) | local WebGPU if the device can handle it, else unavailable | Optional remote backend |
 | Transcription (basic-pitch) | local | local | Small model, Apache-2.0 |
-| Generation (ACE-Step), heavy enhancement | local Python GPU sidecar (opt-in install) | unavailable unless the user configures a remote backend | Python-only, large VRAM |
+| Denoise (DeepFilterNet3, 8 MB) | local, tract on the CPU (vendored `deep-filter-rt`) | unavailable (no runtime yet, §8.1) | ~50× real time on an M-series CPU |
+| Generation (ACE-Step), heavy enhancement | local Python sidecar (opt-in install; MPS, else CPU) | unavailable unless the build configures a remote backend | Python-only, large memory |
 
 The engine exposes one trait, so features never depend on where a model runs:
 
@@ -342,6 +343,84 @@ Offline, note-based editing of a **monophonic** vocal (the user's take or the vo
 
 Generated audio always lands as **new, non-destructive tracks** and never overwrites anything. Store the model, the prompt and the seed with each generated clip so results can be reproduced.
 
+### 8.1 As built (M5)
+
+A **Produce** session view works on a *source* (a take or the vocal stem, the pitch editor's
+`EditSource`). Every result is a new take with a `TakeSource` that records how it was made:
+`Denoised { from, model }`, `Chained { from, preset, settings }`, `Harmony { from, interval }`,
+`Generated { request }` (task, prompt, seed, model, bpm, key). Sung results (cleaned, chained)
+start muted and are scored like any take; harmony and generated tracks start audible with level and
+pan defaults (`TakeSource::is_sung`). The view lists everything it made with play/level/pan. The
+host contract is `EngineHost.producer`.
+
+- **Denoise (DeepFilterNet3).** `deep-filter-rt` 0.2.0 (DeepFilterNet's own inference code,
+  MIT OR Apache-2.0) is vendored in `third_party/` with two changes (its `NOTICE.md`): the embedded
+  model is removed and `rust-version` lowered to 1.95 (it declares 1.96 but builds unchanged). The
+  model manager downloads upstream's `DeepFilterNet3_onnx.tar.gz` (pinned commit `d375b2d`,
+  sha256-checked, from raw.githubusercontent.com); `engine-native::denoise` reads its four members
+  straight from the archive (no extraction step in the manager). Upstream's README states code
+  *and* weights are MIT OR Apache-2.0. Takes are resampled to 48 kHz with rubato, processed in
+  10 ms hops, the 30 ms model delay is removed, and the result is resampled back; the attenuation
+  limit is 30 dB (full suppression sounds processed on singing). Measured on synthetic speech-like
+  audio in white noise (4 s, 44.1 kHz): **SNR 8.6 → 21.3 dB (+12.7 dB)** at **~0.02× real time**
+  (release build, M-series CPU). **Desktop only:** tract adds ~25 MB to a wasm build and the
+  ONNX graphs need DeepFilterNet's own pre/post-processing, so the web reports Unavailable.
+  **No live denoise:** tract allocates per inference, which §9 forbids on the audio thread.
+- **Vocal chain** (`engine-core::chain`, pure DSP, desktop and web): 24 dB/oct high-pass →
+  de-esser (a 6 kHz high-passed sidechain ducks the whole voice; a band split smeared phase) →
+  feed-forward compressor (5/100 ms) → low shelf 200 Hz, presence peak 3 kHz, air shelf 10 kHz
+  (RBJ biquads) → tanh saturation → Freeverb-style reverb and a feedback delay (a dotted eighth at
+  the song's tempo). `VocalChain` allocates its lines in `new` and nothing per block, so the player
+  runs it on the live monitor after auto-tune (`PlayerCommand::Chain { settings | null }`);
+  `render` runs it offline. `measure` reads integrated loudness (BS.1770-4 K-weighting with gates;
+  a −20 dBFS-peak 1 kHz sine reads −23.0 LUFS), sample peak, tilt (2–6 kHz over 150 Hz–1 kHz) and
+  sibilance (5–10 kHz over 150 Hz–5 kHz). `settings(preset, measures, bpm)`: every preset sets
+  the compressor threshold, de-esser threshold and output gain from the take's loudness (aiming
+  at −16 LUFS), and *Auto* additionally moves presence and air halfway towards a neutral tilt and
+  scales de-essing with the measured sibilance. Tests cover every stage, block-size independence,
+  the LUFS reference, and Auto on synthetic bright/dark/quiet/loud voices.
+- **Harmony** (`engine-core::harmony`): diatonic thirds and sixths (above and below) in the
+  song's key, per note of the source's melody (the reference notes for the vocal stem, segmented
+  notes for a take); out-of-scale notes keep their chromatic offset. The per-frame correction is
+  the note's interval, so the singer's inflections ride along, rendered by the formant-preserving
+  shifter (§7.2) with formant shift 0. Harmony tracks start at 60% level, panned ±0.35.
+  **Melody MIDI** exports the source's notes (or the harmony's) through `midi::smf_notes`.
+- **ACE-Step 1.5 sidecar** (`services/ml-sidecar/`). Code: github.com/ace-step/ACE-Step-1.5 (MIT,
+  pinned `ca1e85f`); weights on Hugging Face tagged MIT (`acestep-v15-base`, `Ace-Step1.5`). Every
+  task uses the **2B base** DiT: per ACE-Step's model zoo only *base* models support `lego`,
+  `complete` and `extract` (turbo and SFT don't), and XL-base (4B) needs ≥ 20 GB, so the earlier
+  "XL-base is required" note was wrong: any base model works. Tasks: vocal-to-backing = `complete`,
+  one instrument = `lego` (ACE-Step's track names), `repaint` over the song's mix between two
+  times. The 5 Hz LM is not used (`thinking=False`), so its weights aren't downloaded.
+  - **Install** (Models panel, opt-in "Install AI generation (several GB)"): copies the service
+    into app data, `uv sync --frozen --extra acestep` (PyPI + the pinned git source; the lock is
+    committed), then `python -I -m grain_sidecar download` (Hugging Face: base DiT 4.79 GB, VAE
+    0.34 GB, Qwen3-Embedding-0.6B 1.19 GB = **6.3 GB**). Python env with PyTorch ≈ 2 GB on macOS.
+    Needs `uv` on PATH (or Homebrew/`~/.local/bin`); it is not bundled.
+  - **Lifecycle** (`engine-core::generate::GeneratorState`): NotInstalled → Installing{step} →
+    Ready → Running → Ready; Failed{message, installed} (a failed run can retry, a failed install
+    must reinstall); Uninstalled → NotInstalled. The sidecar is started for one generation
+    (the venv's `python -I -m grain_sidecar serve`, not under `uv run`, so killing the child stops
+    it), bound to 127.0.0.1 on a free port, with a random 128-bit bearer token, and killed when the
+    generation ends: no Python stays resident.
+  - **HTTP contract** (`grain_sidecar/server.py`): `GET /health`; `POST /generate?task&prompt&seed&
+    bpm&key&duration[&track][&start&end]` with the conditioning WAV as the body, answering a WAV.
+    The query is built by `GenerationRequest::query` and WAVs by `engine-core::wav`, shared by
+    desktop and web. Results are resampled to the project rate and kept as one mono track.
+  - **Web:** Unavailable unless built with `VITE_GRAIN_GENERATION_URL` and
+    `VITE_GRAIN_GENERATION_TOKEN` (a sidecar run elsewhere; same contract).
+  - **Verified without the model:** pytest against the stub backend (token, WAV in/out, request
+    validation) and a Rust test that starts the real service with the stub backend through the
+    same spawn code, checks the token, runs complete/lego/repaint, passes an error through, and
+    checks the port is closed after stop. ACE-Step itself (weights, real generation, MPS speed and
+    memory) was **not** run during development.
+- **De-reverb: deferred.** No candidate has both a GPL-compatible licence and a light ONNX path:
+  - anvuew's de-reverb Mel-Band RoFormer (GPL-3.0, 913 MB; a 439 MB 256-dim variant). It is our
+    RoFormer architecture, so the export script and `engine-ml::roformer` should carry it, but it
+    is as slow as Best vocals on CPU. This is the likely next step, as an opt-in local build.
+  - Resemble-Enhance (MIT code and weights) is PyTorch/DeepSpeed only, so it would be another
+    sidecar task.
+
 ---
 
 ## 8.5 UI motion rules (mandatory for all UI work)
@@ -427,7 +506,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | ✅ done (UltraStar-style word timing; ML alignment later) |
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | ✅ done (see §7.2) |
 | **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | ✅ done (see §7.1.1, §4.3, §10) |
-| **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | planned |
+| **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | ✅ done (see §8.1; de-reverb deferred) |
 
 ### Milestone details
 
@@ -480,7 +559,41 @@ Keep this table current: update the Status column whenever a milestone moves.
      - Drum transcription is the simple classifier; toms, cymbals and flams need a model.
      - basic-pitch on web runs on the WASM EP (the model is tiny). Native runs on ORT CPU; there's no CoreML (§4.2).
      - Real-hardware listening checks (the edited takes' sound, and dragging feel on a trackpad) are still to do; the tests are synthetic.
-6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar.
+6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar. **Done** (see §8.1).
+   - **Checked:** engine tests (every chain stage, LUFS, Auto on synthetic bright/dark/quiet/loud
+     voices, the live chain in the player, harmony intervals including C major E → G, the generator
+     state machine, WAV codec), the DeepFilterNet SNR test (+12.7 dB), the sidecar's pytest
+     contract tests and the Rust lifecycle test against the stub, UI state tests, and the web build
+     in headless Chrome (Produce view: harmony and chain applied to an imported take).
+   - **Still open in M5:**
+     - ACE-Step has never generated in this repository: weights were not downloaded. The first
+       real install and run (time, memory, MPS stability, the `acestep` Python API as pinned) is
+       untested; the stub covers everything up to the model call.
+     - `uv` isn't bundled. Linux/Windows installs resolve ACE-Step's CUDA torch wheels from
+       download.pytorch.org (pinned in `uv.lock`), which is outside the model-host allow-list.
+     - Generated stereo is folded to mono (takes are mono); generation length is capped at 600 s
+       by ACE-Step.
+     - Clean-up is desktop only and offline only (see §8.1); de-reverb is deferred.
+     - The vocal chain's presets are tuned on synthetic voices; they need listening on real takes.
+       Live chain meters aren't shown (only the offline before/after).
+     - Harmony follows the detected key only (no chord awareness), and the score/auto-tune take
+       pickers also list harmony and generated tracks.
+
+### Everything still open (project-wide)
+
+- **Import/separation:** Deno for yt-dlp isn't bundled; Best vocals is slow on CPU (~7 min);
+  CoreML stays off (NaN); take pre-processing (§5.1) isn't applied.
+- **Scoring/karaoke:** ML forced alignment of words; SwiftF0 live; our own AEC; the live preview
+  compares YIN with RMVPE on desktop.
+- **Auto-tune/pitch editor:** real-hardware listening and latency checks; no amplitude, sibilant or
+  polyphonic tools; moved notes are re-tracked, not mapped; desktop monitoring needs matching
+  input/output rates.
+- **Models:** MuScriptor (gated, PyTorch-only) can't be fetched; the RoFormer is a local build;
+  drum transcription is a simple classifier.
+- **Produce:** the M5 list above (ACE-Step untested with real weights, `uv` not bundled, no web or
+  live denoise, de-reverb deferred).
+- **Design/licensing:** the Geist Pixel font's licence is unverified (README); the UI design pass
+  row stays "in progress"; minimum web hardware (§12) is undecided.
 
 ---
 

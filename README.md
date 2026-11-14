@@ -1,8 +1,25 @@
 # music_analysis
 
-A singing and music workstation: stem separation, a multitrack timeline and performance scoring.
-It ships as a desktop app (Tauri) and a web app (WASM), both built on one Rust engine.
-See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
+A singing and music workstation: stem separation, a multitrack timeline, performance scoring,
+live karaoke, auto-tune, a pitch editor and AI production. It ships as a desktop app (Tauri) and
+a web app (WASM), both built on one Rust engine. See [AGENTS.md](AGENTS.md) for the product spec
+and engineering rules.
+
+## What it does
+
+| Feature | Where | Desktop | Web |
+|---|---|---|---|
+| Import a file or a YouTube link, split it into stems (HTDemucs; optional Mel-Band RoFormer "Best vocals"), find tempo, key and the vocal melody | Home | ✓ | files only; Fast separation |
+| Multitrack mix: mute, solo, gain, pan, scrubbing; MIDI lanes from basic-pitch or the drum classifier, `.mid` export | Mix | ✓ | ✓ |
+| Record or import a take, score it against the melody (pitch, timing, stability), A/B a note | Score | ✓ | ✓ |
+| Live karaoke: LRCLIB lyrics, scrolling note lane, live pitch trail and streaks | Karaoke | ✓ | ✓ |
+| Auto-tune: live monitor (dry or tuned), offline high-quality render into a new take | Auto-tune | ✓ | ✓ |
+| Melodyne-style pitch editor: drag notes, stretch, split, vibrato, drift, formant; render as a take | Pitch | ✓ | ✓ |
+| Produce: DeepFilterNet clean-up, vocal chain (live and offline), harmonies, melody MIDI, ACE-Step backing | Produce | ✓ | chain, harmony, MIDI; generation only with a remote backend |
+| Model manager: download, verify and delete every model; opt-in licences; AI generation install | Models | ✓ | ✓ (no generation install) |
+
+Everything is non-destructive: renders, harmonies and generations are new takes or tracks that
+keep how they were made, saved with the song.
 
 ## Layout
 
@@ -17,6 +34,8 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 | `packages/engine-api` | TypeScript types generated from Rust, plus the host contract |
 | `packages/ui` | Shared Svelte 5 UI in the Grain design system: `theme.ts` (colours), `motion.ts` (all timing), `grain.ts` (every dot/particle drawing) |
 | `apps/web`, `apps/desktop` | The two hosts |
+| `services/ml-sidecar` | Opt-in Python sidecar (FastAPI, managed by `uv`) for ACE-Step 1.5 generation |
+| `third_party/deep-filter-rt` | Vendored DeepFilterNet3 runtime (MIT OR Apache-2.0; see its `NOTICE.md`) |
 
 ## Setup
 
@@ -143,6 +162,36 @@ In **Mix**, **MIDI** on a track transcribes it: pitched tracks with basic-pitch 
 lane under the track; **Export .mid** saves a Standard MIDI File at the song's tempo, and **Redo**
 transcribes again.
 
+## Produce
+
+Open a song and go to **Produce**. **Source** picks a take or the vocal stem. Nothing here changes
+the source: every action adds a new take or track that keeps its model, settings, prompt and seed,
+listed under **Made here** with its own play toggle, level and pan.
+
+- **Clean up** (desktop) removes room noise, hum and hiss with DeepFilterNet 3 (download
+  `deepfilternet3`, 8 MB, in **Models** first). It runs at 48 kHz on the CPU, about 50× faster than
+  real time, and makes "Take 2 (cleaned)". Noise is pulled down by at most 30 dB so breaths stay.
+- **Vocal chain:** high-pass → de-esser → compressor → EQ (low, presence, air) → saturation →
+  reverb and delay. **Preset** sets every control from the take's own level: *Auto* also measures
+  its brightness and sibilance and corrects them (a dark take gets more presence and air, a sibilant
+  one more de-essing); *Natural*, *Pop*, *R&B*, *Rock*, *Hip-hop* and *Ballad* keep their own tone.
+  Tweak any slider, switch on **Hear it live** to sing through it over the song (headphones), and
+  **Apply to take** to render "Take 2 (Pop chain)". The meters show loudness (LUFS), peak,
+  brightness and sibilance before and after.
+- **Harmony:** **Third above/below** and **Sixth above/below** sing a diatonic harmony in the song's
+  key from the singer's own voice (pitch-shifted with formants kept), as a new track that plays with
+  the song, quieter and panned. **Melody MIDI** exports the melody (or the last harmony) as `.mid`.
+- **Generate** (desktop, opt-in): ACE-Step 1.5 makes a **Backing for the vocal**, **One instrument**
+  (drums, bass, guitar, keys, strings, …) or **Repaints** a section of the mix, conditioned on the
+  song's tempo, key and the source vocal, plus your style prompt and a seed. Install it once from
+  **Models → Install AI generation**: it needs [`uv`](https://docs.astral.sh/uv/), then downloads
+  about 2 GB of Python packages (PyTorch) and 6.3 GB of weights (the 2B base model, its VAE and text
+  encoder) into the app's data folder. Each generation starts a local helper on 127.0.0.1 with a
+  one-time key, loads the model (MPS on Apple silicon, else CPU), and quits when done, so nothing
+  stays in memory. Expect minutes per song on Apple silicon and much longer on CPU. The web build
+  offers generation only when built with `VITE_GRAIN_GENERATION_URL` and
+  `VITE_GRAIN_GENERATION_TOKEN` pointing at a sidecar you run elsewhere.
+
 ## Checks
 
 ```bash
@@ -152,6 +201,7 @@ cargo test -p engine-core --target wasm32-unknown-unknown   # engine-core DSP te
 pnpm types && pnpm wasm && pnpm check && pnpm build:web
 pnpm --filter @workstation/ui test                   # recording, calibration, A/B, pitch editor, model manager
 python3 scripts/fetch_models.py --check
+(cd services/ml-sidecar && uv run --frozen python -I -m pytest -q tests)   # sidecar HTTP contract (stub backend)
 cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights); a real model download
 ```
 
