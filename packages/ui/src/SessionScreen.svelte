@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { EngineHost, MixParams, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
+  import AutoTuneView from "./AutoTuneView.svelte";
   import Grain from "./Grain.svelte";
   import Icon from "./Icon.svelte";
   import KaraokeView from "./KaraokeView.svelte";
@@ -156,6 +157,8 @@
         <div class="layer" transition:enter>
           {#if session.view === "Karaoke"}
             <KaraokeView {host} {session} {snapshot} />
+          {:else if session.view === "AutoTune"}
+            <AutoTuneView {host} {session} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else if session.view === "Score"}
             <ScoreView {host} {session} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else}

@@ -28,7 +28,7 @@ export const VIEWS: readonly ViewDef[] = [
   { id: "Mix", label: "Mix", availability: { kind: "ready" } },
   { id: "Score", label: "Score", availability: { kind: "ready" } },
   { id: "Karaoke", label: "Karaoke", availability: { kind: "ready" } },
-  { id: "AutoTune", label: "Auto-tune", availability: { kind: "unavailable", reason: "Pitch correction to the song's key, coming in M3." } },
+  { id: "AutoTune", label: "Auto-tune", availability: { kind: "ready" } },
   { id: "Pitch", label: "Pitch", availability: { kind: "unavailable", reason: "Note-by-note pitch editing, coming in M4." } },
   { id: "Produce", label: "Produce", availability: { kind: "unavailable", reason: "AI vocal enhancement and backing tracks, coming in M5." } },
 ];

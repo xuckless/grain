@@ -142,7 +142,7 @@ export function noteSpan(start: number, end: number): Span {
 }
 
 /** Player index of the vocal stem (or the unseparated mix). */
-function vocalTrack(project: Project): number {
+export function vocalTrack(project: Project): number {
   const i = project.tracks.findIndex((t) => t.source.kind === "Stem" && t.source.stem === "Vocals");
   return i >= 0 ? i : project.tracks.findIndex((t) => t.source.kind === "Mix");
 }
@@ -153,7 +153,7 @@ export function takeTrack(project: Project, id: number): number {
 }
 
 /** Copies `params`: project state may be a reactive proxy, which hosts can't post or clone. */
-function setMix(track: number, params: MixParams): PlayerCommand {
+export function setMix(track: number, params: MixParams): PlayerCommand {
   return { kind: "SetMix", track, params: { mode: params.mode, gain: params.gain, pan: params.pan } };
 }
 
