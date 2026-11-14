@@ -1,34 +1,74 @@
 <script lang="ts">
-  import type { EngineHost, ImportOutcome, MixParams, PlayerCommand, ScoreSettings, TransportSnapshot } from "@workstation/engine-api";
-  import Timeline from "./Timeline.svelte";
-  import TransportBar from "./TransportBar.svelte";
-  import ScorePanel from "./ScorePanel.svelte";
-  import { describeProgress, errorMessage, type AppState } from "./state";
+  import type { EngineHost, ImportOutcome, ImportStage, MixParams, PlayerCommand, ScoreSettings, TransportSnapshot } from "@workstation/engine-api";
+  import Grain from "./Grain.svelte";
+  import HomeScreen from "./HomeScreen.svelte";
+  import SessionScreen from "./SessionScreen.svelte";
+  import Toasts, { type Toast } from "./Toasts.svelte";
+  import { provideServices, type ToastTone } from "./context";
+  import { Burst } from "./grain";
   import { enter, installMotionTokens } from "./motion";
+  import { errorMessage, newSession, type AppState, type Session, type ViewId } from "./state";
+  import { installTheme } from "./theme";
 
   let { host }: { host: EngineHost } = $props();
 
-  let app: AppState = $state({ kind: "empty" });
-  let snapshot: TransportSnapshot = $state({ transport: { kind: "Stopped" }, sample_rate: 44100 });
-  let url = $state("");
+  installTheme();
 
-  async function runImport(start: (onStage: (s: import("@workstation/engine-api").ImportStage) => void) => Promise<ImportOutcome>) {
-    const previous = app;
-    app = { kind: "importing", progress: { kind: "Starting" } };
+  let app = $state<AppState>({ kind: "home", job: { kind: "idle" }, resume: { kind: "none" } });
+  let snapshot = $state<TransportSnapshot>({ transport: { kind: "Stopped" }, sample_rate: 44100 });
+  let toast = $state<Toast | null>(null);
+  let toastIds = 0;
+
+  const burst = new Burst();
+  function showToast(text: string, tone: ToastTone = "info") {
+    toast = { id: ++toastIds, text, tone };
+  }
+  provideServices({ burst, toast: showToast });
+
+  /** The loaded song, whether on screen or waiting behind Home. */
+  const loaded = $derived(app.kind === "session" ? app.session : app.resume.kind === "available" ? app.resume.session : null);
+
+  function enterSession(session: Session) {
+    app = { kind: "session", session };
+  }
+
+  async function runImport(start: (onStage: (s: ImportStage) => void) => Promise<ImportOutcome>) {
+    if (app.kind !== "home") return;
+    const resume = app.resume;
+    app = { kind: "home", job: { kind: "importing", progress: { kind: "Starting" } }, resume };
     try {
       const outcome = await start((stage) => {
-        if (app.kind === "importing") app = { kind: "importing", progress: stage };
+        if (app.kind === "home" && app.job.kind === "importing") app = { ...app, job: { kind: "importing", progress: stage } };
       });
       switch (outcome.kind) {
         case "imported":
-          app = { kind: "ready", project: outcome.project, score: { kind: "none" } };
+          enterSession(newSession(outcome.project));
+          showToast("Stems ready");
+          requestAnimationFrame(() => burst.fire(window.innerWidth / 2, 96));
           break;
         case "cancelled":
-          app = previous;
+          app = { kind: "home", job: { kind: "idle" }, resume };
           break;
       }
     } catch (e) {
-      app = { kind: "failed", message: errorMessage(e) };
+      // A failed import may have replaced the engine's song; nothing is left to resume.
+      app = { kind: "home", job: { kind: "failed", message: errorMessage(e) }, resume: { kind: "none" } };
+    }
+  }
+
+  function importUrl(url: string) {
+    const urlImport = host.urlImport;
+    if (urlImport.kind === "available") void runImport((s) => urlImport.importUrl(url, s));
+  }
+
+  async function openProject(id: string) {
+    if (app.kind !== "home" || host.projects.kind !== "available") return;
+    const store = host.projects;
+    app = { kind: "home", job: { kind: "opening" }, resume: { kind: "none" } };
+    try {
+      enterSession(newSession(await store.open(id)));
+    } catch (e) {
+      app = { kind: "home", job: { kind: "failed", message: errorMessage(e) }, resume: { kind: "none" } };
     }
   }
 
@@ -41,29 +81,58 @@
     }
   }
 
+  function back() {
+    if (app.kind !== "session") return;
+    if (snapshot.transport.kind === "Playing") void send({ kind: "Pause" });
+    app = { kind: "home", job: { kind: "idle" }, resume: { kind: "available", session: app.session } };
+  }
+
+  async function close() {
+    await host.close();
+    app = { kind: "home", job: { kind: "idle" }, resume: { kind: "none" } };
+  }
+
+  async function save() {
+    if (app.kind !== "session" || host.projects.kind !== "available") return;
+    const session = app.session;
+    session.save = { kind: "saving" };
+    try {
+      await host.projects.save();
+      session.save = { kind: "clean" };
+    } catch (e) {
+      session.save = { kind: "dirty" };
+      showToast(`Couldn't save: ${errorMessage(e)}`, "error");
+    }
+  }
+
   function setMix(track: number, params: MixParams) {
-    if (app.kind !== "ready") return;
-    app.project.tracks[track].mix = params;
+    if (app.kind !== "session") return;
+    app.session.project.tracks[track].mix = params;
+    if (app.session.save.kind === "clean") app.session.save = { kind: "dirty" };
     void send({ kind: "SetMix", track, params });
   }
 
   async function score(settings: ScoreSettings) {
-    if (app.kind !== "ready") return;
-    const ready = app;
-    ready.score = { kind: "scoring" };
+    if (app.kind !== "session") return;
+    const session = app.session;
+    session.score = { kind: "scoring" };
     try {
       const outcome = await host.scoreTake(settings);
-      ready.score = outcome.kind === "scored" ? { kind: "scored", report: outcome.report } : { kind: "none" };
+      session.score = outcome.kind === "scored" ? { kind: "scored", report: outcome.report } : { kind: "none" };
     } catch (e) {
-      ready.score = { kind: "failed", message: errorMessage(e) };
+      session.score = { kind: "failed", message: errorMessage(e) };
     }
+  }
+
+  function setView(view: ViewId) {
+    if (app.kind === "session") app.session.view = view;
   }
 
   $effect(() => installMotionTokens());
 
   // Poll the engine's transport once per animation frame while a song is loaded.
   $effect(() => {
-    if (app.kind !== "ready") return;
+    if (!loaded) return;
     let alive = true;
     const tick = async () => {
       if (!alive) return;
@@ -81,169 +150,183 @@
   });
 </script>
 
-<main>
-  <header>
-    <h1>Workstation</h1>
-    <button onclick={() => runImport((s) => host.importFile(s))} disabled={app.kind === "importing"}>Open song…</button>
-    {#if host.urlImport.kind === "available"}
-      {@const urlImport = host.urlImport}
-      <form
-        onsubmit={(e) => {
-          e.preventDefault();
-          void runImport((s) => urlImport.importUrl(url, s));
-        }}
-      >
-        <input placeholder="YouTube link" bind:value={url} />
-        <button type="submit" disabled={app.kind === "importing" || url.trim() === ""}>Import</button>
-      </form>
-    {/if}
-  </header>
-
-  <!-- State swaps crossfade with old and new layers overlapping in one grid cell (motion rule 16). -->
-  <div class="stage">
+<!-- Screens crossfade with old and new overlapping in one grid cell (rule 16). -->
+<div class="app">
   {#key app.kind}
-  <div class="layer" transition:enter>
-  {#if app.kind === "empty"}
-    <p class="hint">Open an audio file{host.urlImport.kind === "available" ? " or paste a YouTube link" : ""} to split it into stems.</p>
-  {:else if app.kind === "importing"}
-    <p class="hint">{describeProgress(app.progress)}</p>
-  {:else if app.kind === "failed"}
-    <p class="error">{app.message}</p>
-  {:else}
-    <TransportBar project={app.project} {snapshot} onCommand={send} />
-    {#if app.project.analysis.reference_source === "FullMix"}
-      <p class="warning">No separation model installed: the reference melody was tracked on the full mix and will be unreliable.</p>
-    {/if}
-    <Timeline project={app.project} {snapshot} onSeek={(frame) => send({ kind: "Seek", frame })} onMix={setMix} />
-    <ScorePanel project={app.project} score={app.score} onScore={score} onSeek={(frame) => send({ kind: "Seek", frame })} sampleRate={snapshot.sample_rate} />
-  {/if}
-  </div>
+    <div class="layer" transition:enter>
+      {#if app.kind === "home"}
+        <HomeScreen
+          {host}
+          job={app.job}
+          resume={app.resume}
+          onImportFile={() => runImport((s) => host.importFile(s))}
+          onImportUrl={importUrl}
+          onOpen={openProject}
+          onResume={() => app.kind === "home" && app.resume.kind === "available" && enterSession(app.resume.session)}
+          onDismiss={() => app.kind === "home" && (app = { ...app, job: { kind: "idle" } })}
+        />
+      {:else}
+        <SessionScreen
+          {host}
+          session={app.session}
+          {snapshot}
+          onBack={back}
+          onClose={close}
+          onSave={save}
+          onCommand={send}
+          onMix={setMix}
+          onScore={score}
+          onView={setView}
+        />
+      {/if}
+    </div>
   {/key}
-  </div>
-</main>
+</div>
+
+<div class="overlay" aria-hidden="true"><Grain behaviour={burst} style="width: 100%; height: 100%" /></div>
+<Toasts {toast} />
 
 <style>
-  :global(:root) {
-    --bg: #f6f6f4;
-    --panel: #ffffff;
-    --text: #1c1c1e;
-    --muted: #6b6b70;
-    --line: #dcdcd8;
-    --accent: #3b6fd8;
-    --good: #2f9e57;
-    --bad: #d24b3e;
-    --warn: #c98a1b;
-    --wave: #7d8aa6;
-    color-scheme: light dark;
-  }
-  @media (prefers-color-scheme: dark) {
-    :global(:root) {
-      --bg: #151517;
-      --panel: #1f1f22;
-      --text: #ececee;
-      --muted: #9a9aa2;
-      --line: #34343a;
-      --accent: #6d9bff;
-      --good: #4cc47a;
-      --bad: #f06b5e;
-      --warn: #e5ad45;
-      --wave: #8e9bbb;
-    }
-  }
+  :global(html),
   :global(body) {
     margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 14px/1.4 system-ui, sans-serif;
+    height: 100%;
+    background: var(--c-ground);
+    color: var(--c-text);
+    color-scheme: dark;
+    font-family: "Geist Variable", Geist, "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 22px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
   }
-  :global(button),
-  :global(input),
-  :global(select) {
+  :global(button) {
     font: inherit;
     color: inherit;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 4px 10px;
+    border: 0;
+    margin: 0;
+    cursor: pointer;
+    background: none;
   }
   :global(button:disabled) {
-    opacity: 0.5;
+    cursor: default;
+    background: var(--c-surface) !important;
+    color: var(--c-disabled) !important;
   }
-  /* Motion rule 4: press feedback. Timing comes from motion.ts tokens. */
-  :global(button) {
-    transition: transform var(--motion-press-dur) var(--motion-ease-enter);
+  :global(button:focus-visible),
+  :global(input:focus-visible) {
+    outline: 2px solid var(--c-text);
+    outline-offset: 2px;
   }
-  :global(button:active:not(:disabled)) {
-    transform: scale(var(--motion-press-scale));
+  /* Rule 4: press feedback. Durations and curves come from motion.ts tokens. */
+  :global(.press) {
+    transition:
+      transform var(--dur-press) var(--ease-out),
+      background-color var(--dur-colour) var(--ease-out),
+      color var(--dur-colour) var(--ease-out);
   }
-  /* Motion rule 5: range thumbs stretch along their travel (see knobStretch in motion.ts). */
-  :global(input[type="range"]) {
-    appearance: none;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--line);
-    border: none;
-    padding: 0;
+  :global(.press:active:not(:disabled)) {
+    transform: scale(var(--press-scale));
   }
-  :global(input[type="range"]::-webkit-slider-thumb) {
-    appearance: none;
-    width: 12px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--accent);
-    transform: scaleX(var(--knob-stretch, 1));
-    transition: transform var(--knob-settle, 0ms);
+  :global(.primary) {
+    background: var(--c-text);
+    color: var(--c-ground);
+    font-weight: 500;
   }
-  :global(input[type="range"]::-moz-range-thumb) {
-    width: 12px;
-    height: 12px;
-    border: none;
-    border-radius: 6px;
-    background: var(--accent);
-    transform: scaleX(var(--knob-stretch, 1));
-    transition: transform var(--knob-settle, 0ms);
+  :global(.raised) {
+    background: var(--c-raised);
   }
-  main {
-    padding: 16px;
+  :global(.quiet) {
+    background: transparent;
+  }
+  :global(.quiet:hover:not(:disabled)) {
+    background: var(--c-surface);
+  }
+  :global(.big) {
+    height: 44px;
+    padding: 0 20px;
+    border-radius: 12px;
+  }
+  :global(.primary.big),
+  :global(.raised.big) {
+    font-size: 15px;
+  }
+  :global(.icon) {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
     display: flex;
-    flex-direction: column;
-    gap: 12px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex: none;
   }
-  .stage {
+  :global(.field) {
+    height: 44px;
+    box-sizing: border-box;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--c-surface);
+    color: var(--c-text);
+    font: inherit;
+    transition: background-color var(--dur-colour) var(--ease-out);
+  }
+  :global(.field::placeholder) {
+    color: var(--c-muted);
+  }
+  :global(.field:focus) {
+    background: var(--c-raised);
+  }
+  :global(.muted) {
+    color: var(--c-muted);
+  }
+  :global(.mono) {
+    font-family: "Geist Mono Variable", "Geist Mono", ui-monospace, monospace;
+    font-size: 13px;
+    line-height: 18px;
+  }
+  :global(.pixel) {
+    font-family: "Geist Pixel Circle", "Geist Variable", sans-serif;
+  }
+  :global(.sr) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* Label swaps rise in with a short blur (design: Components → Play and confirm). */
+  :global(.swap) {
+    display: inline-block;
+    animation: swap-in var(--dur-detail) var(--ease-out);
+  }
+  @keyframes -global-swap-in {
+    from {
+      opacity: 0;
+      filter: blur(3px);
+      transform: translateY(3px);
+    }
+    to {
+      opacity: 1;
+      filter: blur(0);
+      transform: none;
+    }
+  }
+  .app {
     display: grid;
+    height: 100vh;
   }
   .layer {
     grid-area: 1 / 1;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
     min-width: 0;
+    min-height: 0;
   }
-  header {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  header form {
-    display: flex;
-    gap: 6px;
-  }
-  header input {
-    width: min(360px, 60vw);
-  }
-  h1 {
-    font-size: 18px;
-    margin: 0 8px 0 0;
-  }
-  .hint {
-    color: var(--muted);
-  }
-  .error {
-    color: var(--bad);
-  }
-  .warning {
-    color: var(--warn);
-    margin: 0;
+  .overlay {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 60;
   }
 </style>

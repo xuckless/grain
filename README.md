@@ -15,7 +15,7 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 | `crates/ingest` | YouTube audio through a local `yt-dlp` + `ffmpeg` (desktop only) |
 | `crates/cli` | `music` CLI: `compare` (port of `prototype/main.py`), `import`, `score` |
 | `packages/engine-api` | TypeScript types generated from Rust, plus the host contract |
-| `packages/ui` | Shared Svelte 5 UI |
+| `packages/ui` | Shared Svelte 5 UI in the Grain design system: `theme.ts` (colours), `motion.ts` (all timing), `grain.ts` (every dot/particle drawing) |
 | `apps/web`, `apps/desktop` | The two hosts |
 
 ## Setup
@@ -48,3 +48,9 @@ python3 scripts/fetch_models.py --check
 ```
 
 The prototype is in `prototype/`. License: GPL-3.0.
+
+## Fonts
+
+Geist and Geist Mono are bundled from `@fontsource-variable/*` (SIL OFL 1.1). `packages/ui/src/assets/GeistPixelCircle.woff2`
+(wordmark, hero and score reveal only) comes from the Grain design canvas. It's believed to be Vercel's Geist Pixel
+(Geist family, OFL 1.1), but that licence is **unverified**. Confirm it before distributing a build.

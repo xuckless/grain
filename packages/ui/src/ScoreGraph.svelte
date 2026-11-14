@@ -1,38 +1,44 @@
 <script lang="ts">
   import type { FrameComparison, NoteResult, Project, ScoreReport } from "@workstation/engine-api";
+  import { dot, dotBar, fit } from "./grain";
   import { reveal } from "./motion";
+  import { colour, feedback } from "./theme";
 
+  /**
+   * Where the take was sharp, flat, early or late: reference notes as dotted bars coloured by how
+   * they were sung, the singer's pitch as grains, and a cents strip below. Click to play from a note.
+   */
   let { project, report, onSeek }: { project: Project; report: ScoreReport; onSeek: (seconds: number) => void } = $props();
 
-  const ROLL = 260;
-  const STRIP = 70;
+  const ROLL = 280;
+  const STRIP = 72;
   /** Cents shown at the top/bottom of the error strip. */
   const STRIP_RANGE = 100;
+  /** A missed frame within this many cents still reads as "near". */
+  const NEAR_CENTS = 100;
+  /** Fraction of a note sung in tune for it to count as a hit. */
+  const HIT_RATIO = 0.6;
 
-  let canvas: HTMLCanvasElement | undefined = $state();
-  let width = $state(800);
+  let canvas = $state<HTMLCanvasElement | undefined>();
+  let width = $state(0);
   const height = ROLL + STRIP;
   const duration = $derived(project.frames / project.sample_rate);
 
-  function css(name: string): string {
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  }
-
-  function noteColor(result: NoteResult, good: string, warn: string, bad: string): string {
+  function noteColour(result: NoteResult): string {
     switch (result.kind) {
       case "Missed":
-        return bad;
+        return feedback.miss;
       case "Sung":
-        return result.hit_ratio >= 0.6 ? good : warn;
+        return result.hit_ratio >= HIT_RATIO ? feedback.hit : feedback.near;
     }
   }
 
-  function frameColor(f: FrameComparison, good: string, bad: string): string | undefined {
+  function frameColour(f: FrameComparison): string | undefined {
     switch (f.kind) {
       case "Hit":
-        return good;
+        return feedback.hit;
       case "Miss":
-        return bad;
+        return Math.abs(f.cents) <= NEAR_CENTS ? feedback.near : feedback.miss;
       case "ReferenceOnly":
       case "UserOnly":
       case "Silent":
@@ -41,59 +47,36 @@
   }
 
   $effect(() => {
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
-    const g = canvas.getContext("2d");
-    if (!g) return;
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, width, height);
-    const [line, muted, good, warn, bad] = ["--line", "--muted", "--good", "--warn", "--bad"].map(css);
-
+    if (!canvas || width <= 0) return;
+    const c = fit(canvas, width, height);
+    if (!c) return;
     const notes = report.notes.map((n) => n.note);
+    if (notes.length === 0) return;
     const lo = Math.min(...notes.map((n) => n.midi)) - 3;
     const hi = Math.max(...notes.map((n) => n.midi)) + 3;
     const x = (t: number) => (t / duration) * width;
-    const y = (midi: number) => ROLL - ((midi - lo) / (hi - lo)) * ROLL;
-    const rowHeight = ROLL / (hi - lo);
+    const y = (midi: number) => ROLL - 8 - ((midi - lo) / (hi - lo)) * (ROLL - 16);
+    const rows = Math.max(1, Math.floor((ROLL - 16) / (hi - lo) / 4));
 
-    // Semitone grid; MIDI multiples of 12 are C.
-    g.font = "10px system-ui";
-    for (let m = Math.ceil(lo); m <= hi; m++) {
-      g.fillStyle = m % 12 === 0 ? muted : line;
-      g.fillRect(0, y(m), width, 1);
-      if (m % 12 === 0) g.fillText(`MIDI ${m}`, 2, y(m) - 2);
-    }
+    // Octave guides (every C) as faint dotted lines.
+    for (let m = Math.ceil(lo); m <= hi; m++) if (m % 12 === 0) for (let gx = 0; gx < width; gx += 8) dot(c, gx, y(m), 0.6, colour.disabled);
 
-    // Reference notes colored by how they were sung.
-    for (const n of report.notes) {
-      g.fillStyle = noteColor(n.result, good, warn, bad);
-      g.globalAlpha = 0.35;
-      g.fillRect(x(n.note.start), y(n.note.midi) - rowHeight / 2, Math.max(2, x(n.note.end) - x(n.note.start)), rowHeight);
-    }
-    g.globalAlpha = 1;
+    for (const n of report.notes) dotBar(c, x(n.note.start), Math.max(x(n.note.start), x(n.note.end)), y(n.note.midi), noteColour(n.result), 0.8, rows, 4);
 
-    // The user's pitch (already shifted onto the reference timeline).
     report.user_pitch.frames.forEach((f, i) => {
       if (f.kind !== "Voiced") return;
-      const c = frameColor(report.frames[i], good, bad);
-      g.fillStyle = c ?? muted;
-      g.fillRect(x(i * report.hop_seconds), y(f.midi) - 1, 2, 2);
+      dot(c, x(i * report.hop_seconds), y(f.midi), 1.3, frameColour(report.frames[i]) ?? colour.muted);
     });
 
-    // Cents error strip.
-    const top = ROLL + 8;
-    const mid = top + (STRIP - 8) / 2;
-    g.fillStyle = line;
-    g.fillRect(0, mid, width, 1);
-    g.fillStyle = muted;
-    g.fillText(`±${STRIP_RANGE}¢`, 2, top + 9);
+    const mid = ROLL + STRIP / 2;
+    for (let gx = 0; gx < width; gx += 8) dot(c, gx, mid, 0.6, colour.disabled);
+    const half = STRIP / 2 - 6;
     report.frames.forEach((f, i) => {
       if (f.kind !== "Hit" && f.kind !== "Miss") return;
-      g.fillStyle = f.kind === "Hit" ? good : bad;
-      const h = (Math.max(-STRIP_RANGE, Math.min(STRIP_RANGE, f.cents)) / STRIP_RANGE) * ((STRIP - 8) / 2);
-      g.fillRect(x(i * report.hop_seconds), mid - Math.max(0, h), 1, Math.max(1, Math.abs(h)));
+      const h = (Math.max(-STRIP_RANGE, Math.min(STRIP_RANGE, f.cents)) / STRIP_RANGE) * half;
+      const fx = x(i * report.hop_seconds);
+      const col = frameColour(f) ?? colour.muted;
+      for (let k = 0; k <= Math.abs(h); k += 3) dot(c, fx, mid - Math.sign(h) * k, 0.8, col);
     });
   });
 
@@ -105,19 +88,50 @@
   }
 </script>
 
-<div bind:clientWidth={width}>
-  <canvas bind:this={canvas} use:reveal={report} style:width="{width}px" style:height="{height}px" onclick={click}></canvas>
+<div class="graph" bind:clientWidth={width}>
+  <button class="canvas-button" onclick={click} aria-label="Pitch graph: click a note to play from it">
+    <canvas bind:this={canvas} use:reveal={report} style:height="{height}px"></canvas>
+  </button>
+  <div class="legend">
+    <span><i style:background={feedback.hit}></i>Hit</span>
+    <span><i style:background={feedback.near}></i>Near</span>
+    <span><i style:background={feedback.miss}></i>Miss</span>
+    <span class="muted">Strip: cents sharp (up) or flat (down), ±{STRIP_RANGE}¢. Click a note to play from it.</span>
+  </div>
 </div>
-<p class="legend">Bars: reference notes (green = hit, yellow = partly, red = missed). Dots: your pitch. Strip: cents sharp (up) / flat (down). Click a note to play from it.</p>
 
 <style>
-  canvas {
+  .graph {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .canvas-button {
+    padding: 0;
+    background: none;
     display: block;
+    width: 100%;
     cursor: pointer;
   }
+  canvas {
+    display: block;
+    width: 100%;
+  }
   .legend {
-    color: var(--muted);
-    font-size: 12px;
-    margin: 0;
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    line-height: 18px;
+  }
+  .legend span {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .legend i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
   }
 </style>
