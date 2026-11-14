@@ -14,6 +14,7 @@ start_seconds: number,
  */
 pitch_tracker: PitchTracker, pitch: PitchTrack, 
 /**
- * Takes are muted in normal playback; A/B auditions solo them.
+ * Sung takes are muted in normal playback (A/B auditions solo them); harmony and
+ * generated tracks play with the song.
  */
 mix: MixParams, };

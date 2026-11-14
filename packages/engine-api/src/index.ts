@@ -27,6 +27,19 @@ import type { ModelEntry } from "./generated/ModelEntry";
 import type { ModelState } from "./generated/ModelState";
 import type { TrackSource } from "./generated/TrackSource";
 import type { TranscribeOutcome } from "./generated/TranscribeOutcome";
+import type { ChainApplied } from "./generated/ChainApplied";
+import type { ChainPick } from "./generated/ChainPick";
+import type { ChainPreset } from "./generated/ChainPreset";
+import type { ChainReport } from "./generated/ChainReport";
+import type { ChainSettings } from "./generated/ChainSettings";
+import type { DenoiseOutcome } from "./generated/DenoiseOutcome";
+import type { GenerationRequest } from "./generated/GenerationRequest";
+import type { GenerationTask } from "./generated/GenerationTask";
+import type { GeneratorEvent } from "./generated/GeneratorEvent";
+import type { GeneratorState } from "./generated/GeneratorState";
+import type { Instrument } from "./generated/Instrument";
+import type { Interval } from "./generated/Interval";
+import type { Measures } from "./generated/Measures";
 
 export type { Accompaniment } from "./generated/Accompaniment";
 export type { Analysis } from "./generated/Analysis";
@@ -98,6 +111,19 @@ export type { MidiNote } from "./generated/MidiNote";
 export type { Transcription } from "./generated/Transcription";
 export type { TranscriptionMethod } from "./generated/TranscriptionMethod";
 export type { TranscribeOutcome } from "./generated/TranscribeOutcome";
+export type { ChainApplied } from "./generated/ChainApplied";
+export type { ChainPick } from "./generated/ChainPick";
+export type { ChainPreset } from "./generated/ChainPreset";
+export type { ChainReport } from "./generated/ChainReport";
+export type { ChainSettings } from "./generated/ChainSettings";
+export type { DenoiseOutcome } from "./generated/DenoiseOutcome";
+export type { GenerationRequest } from "./generated/GenerationRequest";
+export type { GenerationTask } from "./generated/GenerationTask";
+export type { GeneratorEvent } from "./generated/GeneratorEvent";
+export type { GeneratorState } from "./generated/GeneratorState";
+export type { Instrument } from "./generated/Instrument";
+export type { Interval } from "./generated/Interval";
+export type { Measures } from "./generated/Measures";
 
 export type ImportOutcome = { kind: "imported"; project: Project } | { kind: "cancelled" };
 
@@ -249,6 +275,56 @@ export type Transcriber = {
   exportMidi(source: TrackSource): Promise<ExportOutcome>;
 };
 
+/** DeepFilterNet clean-up (desktop: tract on the CPU; the web build has no runtime for it). */
+export type Denoiser =
+  | {
+      kind: "available";
+      /** Suppresses a source's noise as a new take, "<source> (cleaned)"; `NeedsModel` when
+       * the model isn't downloaded. */
+      run(source: EditSource, settings: ScoreSettings): Promise<DenoiseOutcome>;
+    }
+  | { kind: "unavailable"; reason: string };
+
+/** ACE-Step generation (AGENTS.md §8). `local`: the opt-in sidecar on this machine, installed
+ * from the Models panel; `remote`: a backend URL configured for this build (nothing to
+ * install). */
+export type Generator =
+  | {
+      kind: "available";
+      where: "local" | "remote";
+      /** Honest expectations: download size, memory, time per generation on this machine. */
+      expectations: string;
+      state(): Promise<GeneratorState>;
+      /** Installs the sidecar (local only); `onState` sees each step. */
+      install(onState: (s: GeneratorState) => void): Promise<GeneratorState>;
+      uninstall(): Promise<GeneratorState>;
+      /** Runs one generation and adds it as a new track; `onState` sees Running → Ready. */
+      generate(task: GenerationTask, prompt: string, seed: number, settings: ScoreSettings, onState: (s: GeneratorState) => void): Promise<TakeAdded>;
+    }
+  | { kind: "unavailable"; reason: string };
+
+/** Produce (AGENTS.md §8): DSP and AI production on a take or the vocal stem. Every result is
+ * a new take or track that keeps how it was made; the source is never changed. The live vocal
+ * chain is a player command (`{ kind: "Chain" }` through `send`). */
+export type Producer = {
+  /** Measures a source and gives `preset`'s settings for it. */
+  chainPick(source: EditSource, preset: ChainPreset): Promise<ChainPick>;
+  /** Renders a source through the vocal chain as a new take, with before/after measures. */
+  chainApply(source: EditSource, preset: ChainPreset, chain: ChainSettings, settings: ScoreSettings): Promise<ChainApplied>;
+  /** Sings a diatonic harmony from the source's own voice as a new track (audible, panned). */
+  harmony(source: EditSource, interval: Interval, settings: ScoreSettings): Promise<TakeAdded>;
+  /** Saves the source's melody, or its harmony at `interval`, as a .mid file. */
+  exportMelody(source: EditSource, interval: Interval | null): Promise<ExportOutcome>;
+  readonly denoise: Denoiser;
+  readonly generator: Generator;
+};
+
+/** A `.mid` name for a source's melody (or harmony) export. */
+export function melodyFileName(source: EditSource, interval: Interval | null): string {
+  const base = source.kind === "VocalStem" ? "Melody" : `Take ${source.id}`;
+  return interval ? `${base} (${interval}).mid` : `${base}.mid`;
+}
+
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
 export interface EngineHost {
   readonly chrome: WindowChrome;
@@ -264,6 +340,7 @@ export interface EngineHost {
   readonly pitchEditor: PitchEditor;
   readonly models: ModelManager;
   readonly transcriber: Transcriber;
+  readonly producer: Producer;
   /** Picks a sung take file, adds it to the loaded song and scores it. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
   /** Sets the loaded song's lyrics (fetched by the UI from LRCLIB, or edited) and returns them

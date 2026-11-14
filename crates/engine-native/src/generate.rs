@@ -7,9 +7,10 @@
 //! work behind each transition.
 
 use anyhow::{anyhow, bail, Context, Result};
-use engine_core::generate::{GenerationRequest, GenerationTask};
+use engine_core::generate::GenerationRequest;
 use engine_core::resample::resample;
-use std::io::{Cursor, Read};
+use engine_core::wav;
+use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -119,14 +120,6 @@ impl Install {
         Ok(())
     }
 
-    /// Removes the environment and the weights.
-    pub fn uninstall(&self) -> Result<()> {
-        if self.root.exists() {
-            std::fs::remove_dir_all(&self.root)?;
-        }
-        Ok(())
-    }
-
     /// Starts the installed sidecar for a run.
     pub fn start(&self) -> Result<Sidecar> {
         let checkpoints = self.checkpoints();
@@ -148,6 +141,14 @@ pub fn module(project: &Path) -> Command {
     let mut c = Command::new(python);
     c.args(["-I", "-m", "grain_sidecar"]).stdin(Stdio::null());
     c
+}
+
+/// Removes an install (its environment and weights) at `root`.
+pub fn uninstall(root: &Path) -> Result<()> {
+    if root.exists() {
+        std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
 }
 
 /// Runs `c` to completion; fails with the end of its output.
@@ -267,32 +268,18 @@ impl Sidecar {
         let mut call = Self::agent(GENERATE_TIMEOUT)
             .post(format!("{}/generate", self.base))
             .header("Authorization", format!("Bearer {}", self.token))
-            .header("Content-Type", "audio/wav")
-            .query("task", request.task.task_type())
-            .query("prompt", &request.prompt)
-            .query("seed", request.seed.to_string())
-            .query("bpm", format!("{:.2}", request.bpm))
-            .query("key", &request.key)
-            .query("duration", format!("{:.2}", seconds.clamp(10.0, 600.0)));
-        match request.task {
-            GenerationTask::Lego { instrument, .. } => {
-                call = call.query("track", instrument.track_name());
-            }
-            GenerationTask::Repaint { start, end } => {
-                call = call
-                    .query("start", format!("{start:.3}"))
-                    .query("end", format!("{end:.3}"));
-            }
-            GenerationTask::Backing { .. } => {}
+            .header("Content-Type", "audio/wav");
+        for (k, v) in request.query(seconds) {
+            call = call.query(k, v);
         }
-        let mut response = call.send(&wav_bytes(audio, sample_rate)?[..])?;
+        let mut response = call.send(&wav::encode_mono16(audio, sample_rate)[..])?;
         let status = response.status();
         let body = response.body_mut().read_to_vec()?;
         if status != 200 {
             let detail = String::from_utf8_lossy(&body);
             bail!("generation failed ({status}): {detail}");
         }
-        let (mono, rate) = read_wav_mono(&body)?;
+        let (mono, rate) = wav::decode_mono(&body)?;
         let mut out = resample(&[&mono], rate, sample_rate)?.remove(0);
         out.resize(audio.len(), 0.0);
         Ok(out)
@@ -306,49 +293,11 @@ impl Drop for Sidecar {
     }
 }
 
-/// 16-bit mono WAV of `audio`.
-fn wav_bytes(audio: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut out = Cursor::new(Vec::new());
-    let mut w = hound::WavWriter::new(&mut out, spec)?;
-    for v in audio {
-        w.write_sample((v.clamp(-1.0, 1.0) * 32767.0) as i16)?;
-    }
-    w.finalize()?;
-    Ok(out.into_inner())
-}
-
-/// A WAV file's audio, channels averaged, and its rate.
-fn read_wav_mono(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
-    let mut r = hound::WavReader::new(Cursor::new(bytes))?;
-    let spec = r.spec();
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>()?,
-        hound::SampleFormat::Int => {
-            let scale = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
-            r.samples::<i32>()
-                .map(|s| s.map(|v| v as f32 * scale))
-                .collect::<Result<_, _>>()?
-        }
-    };
-    let ch = usize::from(spec.channels.max(1));
-    let mono = samples
-        .chunks(ch)
-        .map(|c| c.iter().sum::<f32>() / ch as f32)
-        .collect();
-    Ok((mono, spec.sample_rate))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_core::edit::EditSource;
-    use engine_core::generate::{Instrument, GENERATION_MODEL};
+    use engine_core::generate::{GenerationTask, Instrument, GENERATION_MODEL};
 
     /// The repository's service, run with its locked base dependencies (no ACE-Step).
     fn stub() -> Option<Sidecar> {
@@ -412,14 +361,6 @@ mod tests {
         // Stopped: nothing listens any more.
         let gone = ureq::get(format!("{base}/health")).call();
         assert!(gone.is_err());
-    }
-
-    #[test]
-    fn wav_round_trip() {
-        let x: Vec<f32> = (0..1000).map(|i| (i as f32 / 100.0).sin() * 0.5).collect();
-        let (y, rate) = read_wav_mono(&wav_bytes(&x, 22_050).unwrap()).unwrap();
-        assert_eq!(rate, 22_050);
-        assert!(x.iter().zip(&y).all(|(a, b)| (a - b).abs() < 1e-4));
     }
 
     #[test]

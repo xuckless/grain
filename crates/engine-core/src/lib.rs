@@ -21,6 +21,7 @@ pub mod onset;
 pub mod peaks;
 pub mod pitch;
 pub mod player;
+pub mod produce;
 pub mod project;
 pub mod psola;
 pub mod resample;
@@ -31,6 +32,7 @@ pub mod stretch;
 pub mod take;
 pub mod tempo;
 pub mod tune;
+pub mod wav;
 
 /// Sample rate of every analysis and separation step (AGENTS.md §4.1).
 pub const WORKING_SAMPLE_RATE: u32 = 44_100;

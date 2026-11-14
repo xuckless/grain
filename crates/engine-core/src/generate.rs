@@ -109,6 +109,32 @@ pub struct GenerationRequest {
     pub key: String,
 }
 
+impl GenerationRequest {
+    /// The sidecar's `/generate` query (`services/ml-sidecar/grain_sidecar/server.py`) for
+    /// conditioning audio `seconds` long (ACE-Step generates 10–600 s).
+    pub fn query(&self, seconds: f64) -> Vec<(&'static str, String)> {
+        let mut q = vec![
+            ("task", self.task.task_type().to_string()),
+            ("prompt", self.prompt.clone()),
+            ("seed", self.seed.to_string()),
+            ("bpm", format!("{:.2}", self.bpm)),
+            ("key", self.key.clone()),
+            ("duration", format!("{:.2}", seconds.clamp(10.0, 600.0))),
+        ];
+        match self.task {
+            GenerationTask::Lego { instrument, .. } => {
+                q.push(("track", instrument.track_name().to_string()));
+            }
+            GenerationTask::Repaint { start, end } => {
+                q.push(("start", format!("{start:.3}")));
+                q.push(("end", format!("{end:.3}")));
+            }
+            GenerationTask::Backing { .. } => {}
+        }
+        q
+    }
+}
+
 /// Where the generation backend is on this device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]

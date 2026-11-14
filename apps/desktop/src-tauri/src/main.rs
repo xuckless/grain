@@ -4,6 +4,7 @@
 
 #[cfg(feature = "youtube")]
 mod extractor;
+mod produce;
 
 use anyhow::Context;
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
@@ -125,6 +126,8 @@ struct Engine {
     latency: LatencyStore,
     /// Downloaded models (app data) and, in development builds, the repository's weights.
     models: Mutex<ModelStore>,
+    /// The optional AI-generation sidecar (Produce → Generate).
+    generator: Mutex<produce::Generator>,
     #[cfg(feature = "youtube")]
     extractor: extractor::Extractor,
 }
@@ -1065,6 +1068,10 @@ fn main() {
                 cache: StemCache::new(data.join("stems")),
                 latency: LatencyStore::new(data.join("latency.json")),
                 models: Mutex::new(ModelStore::new(model_dirs)),
+                generator: Mutex::new(produce::Generator::new(
+                    data.join("ml-sidecar"),
+                    app.path().resource_dir().ok(),
+                )),
                 #[cfg(feature = "youtube")]
                 extractor: extractor::Extractor::new(&data),
             });
@@ -1104,6 +1111,15 @@ fn main() {
             model_delete,
             transcribe,
             export_midi,
+            produce::chain_pick,
+            produce::chain_apply,
+            produce::harmony,
+            produce::export_melody,
+            produce::denoise,
+            produce::generator_state,
+            produce::generator_install,
+            produce::generator_uninstall,
+            produce::generate,
             list_projects,
             open_project,
             save_project,

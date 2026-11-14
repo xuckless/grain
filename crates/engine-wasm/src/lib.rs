@@ -3,18 +3,24 @@
 //! - the AudioWorklet: [`WasmPlayer`] (real-time mixing; no allocation per block).
 
 use engine_core::audio::StereoAudio;
+use engine_core::chain::ChainSettings;
 use engine_core::cue;
 use engine_core::drums;
 use engine_core::edit::{self, EditOp, EditSource};
+use engine_core::generate::{self, GenerationTask, GeneratorState};
+use engine_core::harmony::{self, Interval};
 use engine_core::live::LiveSession;
 use engine_core::lyrics::{self, LyricsUpdate};
 use engine_core::melody::Note;
 use engine_core::midi::{self, Transcription, TranscriptionMethod};
 use engine_core::player::{MonitorStatus, Player, PlayerCommand, PlayerTrack};
+use engine_core::produce::{self, ChainApplied};
 use engine_core::project::{self, Project, SongAudio, SongSource, TrackSource, TrackedPitch};
+use engine_core::resample::resample;
 use engine_core::score::ScoreSettings;
 use engine_core::take::{self, TakeAdded, TakeSource};
 use engine_core::tune;
+use engine_core::wav;
 use engine_ml::basic_pitch;
 use engine_ml::demucs::{ModelSpec, Separator, SeparatorState};
 use engine_ml::models::{self, ModelState};
@@ -89,6 +95,35 @@ impl WasmSong {
             project: self.project.clone(),
             take: id,
         })
+    }
+
+    /// Adds timeline audio as a take, tracked with YIN (the web's tracker).
+    fn add_tracked(
+        &mut self,
+        source: TakeSource,
+        timeline: Vec<f32>,
+        settings: ScoreSettings,
+    ) -> Result<JsValue, JsError> {
+        let pitch = TrackedPitch::yin(&timeline, self.project.sample_rate);
+        self.add(source, timeline, pitch, settings)
+    }
+
+    /// The audio a generation task is conditioned on: a vocal source, or the whole mix.
+    fn conditioning(&self, task: GenerationTask) -> Result<Vec<f32>, JsError> {
+        match task {
+            GenerationTask::Backing { from } | GenerationTask::Lego { from, .. } => {
+                self.edit_audio(from)
+            }
+            GenerationTask::Repaint { .. } => {
+                let mut mix = vec![0.0f32; self.project.frames as usize];
+                for t in project::track_audio(&self.audio) {
+                    for (m, v) in mix.iter_mut().zip(t.to_mono()) {
+                        *m += v;
+                    }
+                }
+                Ok(mix)
+            }
+        }
     }
 
     /// Mono audio of project track `source`.
@@ -273,8 +308,7 @@ impl WasmSong {
         let settings: ScoreSettings = from_js(settings)?;
         let tuned =
             tune::render(&self.project, id, self.timeline(id)?, from_js(tune)?).map_err(js_err)?;
-        let pitch = TrackedPitch::yin(&tuned, self.project.sample_rate);
-        self.add(TakeSource::Tuned { from: id }, tuned, pitch, settings)
+        self.add_tracked(TakeSource::Tuned { from: id }, tuned, settings)
     }
 
     /// basic-pitch's input for track `source` (a `TrackSource`): `count` windows of
@@ -372,8 +406,130 @@ impl WasmSong {
         let settings: ScoreSettings = from_js(settings)?;
         let audio = self.edit_audio(source)?;
         let edited = edit::render_source(&self.project, source, &audio).map_err(js_err)?;
-        let pitch = TrackedPitch::yin(&edited, self.project.sample_rate);
-        self.add(TakeSource::Edited { from: source }, edited, pitch, settings)
+        self.add_tracked(TakeSource::Edited { from: source }, edited, settings)
+    }
+
+    /// Measures an `EditSource` and returns `preset`'s settings for it (a `ChainPick`).
+    #[wasm_bindgen(js_name = chainPick)]
+    pub fn chain_pick(&self, source: JsValue, preset: JsValue) -> Result<JsValue, JsError> {
+        let audio = self.edit_audio(from_js(source)?)?;
+        to_js(&produce::pick(&self.project, &audio, from_js(preset)?))
+    }
+
+    /// Renders a source through the vocal chain as a new take; returns a `ChainApplied`.
+    #[wasm_bindgen(js_name = chainApply)]
+    pub fn chain_apply(
+        &mut self,
+        source: JsValue,
+        preset: JsValue,
+        chain: JsValue,
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let from: EditSource = from_js(source)?;
+        let chain: ChainSettings = from_js(chain)?;
+        let audio = self.edit_audio(from)?;
+        let (out, report) = produce::render_chain(&self.project, &audio, chain);
+        let source = TakeSource::Chained {
+            from,
+            preset: from_js(preset)?,
+            settings: chain.clamped(),
+        };
+        let added: TakeAdded = from_js(self.add_tracked(source, out, from_js(settings)?)?)?;
+        to_js(&ChainApplied { added, report })
+    }
+
+    /// Sings a harmony line from a source's voice as a new track; returns a `TakeAdded`.
+    #[wasm_bindgen]
+    pub fn harmony(
+        &mut self,
+        source: JsValue,
+        interval: JsValue,
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let from: EditSource = from_js(source)?;
+        let interval: Interval = from_js(interval)?;
+        let audio = self.edit_audio(from)?;
+        let out = harmony::render(&self.project, from, &audio, interval).map_err(js_err)?;
+        self.add_tracked(
+            TakeSource::Harmony { from, interval },
+            out,
+            from_js(settings)?,
+        )
+    }
+
+    /// A source's melody (or, with an `Interval`, its harmony) as a Standard MIDI File.
+    #[wasm_bindgen(js_name = melodyMidi)]
+    pub fn melody_midi(
+        &self,
+        source: JsValue,
+        interval: JsValue,
+    ) -> Result<js_sys::Uint8Array, JsError> {
+        let bytes = harmony::melody_midi(&self.project, from_js(source)?, from_js(interval)?)
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(&bytes[..]))
+    }
+
+    /// The `GenerationRequest` for a task on this song.
+    #[wasm_bindgen(js_name = generationRequest)]
+    pub fn generation_request(
+        &self,
+        task: JsValue,
+        prompt: &str,
+        seed: u32,
+    ) -> Result<JsValue, JsError> {
+        to_js(&produce::request(
+            &self.project,
+            from_js(task)?,
+            prompt,
+            seed,
+        ))
+    }
+
+    /// The WAV file a generation task is conditioned on.
+    #[wasm_bindgen(js_name = generationInput)]
+    pub fn generation_input(&self, task: JsValue) -> Result<js_sys::Uint8Array, JsError> {
+        let audio = self.conditioning(from_js(task)?)?;
+        Ok(js_sys::Uint8Array::from(
+            &wav::encode_mono16(&audio, self.project.sample_rate)[..],
+        ))
+    }
+
+    /// Adds a generated WAV (the backend's answer to `request`) as a new track; returns a
+    /// `TakeAdded`.
+    #[wasm_bindgen(js_name = addGenerated)]
+    pub fn add_generated(
+        &mut self,
+        request: JsValue,
+        wav_bytes: &[u8],
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let (mono, rate) = wav::decode_mono(wav_bytes).map_err(js_err)?;
+        let mut out = resample(&[&mono], rate, self.project.sample_rate)
+            .map_err(js_err)?
+            .remove(0);
+        out.resize(self.project.frames as usize, 0.0);
+        let source = TakeSource::Generated {
+            request: from_js(request)?,
+        };
+        self.add_tracked(source, out, from_js(settings)?)
+    }
+}
+
+/// The sidecar's `/generate` query for a `GenerationRequest` on audio `seconds` long, as
+/// `[name, value]` pairs.
+#[wasm_bindgen(js_name = generationQuery)]
+pub fn generation_query(request: JsValue, seconds: f64) -> Result<JsValue, JsError> {
+    let request: engine_core::generate::GenerationRequest = from_js(request)?;
+    to_js(&request.query(seconds))
+}
+
+/// The generator state after an event (`GeneratorState`, `GeneratorEvent`), or null.
+#[wasm_bindgen(js_name = generatorNext)]
+pub fn generator_next(state: JsValue, event: JsValue) -> Result<JsValue, JsError> {
+    let state: GeneratorState = from_js(state)?;
+    match generate::next(&state, from_js(event)?) {
+        Some(s) => to_js(&s),
+        None => Ok(JsValue::NULL),
     }
 }
 

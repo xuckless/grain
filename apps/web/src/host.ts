@@ -25,8 +25,14 @@ import type {
   TunePreview,
   EditUpdate,
   PitchEditView,
+  ChainApplied,
+  ChainPick,
+  GenerationRequest,
+  Generator,
+  GeneratorState,
 } from "@workstation/engine-api";
-import init, { basicPitchSpec, countIn, measureLatency, monitorStatus, projectSummary, transcriptionMethod, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
+import { melodyFileName } from "@workstation/engine-api";
+import init, { basicPitchSpec, countIn, generationQuery, measureLatency, monitorStatus, projectSummary, transcriptionMethod, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
 import { WebModels } from "./models";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
 import * as store from "./store";
@@ -598,16 +604,36 @@ export async function createWebHost(): Promise<EngineHost> {
         return { kind: "Done", project: song.basicPitchFinish(source, note, onset) as Project };
       },
       async exportMidi(source) {
-        const bytes = loadedSong().midiFile(source);
-        const name = source.kind === "Mix" ? "Mix.mid" : `${source.stem}.mid`;
-        const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "audio/midi" }));
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        downloadFile(loadedSong().midiFile(source), source.kind === "Mix" ? "Mix.mid" : `${source.stem}.mid`, "audio/midi");
         return { kind: "saved" };
       },
+    },
+    producer: {
+      async chainPick(source, preset) {
+        await nextFrame();
+        return loadedSong().chainPick(source, preset) as ChainPick;
+      },
+      async chainApply(source, preset, chain, settings) {
+        const song = loadedSong();
+        await nextFrame(); // let the UI show it's working before the render blocks
+        const applied = song.chainApply(source, preset, chain, settings) as ChainApplied;
+        playTake(song, applied.added);
+        return applied;
+      },
+      async harmony(source, interval, settings) {
+        const song = loadedSong();
+        await nextFrame();
+        return playTake(song, song.harmony(source, interval, settings) as TakeAdded);
+      },
+      async exportMelody(source, interval) {
+        downloadFile(loadedSong().melodyMidi(source, interval), melodyFileName(source, interval), "audio/midi");
+        return { kind: "saved" };
+      },
+      denoise: {
+        kind: "unavailable",
+        reason: "Clean up runs DeepFilterNet in the desktop app; the web build has no runtime for it yet.",
+      },
+      generator: remoteGenerator(loadedSong, playTake),
     },
     async send(command) {
       await context.resume();
@@ -617,6 +643,58 @@ export async function createWebHost(): Promise<EngineHost> {
     },
     async transport() {
       return snapshot;
+    },
+  };
+}
+
+/** Offers `bytes` to the user as a download named `name`. */
+function downloadFile(bytes: Uint8Array, name: string, type: string) {
+  const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** ACE-Step on the web: only through a backend configured at build time
+ * (`VITE_GRAIN_GENERATION_URL`, `VITE_GRAIN_GENERATION_TOKEN`; the same HTTP contract as the
+ * desktop sidecar, services/ml-sidecar/grain_sidecar/server.py). */
+function remoteGenerator(loadedSong: () => WasmSong, play: (song: WasmSong, added: TakeAdded) => TakeAdded): Generator {
+  const url = import.meta.env.VITE_GRAIN_GENERATION_URL as string | undefined;
+  const token = import.meta.env.VITE_GRAIN_GENERATION_TOKEN as string | undefined;
+  if (!url || !token) {
+    return {
+      kind: "unavailable",
+      reason: "AI generation runs ACE-Step locally in the desktop app (about 8 GB). The web build has no backend configured.",
+    };
+  }
+  const ready: GeneratorState = { kind: "Ready" };
+  return {
+    kind: "available",
+    where: "remote",
+    expectations: `Runs on ${new URL(url).host}; the song's vocal or mix is uploaded there for each generation.`,
+    state: async () => ready,
+    install: async () => ready,
+    uninstall: async () => ready,
+    async generate(task, prompt, seed, settings, onState) {
+      const song = loadedSong();
+      const request = song.generationRequest(task, prompt, seed) as GenerationRequest;
+      const input = song.generationInput(task);
+      const project = song.project() as Project;
+      const query = new URLSearchParams(generationQuery(request, project.frames / project.sample_rate) as [string, string][]);
+      onState({ kind: "Running" });
+      try {
+        const r = await fetch(`${url.replace(/\/$/, "")}/generate?${query}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "audio/wav" },
+          body: new Uint8Array(input),
+        });
+        if (!r.ok) throw new Error(`generation failed (${r.status}): ${await r.text()}`);
+        return play(song, song.addGenerated(request, new Uint8Array(await r.arrayBuffer()), settings) as TakeAdded);
+      } finally {
+        onState(ready);
+      }
     },
   };
 }

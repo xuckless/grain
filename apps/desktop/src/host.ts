@@ -29,7 +29,28 @@ import type {
   WindowChrome,
   ExtractorOrigin,
   ExtractorUpdate,
+  ChainApplied,
+  ChainPick,
+  DenoiseOutcome,
+  GeneratorState,
 } from "@workstation/engine-api";
+import { melodyFileName } from "@workstation/engine-api";
+
+/** What ACE-Step costs here (AGENTS.md §8); estimates from its documentation, not measured. */
+const GENERATION_EXPECTATIONS =
+  "Installing downloads about 2 GB of Python packages and 6.3 GB of ACE-Step weights (keep 10 GB free). " +
+  "Each generation starts the model (about 30 s) and frees it afterwards. On Apple silicon (MPS) expect a few minutes " +
+  "and up to about 10 GB of memory for a 3-minute song; on CPU only, much longer.";
+
+/** Runs `run` while relaying "generator-state" events to `onState`. */
+async function withGeneratorStates<T>(onState: (s: GeneratorState) => void, run: () => Promise<T>): Promise<T> {
+  const unlisten = await listen<GeneratorState>("generator-state", (e) => onState(e.payload));
+  try {
+    return await run();
+  } finally {
+    unlisten();
+  }
+}
 
 /** macOS draws its window buttons over the page (tauri.conf.json: titleBarStyle "Overlay");
  * the top bar leaves this much room for them. Other platforms keep native decorations. */
@@ -148,6 +169,31 @@ export async function createDesktopHost(): Promise<EngineHost> {
         if (!path) return { kind: "cancelled" };
         await invoke("export_midi", { source, path });
         return { kind: "saved" };
+      },
+    },
+    producer: {
+      chainPick: (from, preset) => invoke<ChainPick>("chain_pick", { from, preset }),
+      chainApply: (from, preset, chain, settings) => invoke<ChainApplied>("chain_apply", { from, preset, chain, settings }),
+      harmony: (from, interval, settings) => invoke<TakeAdded>("harmony", { from, interval, settings }),
+      async exportMelody(from, interval) {
+        const path = await save({ defaultPath: melodyFileName(from, interval), filters: [{ name: "MIDI", extensions: ["mid"] }] });
+        if (!path) return { kind: "cancelled" };
+        await invoke("export_melody", { from, interval, path });
+        return { kind: "saved" };
+      },
+      denoise: {
+        kind: "available",
+        run: (from, settings) => invoke<DenoiseOutcome>("denoise", { from, settings }),
+      },
+      generator: {
+        kind: "available",
+        where: "local",
+        expectations: GENERATION_EXPECTATIONS,
+        state: () => invoke<GeneratorState>("generator_state"),
+        install: (onState) => withGeneratorStates(onState, () => invoke<GeneratorState>("generator_install")),
+        uninstall: () => invoke<GeneratorState>("generator_uninstall"),
+        generate: (task, prompt, seed, settings, onState) =>
+          withGeneratorStates(onState, () => invoke<TakeAdded>("generate", { task, prompt, seed, settings })),
       },
     },
     send: (command) => invoke("player", { command }),
