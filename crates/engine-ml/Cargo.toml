@@ -1,0 +1,12 @@
+[package]
+name = "engine-ml"
+description = "Model pre/post-processing (STFT front-ends, chunking, overlap-add). Platform-independent; inference itself runs in the host."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+engine-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
