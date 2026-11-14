@@ -2,6 +2,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(feature = "youtube")]
+mod extractor;
+
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
 use engine_core::live::{LiveSession, LiveUpdate};
 use engine_core::lyrics::{self, LyricsUpdate, ProjectLyrics};
@@ -101,7 +104,7 @@ struct Engine {
     latency: LatencyStore,
     model_dirs: Vec<PathBuf>,
     #[cfg(feature = "youtube")]
-    downloads: PathBuf,
+    extractor: extractor::Extractor,
 }
 
 /// Errors cross IPC as strings.
@@ -284,12 +287,16 @@ async fn import_file(
     .map_err(fail)
 }
 
+/// Whether YouTube import works, and with which yt-dlp (AGENTS.md §4.1).
 #[derive(Serialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 enum UrlImport {
-    #[serde(rename = "available")]
-    Available,
-    #[serde(rename = "unavailable")]
+    #[cfg(feature = "youtube")]
+    Available { origin: extractor::Origin },
+    #[cfg(feature = "youtube")]
+    Missing { reason: String },
+    /// This build has no YouTube import.
+    #[cfg_attr(feature = "youtube", allow(dead_code))]
     Unavailable,
 }
 
@@ -314,13 +321,45 @@ fn separation_offer(engine: State<Engine>) -> SeparationOffer {
     }
 }
 
+#[cfg(feature = "youtube")]
+#[tauri::command]
+fn url_import(engine: State<Engine>) -> UrlImport {
+    engine.extractor.status()
+}
+
+#[cfg(not(feature = "youtube"))]
 #[tauri::command]
 fn url_import() -> UrlImport {
-    if cfg!(feature = "youtube") {
-        UrlImport::Available
-    } else {
-        UrlImport::Unavailable
-    }
+    UrlImport::Unavailable
+}
+
+/// The yt-dlp version (slow-ish: a standalone yt-dlp unpacks itself on every run).
+#[cfg(feature = "youtube")]
+#[tauri::command]
+async fn extractor_version(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Engine>().extractor.version())
+        .await
+        .map_err(fail)?
+}
+
+#[cfg(feature = "youtube")]
+#[tauri::command]
+async fn update_extractor(app: AppHandle) -> Result<extractor::ExtractorUpdate, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Engine>().extractor.update())
+        .await
+        .map_err(fail)?
+}
+
+#[cfg(not(feature = "youtube"))]
+#[tauri::command]
+async fn extractor_version() -> Result<String, String> {
+    Err("this build has no YouTube import".into())
+}
+
+#[cfg(not(feature = "youtube"))]
+#[tauri::command]
+async fn update_extractor() -> Result<(), String> {
+    Err("this build has no YouTube import".into())
 }
 
 #[cfg(feature = "youtube")]
@@ -331,9 +370,7 @@ async fn import_url(
     quality: SeparationQuality,
 ) -> Result<Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let downloads = app.state::<Engine>().downloads.clone();
-        std::fs::create_dir_all(&downloads)?;
-        let d = ingest::download(&ingest::Tools::from_path(), &url, &downloads)?;
+        let d = app.state::<Engine>().extractor.download(&url)?;
         import(
             &app,
             &d.wav,
@@ -711,7 +748,7 @@ fn main() {
                 latency: LatencyStore::new(data.join("latency.json")),
                 model_dirs,
                 #[cfg(feature = "youtube")]
-                downloads: data.join("downloads"),
+                extractor: extractor::Extractor::new(&data),
             });
             Ok(())
         })
@@ -719,6 +756,8 @@ fn main() {
             import_file,
             separation_offer,
             url_import,
+            extractor_version,
+            update_extractor,
             import_url,
             player,
             transport,

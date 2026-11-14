@@ -19,6 +19,8 @@ import type {
   TakeAdded,
   TransportSnapshot,
   WindowChrome,
+  ExtractorOrigin,
+  ExtractorUpdate,
 } from "@workstation/engine-api";
 
 /** macOS draws its window buttons over the page (tauri.conf.json: titleBarStyle "Overlay");
@@ -51,7 +53,9 @@ async function withStages(onStage: StageListener, run: () => Promise<Project>): 
 }
 
 export async function createDesktopHost(): Promise<EngineHost> {
-  const urlImport = await invoke<{ kind: "available" } | { kind: "unavailable" }>("url_import");
+  const urlImport = await invoke<
+    { kind: "available"; origin: ExtractorOrigin } | { kind: "missing"; reason: string } | { kind: "unavailable" }
+  >("url_import");
   const separation = await invoke<SeparationOffer>("separation_offer");
   return {
     chrome,
@@ -68,9 +72,14 @@ export async function createDesktopHost(): Promise<EngineHost> {
       urlImport.kind === "available"
         ? {
             kind: "available",
+            extractor: {
+              origin: urlImport.origin,
+              version: () => invoke<string>("extractor_version"),
+              update: () => invoke<ExtractorUpdate>("update_extractor"),
+            },
             importUrl: (url, quality, onStage) => withStages(onStage, () => invoke<Project>("import_url", { url, quality })),
           }
-        : { kind: "unavailable" },
+        : urlImport,
     separation,
     async importFile(quality, onStage) {
       const path = await pickAudio();

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EngineHost, ProjectSummary, SeparationQuality } from "@workstation/engine-api";
   import Toggle from "./Toggle.svelte";
+  import ExtractorStatus from "./ExtractorStatus.svelte";
   import Grain from "./Grain.svelte";
   import TopBar from "./TopBar.svelte";
   import { DotProgress, Gather, Orb, Terrain } from "./grain";
@@ -123,6 +124,8 @@
                       <input id="song-link" class="field" type="url" placeholder="Paste a YouTube link" bind:value={url} />
                       <button class="press raised big" type="submit" disabled={url.trim() === ""}>Import</button>
                     </form>
+                  {:else if host.urlImport.kind === "missing"}
+                    <span class="muted small">{host.urlImport.reason}</span>
                   {/if}
                 </div>
                 <div class="quality">
@@ -136,6 +139,9 @@
                     <span class="muted small">{host.separation.reason}</span>
                   {/if}
                 </div>
+                {#if host.urlImport.kind === "available"}
+                  <ExtractorStatus extractor={host.urlImport.extractor} />
+                {/if}
               {:else if job.kind === "failed"}
                 <div class="status">
                   <strong>That didn't work</strong>

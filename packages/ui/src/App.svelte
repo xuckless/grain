@@ -232,6 +232,11 @@
   :global(.quiet) {
     background: transparent;
   }
+  :global(.small-button) {
+    height: 44px;
+    padding: 0 16px;
+    border-radius: 12px;
+  }
   :global(.quiet:hover:not(:disabled)) {
     background: var(--c-surface);
   }

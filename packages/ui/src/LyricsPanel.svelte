@@ -159,11 +159,6 @@
   .row .field {
     width: 220px;
   }
-  .small-button {
-    height: 44px;
-    padding: 0 16px;
-    border-radius: 12px;
-  }
   .label {
     font-size: 13px;
     line-height: 18px;

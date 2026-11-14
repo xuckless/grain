@@ -68,9 +68,29 @@ export type ScoreOutcome = { kind: "scored"; added: TakeAdded } | { kind: "cance
 
 export type StageListener = (stage: ImportStage) => void;
 
-/** YouTube import exists only on desktop (AGENTS.md §0). */
+/** Where the yt-dlp in use came from (AGENTS.md §4.1): an updated copy in app data, the
+ * sidecar bundled with the app, or the system's (e.g. Homebrew). */
+export type ExtractorOrigin = "updated" | "bundled" | "system";
+
+export type ExtractorUpdate = { kind: "updated" | "upToDate"; version: string; origin: ExtractorOrigin };
+
+/** The YouTube extractor (yt-dlp). `version()` is slow-ish, so the UI asks for it lazily. */
+export type Extractor = {
+  origin: ExtractorOrigin;
+  version(): Promise<string>;
+  /** Updates yt-dlp from its GitHub releases; a system yt-dlp is left to its package manager. */
+  update(): Promise<ExtractorUpdate>;
+};
+
+/** YouTube import exists only on desktop (AGENTS.md §0). `missing`: the build supports it but
+ * no yt-dlp was found. */
 export type UrlImport =
-  | { kind: "available"; importUrl(url: string, quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome> }
+  | {
+      kind: "available";
+      extractor: Extractor;
+      importUrl(url: string, quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome>;
+    }
+  | { kind: "missing"; reason: string }
   | { kind: "unavailable" };
 
 /** Which separations the UI may offer (AGENTS.md §4.2): the choice of `Fast` or `BestVocals`,
