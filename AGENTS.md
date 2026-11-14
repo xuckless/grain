@@ -91,7 +91,7 @@ The same TypeScript UI runs in Tauri on desktop and in the browser on the web. T
 | Model class | Desktop | Web | Notes |
 |---|---|---|---|
 | Pitch (RMVPE/FCPE/SwiftF0, <30 MB) | local `ort` | local onnxruntime-web | Must be local for live karaoke |
-| Separation, light (HTDemucs, ~80 MB/model) | local `ort` (CoreML/DirectML/CUDA EP) | local WebGPU (WASM fallback, slow) | A 3–4 min song takes tens of seconds on GPU and several minutes on CPU |
+| Separation, light (HTDemucs, ~80 MB/model) | local `ort` (CPU; DirectML/CUDA EP where verified. **CoreML EP produces NaN on htdemucs_6s and is ~20× slower; do not enable until it passes the reference check**) | local WebGPU (WASM fallback, slow) | A 3–4 min song takes tens of seconds on GPU and several minutes on CPU |
 | Separation, best (BS/Mel-RoFormer, 200–600 MB) | local (GPU strongly recommended) | local WebGPU if the device can handle it, else unavailable | Optional remote backend |
 | Transcription (basic-pitch) | local | local | Small model, Apache-2.0 |
 | Generation (ACE-Step), heavy enhancement | local Python GPU sidecar (opt-in install) | unavailable unless the user configures a remote backend | Python-only, large VRAM |
@@ -326,6 +326,7 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
    - Record or import a take, then alignment, offline scoring and the score graph from §5.
    - Project save and load: files on desktop, OPFS plus archive export on the web.
    - **Still open in M1:**
+     - htdemucs_6s routes orchestral/choral material into `vocals` (matches Meta's PyTorch reference, so it is a model limit). The RoFormer vocal cascade (§4.2) is needed for non-pop music.
      - Reference and take pitch use YIN, not RMVPE. Both sides use the same estimator, as §5 requires.
      - Takes are aligned by a single offset, with no DTW.
      - Takes can be imported but not recorded in the app.

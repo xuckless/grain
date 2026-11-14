@@ -43,6 +43,9 @@ pub enum DemucsError {
     State(&'static str, SeparatorState),
     #[error("model output has {got} values, expected {expected}")]
     OutputShape { got: usize, expected: usize },
+    /// The execution provider produced NaN/inf (seen with the CoreML EP on HTDemucs).
+    #[error("model produced non-finite output on segment {0}")]
+    NonFinite(usize),
 }
 
 impl ModelSpec {
@@ -207,6 +210,9 @@ impl Separator {
             if got != expected {
                 return Err(DemucsError::OutputShape { got, expected });
             }
+        }
+        if !spec_out.iter().chain(wav_out).all(|v| v.is_finite()) {
+            return Err(DemucsError::NonFinite(index));
         }
         let offset = self.offsets[index];
         let segment = self.spec.segment_samples;
@@ -419,6 +425,13 @@ mod tests {
         assert!(matches!(
             sep.submit(&[0.0], &[0.0]),
             Err(DemucsError::OutputShape { .. })
+        ));
+        let (spec_len, wav_len) = (sep.spec.spec_len(), sep.spec.wav_len());
+        let mut nan = vec![0.0f32; spec_len];
+        nan[7] = f32::NAN;
+        assert!(matches!(
+            sep.submit(&nan, &vec![0.0; wav_len]),
+            Err(DemucsError::NonFinite(0))
         ));
         assert!(ModelSpec::parse(r#"{"name":"x","sources":["kazoo"],"samplerate":44100,"audio_channels":2,"segment_samples":343980,"nfft":4096,"hop":1024,"freq_bins":2048,"frames":336,"cac":true}"#).is_err());
     }
