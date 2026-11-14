@@ -63,8 +63,11 @@ export async function createWebHost(): Promise<EngineHost> {
   }
 
   async function importFile(onStage: StageListener): Promise<ImportOutcome> {
-    await context.resume();
-    const file = await pickFile("audio/*");
+    // Open the picker synchronously: browsers (Safari especially) drop the click's user
+    // activation across an await, which silently blocks the file dialog.
+    const picked = pickFile("audio/*");
+    void context.resume();
+    const file = await picked;
     if (!file) return { kind: "cancelled" };
     onStage({ kind: "Decoding" });
     const [left, right] = await decode(context, file);
@@ -150,6 +153,12 @@ function pickFile(accept: string): Promise<File | undefined> {
     input.accept = accept;
     input.onchange = () => resolve(input.files?.[0]);
     input.oncancel = () => resolve(undefined);
+    // Safari only opens pickers for inputs attached to the document.
+    input.hidden = true;
+    document.body.append(input);
+    const done = () => input.remove();
+    input.addEventListener("change", done, { once: true });
+    input.addEventListener("cancel", done, { once: true });
     input.click();
   });
 }

@@ -8,9 +8,7 @@ id = "htdemucs_6s"
 task = "separation"
 distribution = "default"
 license = "MIT"
-license_note = """Demucs code is MIT (github.com/adefossez/demucs). The ONNX host repo's README states \
-the v4 checkpoints are CC-BY-NC-4.0; the upstream repo does not say so. The owner must confirm before \
-any commercial distribution."""
+license_note = "Licensed per Meta's upstream Demucs repository (MIT, github.com/facebookresearch/demucs); owner decision."
 source = "https://huggingface.co/HRSadeghi/demucs-onnx"
 sample_rate = 44100
 inputs = "mix [1,2,343980] f32; mag [1,4,2048,336] f32 (complex-as-channels, normalized STFT)"
