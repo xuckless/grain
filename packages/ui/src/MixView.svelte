@@ -4,7 +4,7 @@
   import { columnLevels, dot, dotBar, drawDotWave, fit, WAVE_STEP_PX } from "./grain";
   import { detailDelay, enter, reveal, rubberBand, springBack } from "./motion";
   import { formatDb, formatPan } from "./state";
-  import { colour, stemHue, trackHue } from "./theme";
+  import { colour, displayRank, stemHue, trackHue } from "./theme";
 
   /**
    * The Mix view (design: Components → Tracks): one row per stem with mute, solo, gain and pan,
@@ -54,6 +54,8 @@
     return t.kind === "Stopped" ? 0 : t.frame / snapshot.sample_rate;
   });
   const headX = $derived((playhead / duration) * width + (scrub.kind === "idle" ? 0 : scrub.overshootPx));
+  /** Tracks in display order; `index` stays the engine's track index for mix commands. */
+  const rows = $derived(project.tracks.map((track, index) => ({ track, index })).sort((a, b) => displayRank(a.track.source) - displayRank(b.track.source)));
   const levels = $derived(project.tracks.map((t) => columnLevels(t.peaks, Math.ceil(width / WAVE_STEP_PX))));
 
   function audible(t: Track): boolean {
@@ -201,8 +203,8 @@
     <div class="readout mono muted">{project.analysis.reference_notes.length} notes</div>
   </div>
 
-  {#each project.tracks as t, i (t.name)}
-    <div class="row track" in:enter={{ delay: detailDelay(i + 1) }}>
+  {#each rows as { track: t, index: i }, row (t.name)}
+    <div class="row track" in:enter={{ delay: detailDelay(row + 1) }}>
       <div class="controls">
         <div class="name">
           <span class="swatch" style:background={trackHue(t.source)}></span>

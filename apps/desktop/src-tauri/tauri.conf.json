@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Workstation",
+  "productName": "Grain",
   "version": "0.1.0",
   "identifier": "dev.workstation.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Workstation",
+        "title": "Grain",
         "width": 1280,
         "height": 860,
         "minWidth": 960,

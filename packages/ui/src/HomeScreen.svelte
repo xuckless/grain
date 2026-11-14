@@ -219,7 +219,7 @@
     min-height: 0;
     overflow: auto;
     box-sizing: border-box;
-    padding: 24px 64px 240px;
+    padding: 24px 64px 120px;
     display: flex;
     flex-direction: column;
     gap: 56px;

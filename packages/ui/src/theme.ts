@@ -29,8 +29,16 @@ export const feedback = {
   miss: "#8E6BFF",
 } as const;
 
+/** Stems in display order (the design's): vocals first. Models emit stems in their own order. */
+export const stemOrder: readonly Stem[] = ["Vocals", "Drums", "Bass", "Guitar", "Piano", "Other"];
+
 /** The stem hues in display order, for multi-colour grain (bursts, terrain, progress). */
-export const spectrum: readonly string[] = [stemHue.Vocals, stemHue.Drums, stemHue.Bass, stemHue.Guitar, stemHue.Piano];
+export const spectrum: readonly string[] = stemOrder.filter((s) => s !== "Other").map((s) => stemHue[s]);
+
+/** Sort key placing a track in display order (an unseparated mix first). */
+export function displayRank(source: TrackSource): number {
+  return source.kind === "Mix" ? -1 : stemOrder.indexOf(source.stem);
+}
 
 /** A track's hue: its stem's, or plain text for an unseparated mix. */
 export function trackHue(source: TrackSource): string {

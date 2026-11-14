@@ -200,6 +200,11 @@
     -webkit-font-smoothing: antialiased;
     overflow: hidden;
   }
+  /* Scrollbars, where a region does scroll, stay in the ground's palette. */
+  :global(*) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--c-raised) transparent;
+  }
   :global(button) {
     font: inherit;
     color: inherit;
