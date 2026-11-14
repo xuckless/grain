@@ -52,8 +52,11 @@ export type UrlImport =
   | { kind: "unavailable" };
 
 /** How the UI meets the window frame. `overlay`: the OS window buttons sit over the top-left
- * of the page (macOS desktop), so the top bar insets its content and acts as the drag area. */
-export type WindowChrome = { kind: "overlay"; insetLeft: number } | { kind: "plain" };
+ * of the page (macOS desktop), so the top bar insets its content and acts as the drag area:
+ * pressing any non-interactive point of it starts a window drag, double-clicking zooms. */
+export type WindowChrome =
+  | { kind: "overlay"; insetLeft: number; startDrag(): void; toggleMaximize(): void }
+  | { kind: "plain" };
 
 /** Saved projects (desktop: the stem cache). */
 export type ProjectStore =

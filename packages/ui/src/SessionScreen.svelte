@@ -105,16 +105,16 @@
     {#snippet left()}
       <button class="press icon quiet" aria-label="Back to home" onclick={onBack}><Icon name="back" /></button>
       <Grain behaviour={mark} style="width: 28px; height: 28px; flex: none" />
-      <span class="song" data-tauri-drag-region in:receiveShared|global={{ key: `title:${title}` }} out:sendShared|global={{ key: `title:${title}` }}>{title}</span>
+      <span class="song" in:receiveShared|global={{ key: `title:${title}` }} out:sendShared|global={{ key: `title:${title}` }}>{title}</span>
     {/snippet}
     {#snippet center()}
       <button class="press play" aria-label={playing ? "Pause" : "Play"} onclick={() => onCommand(playing ? { kind: "Pause" } : { kind: "Play" })}>
         {#key playing}<span class="glyph" transition:iconSwap><Icon name={playing ? "pause" : "play"} /></span>{/key}
       </button>
       <button class="press icon quiet" aria-label="Stop" disabled={snapshot.transport.kind === "Stopped"} onclick={() => onCommand({ kind: "Stop" })}><Icon name="stop" /></button>
-      <span class="mono readout" data-tauri-drag-region>{formatTime(position)} <span class="muted">/ {formatTime(duration)}</span></span>
-      <span class="mono muted" data-tauri-drag-region>{project.analysis.tempo.bpm.toFixed(0)} BPM</span>
-      {#if key}<span class="mono muted" data-tauri-drag-region>{key.label}</span>{/if}
+      <span class="mono readout">{formatTime(position)} <span class="muted">/ {formatTime(duration)}</span></span>
+      <span class="mono muted">{project.analysis.tempo.bpm.toFixed(0)} BPM</span>
+      {#if key}<span class="mono muted">{key.label}</span>{/if}
     {/snippet}
     {#snippet right()}
       <button

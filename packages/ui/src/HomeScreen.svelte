@@ -78,7 +78,7 @@
   <TopBar chrome={host.chrome}>
     {#snippet left()}
       <Grain behaviour={logo} style="width: 28px; height: 28px; flex: none" label="Grain" />
-      <span class="wordmark pixel" data-tauri-drag-region>grain</span>
+      <span class="wordmark pixel">grain</span>
     {/snippet}
     {#snippet right()}
       {#if resume.kind === "available"}

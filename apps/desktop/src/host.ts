@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   EngineHost,
@@ -19,7 +20,12 @@ import type {
  * the top bar leaves this much room for them. Other platforms keep native decorations. */
 const MAC_BUTTONS_INSET = 88;
 const chrome: WindowChrome = navigator.userAgent.includes("Mac OS")
-  ? { kind: "overlay", insetLeft: MAC_BUTTONS_INSET }
+  ? {
+      kind: "overlay",
+      insetLeft: MAC_BUTTONS_INSET,
+      startDrag: () => void getCurrentWindow().startDragging(),
+      toggleMaximize: () => void getCurrentWindow().toggleMaximize(),
+    }
   : { kind: "plain" };
 
 const AUDIO = [{ name: "Audio", extensions: ["mp3", "m4a", "wav", "flac", "ogg", "aac"] }];
