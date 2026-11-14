@@ -1,6 +1,6 @@
 //! Key detection: chroma correlated against Krumhansl–Schmuckler profiles (AGENTS.md §4.4).
 
-use crate::note::hz_to_midi;
+use crate::note::{hz_to_midi, pitch_class_name};
 use crate::stft::Stft;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -44,12 +44,14 @@ impl Key {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct KeyCandidate {
     pub key: Key,
     /// Pearson correlation between the song's chroma and the key profile.
     pub correlation: f32,
+    /// Display name, e.g. "F# minor".
+    pub label: String,
 }
 
 /// Energy per pitch class over the whole signal.
@@ -91,6 +93,14 @@ pub fn estimate(signal: &[f32], sample_rate: u32) -> Vec<KeyCandidate> {
                 KeyCandidate {
                     key: Key { tonic, mode },
                     correlation: pearson(&chroma, &rotated),
+                    label: format!(
+                        "{} {}",
+                        pitch_class_name(tonic),
+                        match mode {
+                            Mode::Major => "major",
+                            Mode::Minor => "minor",
+                        }
+                    ),
                 }
             })
         })
@@ -125,7 +135,8 @@ mod tests {
         for midi in [62, 66, 69, 62, 64, 66, 67, 69, 71, 73, 74, 62, 69] {
             x.extend(harmonic(midi_to_hz(midi as f32), 0.4, sr));
         }
-        let best = estimate(&x, sr)[0];
+        let best = &estimate(&x, sr)[0];
+        assert_eq!(best.label, "D major");
         assert_eq!(
             best.key,
             Key {

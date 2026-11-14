@@ -3,4 +3,8 @@ import type { Analysis } from "./Analysis";
 import type { SongSource } from "./SongSource";
 import type { Track } from "./Track";
 
-export type Project = { version: number, song: SongSource, sample_rate: number, frames: number, tracks: Array<Track>, analysis: Analysis, };
+export type Project = { version: number, song: SongSource, sample_rate: number, frames: number, 
+/**
+ * Samples summarized by each `[min, max]` pair in `Track::peaks`.
+ */
+samples_per_peak: number, tracks: Array<Track>, analysis: Analysis, };

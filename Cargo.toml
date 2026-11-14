@@ -7,6 +7,7 @@ members = [
     "crates/cli",
     "crates/ingest",
     "crates/engine-wasm",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

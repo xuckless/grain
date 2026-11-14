@@ -43,6 +43,14 @@ pub enum Transport {
     Paused { frame: u32 },
 }
 
+/// Transport state plus the rate its frame counter runs at (the output device rate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TransportSnapshot {
+    pub transport: Transport,
+    pub sample_rate: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]
 #[ts(export)]

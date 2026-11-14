@@ -5,4 +5,8 @@ export type KeyCandidate = { key: Key,
 /**
  * Pearson correlation between the song's chroma and the key profile.
  */
-correlation: number, };
+correlation: number, 
+/**
+ * Display name, e.g. "F# minor".
+ */
+label: string, };

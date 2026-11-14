@@ -37,6 +37,16 @@ fn stereo(left: Vec<f32>, right: Vec<f32>, sample_rate: u32) -> Result<StereoAud
 #[wasm_bindgen]
 pub struct WasmSong {
     project: Project,
+    audio: SongAudio,
+}
+
+impl WasmSong {
+    fn new(name: String, audio: SongAudio) -> WasmSong {
+        WasmSong {
+            project: project::build(SongSource::File { name }, &audio),
+            audio,
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -48,17 +58,26 @@ impl WasmSong {
         right: Vec<f32>,
         sample_rate: u32,
     ) -> Result<WasmSong, JsError> {
-        let audio = SongAudio::Unseparated {
-            mix: stereo(left, right, sample_rate)?,
-        };
-        Ok(WasmSong {
-            project: project::build(SongSource::File { name }, &audio),
-        })
+        let mix = stereo(left, right, sample_rate)?;
+        Ok(WasmSong::new(name, SongAudio::Unseparated { mix }))
     }
 
     /// The `Project` (see packages/engine-api).
     pub fn project(&self) -> Result<JsValue, JsError> {
         to_js(&self.project)
+    }
+
+    /// `[left, right]` of project track `index`.
+    #[wasm_bindgen(js_name = trackAudio)]
+    pub fn track_audio(&self, index: usize) -> Result<js_sys::Array, JsError> {
+        let tracks = project::track_audio(&self.audio);
+        let audio = tracks
+            .get(index)
+            .ok_or_else(|| JsError::new("no such track"))?;
+        let out = js_sys::Array::new();
+        out.push(&js_sys::Float32Array::from(audio.left.as_slice()));
+        out.push(&js_sys::Float32Array::from(audio.right.as_slice()));
+        Ok(out)
     }
 
     /// Scores a take (same sample rate as the song) and returns a `ScoreReport`.
@@ -141,10 +160,7 @@ impl WasmSeparator {
             .separator
             .into_stems()
             .map_err(|e| JsError::new(&e.to_string()))?;
-        let audio = SongAudio::Separated { stems };
-        Ok(WasmSong {
-            project: project::build(SongSource::File { name: self.name }, &audio),
-        })
+        Ok(WasmSong::new(self.name, SongAudio::Separated { stems }))
     }
 }
 

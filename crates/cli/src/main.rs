@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use engine_core::note::{hz_to_midi, note_name, pitch_class_name};
+use engine_core::note::{hz_to_midi, note_name};
 use engine_core::pitch::{PitchRange, Yin};
 use engine_core::project::{self, SongAudio, SongSource};
 use engine_core::score::{Difficulty, NoteResult, OctaveMode, ScoreSettings};
@@ -83,12 +83,7 @@ fn main() -> Result<()> {
                 a.tempo.beats.len()
             );
             for k in &a.keys {
-                println!(
-                    "key        {} {:?} (r = {:.2})",
-                    pitch_class_name(k.key.tonic),
-                    k.key.mode,
-                    k.correlation
-                );
+                println!("key        {} (r = {:.2})", k.label, k.correlation);
             }
             println!(
                 "reference  {:?}, {} notes",

@@ -4,7 +4,7 @@ use crate::audio::StereoAudio;
 use crate::key::{self, KeyCandidate};
 use crate::melody::{self, Note};
 use crate::onset;
-use crate::peaks::peaks;
+use crate::peaks::{peaks, SAMPLES_PER_PEAK};
 use crate::pitch::{self, PitchTrack};
 use crate::player::{MixParams, PlayerTrack};
 use crate::score::{self, ScoreReport, ScoreSettings};
@@ -81,6 +81,8 @@ pub struct Project {
     pub song: SongSource,
     pub sample_rate: u32,
     pub frames: u32,
+    /// Samples summarized by each `[min, max]` pair in `Track::peaks`.
+    pub samples_per_peak: u32,
     pub tracks: Vec<Track>,
     pub analysis: Analysis,
 }
@@ -103,19 +105,22 @@ pub enum SongAudio {
 }
 
 pub fn build(song: SongSource, audio: &SongAudio) -> Project {
-    let tracks: Vec<(TrackSource, &StereoAudio)> = match audio {
-        SongAudio::Unseparated { mix } => vec![(TrackSource::Mix, mix)],
+    let sources: Vec<TrackSource> = match audio {
+        SongAudio::Unseparated { .. } => vec![TrackSource::Mix],
         SongAudio::Separated { stems } => stems
             .iter()
-            .map(|(stem, a)| (TrackSource::Stem { stem: *stem }, a))
+            .map(|(stem, _)| TrackSource::Stem { stem: *stem })
             .collect(),
     };
+    let tracks: Vec<(TrackSource, &StereoAudio)> =
+        sources.into_iter().zip(track_audio(audio)).collect();
     let first = tracks[0].1;
     Project {
         version: PROJECT_VERSION,
         song,
         sample_rate: first.sample_rate,
         frames: first.len() as u32,
+        samples_per_peak: SAMPLES_PER_PEAK as u32,
         tracks: tracks
             .iter()
             .map(|(source, a)| Track {
@@ -192,16 +197,20 @@ pub fn score_take(project: &Project, take: &StereoAudio, settings: ScoreSettings
     )
 }
 
-/// Player tracks for a project's audio, in project track order.
-pub fn player_tracks(project: &Project, audio: &SongAudio) -> Vec<PlayerTrack> {
-    let sources: Vec<&StereoAudio> = match audio {
+/// Audio of each project track, in project track order.
+pub fn track_audio(audio: &SongAudio) -> Vec<&StereoAudio> {
+    match audio {
         SongAudio::Unseparated { mix } => vec![mix],
         SongAudio::Separated { stems } => stems.iter().map(|(_, a)| a).collect(),
-    };
+    }
+}
+
+/// Player tracks for a project's audio, in project track order.
+pub fn player_tracks(project: &Project, audio: &SongAudio) -> Vec<PlayerTrack> {
     project
         .tracks
         .iter()
-        .zip(sources)
+        .zip(track_audio(audio))
         .map(|(t, a)| PlayerTrack {
             left: a.left.clone().into(),
             right: a.right.clone().into(),
