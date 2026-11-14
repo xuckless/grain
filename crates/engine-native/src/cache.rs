@@ -59,13 +59,18 @@ impl StemCache {
         let takes = project
             .takes
             .iter()
-            .map(|t| Ok(decode::decode(&dir.join(take_file(t.id)))?.left))
+            .map(|t| self.take_audio(key, t.id))
             .collect::<Result<_>>()?;
         Ok(Lookup::Hit {
             project: Box::new(project),
             audio,
             takes,
         })
+    }
+
+    /// A stored take's timeline audio (mono, project rate).
+    pub fn take_audio(&self, key: &str, id: u32) -> Result<Vec<f32>> {
+        Ok(decode::decode(&self.dir(key).join(take_file(id)))?.left)
     }
 
     /// Writes a take's timeline audio (mono, project rate). The take is part of the saved

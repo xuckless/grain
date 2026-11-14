@@ -8,16 +8,19 @@ mod extractor;
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
 use engine_core::live::{LiveSession, LiveUpdate};
 use engine_core::lyrics::{self, LyricsUpdate, ProjectLyrics};
-use engine_core::player::{PlayerCommand, Transport, TransportSnapshot};
+use engine_core::player::{
+    MonitorMode, MonitorStatus, PlayerCommand, Transport, TransportSnapshot,
+};
 use engine_core::project::{
     self, ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource,
     TrackedPitch,
 };
 use engine_core::score::{ScoreReport, ScoreSettings};
 use engine_core::take::{self, TakeAdded, TakeSource};
+use engine_core::tune::{self, TunePreview, TuneSettings};
 use engine_core::WORKING_SAMPLE_RATE;
 use engine_native::cache::{Lookup, StemCache};
-use engine_native::capture::{self, Capture, StreamInstant};
+use engine_native::capture::{self, Capture, MonitorInput, StreamInstant};
 use engine_native::decode;
 use engine_native::import::{import_song, Imported, Separation};
 use engine_native::latency::{self, LatencyStore};
@@ -41,6 +44,17 @@ struct Loaded {
     project: Project,
     playback: Playback,
     mic: Mic,
+    monitor: Monitor,
+}
+
+/// The microphone held open for live monitoring (AGENTS.md §7 step 3); the player knows
+/// whether the voice is heard dry or tuned.
+enum Monitor {
+    Off,
+    /// The input stream stays open while this is held.
+    Listening {
+        _input: MonitorInput,
+    },
 }
 
 /// What the microphone is doing.
@@ -169,6 +183,7 @@ fn start_session(
         project: project.clone(),
         playback,
         mic: Mic::Closed,
+        monitor: Monitor::Off,
     }));
     Ok(project)
 }
@@ -446,6 +461,86 @@ async fn score_take(
             &engine,
             TakeSource::Imported { name },
             &timeline,
+            pitch,
+            settings,
+        )
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Turns live monitoring off, or on dry or tuned. Opening the microphone at the output's rate
+/// can fail (the UI shows why).
+#[tauri::command]
+fn set_monitor(engine: State<Engine>, mode: MonitorMode) -> Result<MonitorStatus, String> {
+    with_loaded(&engine, |l| {
+        match (mode, &l.monitor) {
+            (MonitorMode::Off, _) => {
+                l.playback.send(PlayerCommand::Monitor { mode })?;
+                l.playback.detach_monitor()?;
+                l.monitor = Monitor::Off;
+            }
+            (MonitorMode::Dry | MonitorMode::Tuned, Monitor::Off) => {
+                let (input, ring) = MonitorInput::start(l.playback.sample_rate())?;
+                l.playback.attach_monitor(ring)?;
+                l.monitor = Monitor::Listening { _input: input };
+                l.playback.send(PlayerCommand::Monitor { mode })?;
+            }
+            (MonitorMode::Dry | MonitorMode::Tuned, Monitor::Listening { .. }) => {
+                l.playback.send(PlayerCommand::Monitor { mode })?;
+            }
+        }
+        let device = engine.latency.get(&device_pair(&l.playback)).ms;
+        Ok(MonitorStatus::new(
+            mode,
+            l.playback.monitor_latency_ms(),
+            device,
+        ))
+    })
+    .map_err(fail)
+}
+
+/// The auto-tune settings: the live tuner's, and the project's (a save keeps them).
+#[tauri::command]
+fn set_tune(engine: State<Engine>, settings: TuneSettings) -> Result<(), String> {
+    with_loaded(&engine, |l| {
+        l.project.tune = settings;
+        l.playback.send(PlayerCommand::Tune { settings })
+    })
+    .map_err(fail)
+}
+
+/// What auto-tune would do to a take (from its stored pitch; no audio needed).
+#[tauri::command]
+fn tune_preview(
+    engine: State<Engine>,
+    take: u32,
+    settings: TuneSettings,
+) -> Result<TunePreview, String> {
+    with_loaded(&engine, |l| Ok(tune::preview(&l.project, take, settings)?)).map_err(fail)
+}
+
+/// Renders a take auto-tuned (offline, high quality) as a new take, "<take> (tuned)", and
+/// scores it. The original take is kept.
+#[tauri::command]
+async fn apply_tune(
+    app: AppHandle,
+    take: u32,
+    tune: TuneSettings,
+    settings: ScoreSettings,
+) -> Result<TakeAdded, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let (key, project) =
+            with_loaded(&engine, |l| Ok((l.cache_key.clone(), l.project.clone())))?;
+        let timeline = engine.cache.take_audio(&key, take)?;
+        let tuned = tune::render(&project, take, &timeline, tune)?;
+        let pitch = track_timeline(&engine, &project, &tuned)?;
+        add_take(
+            &engine,
+            TakeSource::Tuned { from: take },
+            &tuned,
             pitch,
             settings,
         )
@@ -772,6 +867,10 @@ fn main() {
             latency,
             set_latency,
             measure_latency,
+            set_monitor,
+            set_tune,
+            tune_preview,
+            apply_tune,
             list_projects,
             open_project,
             save_project,

@@ -4,6 +4,10 @@
 //! callback publishes the transport state through an atomic, and the stream time at which each
 //! cue (count-in, calibration chirp) starts playing through a ring, so a capture can be lined up
 //! with it. The callback never allocates, locks, or drops the last reference to track audio.
+//!
+//! While monitoring, the microphone's ring ([`crate::capture::MonitorInput`]) is handed to the
+//! callback, which mixes the voice in through the player; replaced rings travel back here to be
+//! dropped, never on the audio thread.
 
 use crate::decode;
 use anyhow::{bail, Context, Result};
@@ -21,6 +25,15 @@ use std::thread::JoinHandle;
 const COMMAND_CAPACITY: usize = 256;
 const CUE_CAPACITY: usize = 8;
 const BLOCK: usize = 512;
+/// Monitor input queued beyond one block is skipped past this, so input and output clocks
+/// drifting apart can't build up delay (~12 ms at 44.1 kHz).
+const MONITOR_BACKLOG: usize = 512;
+
+/// A change of the callback's microphone feed.
+enum MonitorFeed {
+    Attach(rtrb::Consumer<f32>),
+    Detach,
+}
 
 pub struct Playback {
     commands: rtrb::Producer<PlayerCommand>,
@@ -33,6 +46,11 @@ pub struct Playback {
     /// Tracks handed to the callback after it started. Kept here so the audio thread never
     /// frees their audio.
     added: Vec<PlayerTrack>,
+    monitor: rtrb::Producer<MonitorFeed>,
+    /// Microphone rings the callback let go of, dropped here.
+    retired: rtrb::Consumer<rtrb::Consumer<f32>>,
+    /// Delay of the tuned monitor (frames at the device rate).
+    monitor_latency: usize,
     shutdown: mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
 }
@@ -69,7 +87,14 @@ impl Playback {
             let at_device = resample(&[timeline], project.sample_rate, sample_rate)?.remove(0);
             tracks.push(take::player_track(t, at_device.into()));
         }
-        let mut player = Player::new(tracks, sample_rate);
+        let mut player = Player::new(
+            tracks,
+            sample_rate,
+            project.analysis.reference_notes.clone(),
+        );
+        let monitor_latency = player.monitor_latency();
+        let (monitor, mut monitor_rx) = rtrb::RingBuffer::<MonitorFeed>::new(4);
+        let (mut retired_tx, retired) = rtrb::RingBuffer::<rtrb::Consumer<f32>>::new(4);
 
         let (commands, mut consumer) = rtrb::RingBuffer::new(COMMAND_CAPACITY);
         let (track_tx, mut track_rx) = rtrb::RingBuffer::<PlayerTrack>::new(MAX_ADDED_TRACKS);
@@ -82,7 +107,21 @@ impl Playback {
 
         // cpal streams are not Send on every platform, so the stream lives on its own thread.
         let thread = std::thread::spawn(move || {
+            let mut mic: Option<rtrb::Consumer<f32>> = None;
             let callback = move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                while let Ok(feed) = monitor_rx.pop() {
+                    let old = match feed {
+                        MonitorFeed::Attach(ring) => mic.replace(ring),
+                        MonitorFeed::Detach => mic.take(),
+                    };
+                    if let Some(old) = old {
+                        // The control side drains `retired` before every feed change, so it
+                        // has room; if not, leaking a ring beats freeing on the audio thread.
+                        if let Err(rtrb::PushError::Full(old)) = retired_tx.push(old) {
+                            std::mem::forget(old);
+                        }
+                    }
+                }
                 while let Ok(track) = track_rx.pop() {
                     // The control side checks the reserve, and keeps a reference to the audio.
                     let _ = player.add_track(track);
@@ -97,9 +136,17 @@ impl Playback {
                     let _ = cue_tx.push(info.timestamp().playback);
                 }
                 let (mut left, mut right) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+                let mut input = [0.0f32; BLOCK];
                 for out in data.chunks_mut(BLOCK * channels) {
                     let frames = out.len() / channels;
-                    player.render(&mut left[..frames], &mut right[..frames]);
+                    let voice: &[f32] = match mic.as_mut() {
+                        Some(ring) => {
+                            read_monitor(ring, &mut input[..frames]);
+                            &input[..frames]
+                        }
+                        None => &[],
+                    };
+                    player.render(&mut left[..frames], &mut right[..frames], voice);
                     for (i, frame) in out.chunks_mut(channels).enumerate() {
                         frame.fill(0.0);
                         frame[0] = left[i];
@@ -138,6 +185,9 @@ impl Playback {
             project_rate: project.sample_rate,
             device: device_name,
             added: Vec::new(),
+            monitor,
+            retired,
+            monitor_latency,
             shutdown,
             thread: Some(thread),
         })
@@ -154,6 +204,29 @@ impl Playback {
         self.tracks
             .push(track)
             .map_err(|_| anyhow::anyhow!("track queue full"))
+    }
+
+    /// Hands the microphone ring of a [`crate::capture::MonitorInput`] to the callback
+    /// (replacing any other).
+    pub fn attach_monitor(&mut self, ring: rtrb::Consumer<f32>) -> Result<()> {
+        self.feed(MonitorFeed::Attach(ring))
+    }
+
+    /// Takes the microphone ring back from the callback.
+    pub fn detach_monitor(&mut self) -> Result<()> {
+        self.feed(MonitorFeed::Detach)
+    }
+
+    fn feed(&mut self, feed: MonitorFeed) -> Result<()> {
+        while self.retired.pop().is_ok() {}
+        self.monitor
+            .push(feed)
+            .map_err(|_| anyhow::anyhow!("monitor queue full"))
+    }
+
+    /// Delay of the tuned monitor, in ms (the devices' own latency comes on top).
+    pub fn monitor_latency_ms(&self) -> f32 {
+        self.monitor_latency as f32 * 1000.0 / self.sample_rate as f32
     }
 
     /// Forgets cue times not yet collected (before starting a new cue).
@@ -199,6 +272,26 @@ impl Drop for Playback {
             let _ = t.join();
         }
     }
+}
+
+/// Fills `out` with the oldest queued microphone samples (silence for any shortfall), first
+/// skipping input queued past [`MONITOR_BACKLOG`].
+fn read_monitor(ring: &mut rtrb::Consumer<f32>, out: &mut [f32]) {
+    let excess = ring.slots().saturating_sub(out.len() + MONITOR_BACKLOG);
+    if let Ok(chunk) = ring.read_chunk(excess) {
+        chunk.commit_all();
+    }
+    let n = ring.slots().min(out.len());
+    match ring.read_chunk(n) {
+        Ok(chunk) => {
+            let (a, b) = chunk.as_slices();
+            out[..a.len()].copy_from_slice(a);
+            out[a.len()..n].copy_from_slice(b);
+            chunk.commit_all();
+        }
+        Err(_) => out[..n].fill(0.0),
+    }
+    out[n..].fill(0.0);
 }
 
 fn is_cue(t: Transport) -> bool {
@@ -253,5 +346,24 @@ mod tests {
         ] {
             assert_eq!(decode_transport(encode(t)), t);
         }
+    }
+
+    #[test]
+    fn monitor_reads_the_oldest_samples_and_bounds_the_backlog() {
+        let (mut tx, mut rx) = rtrb::RingBuffer::<f32>::new(4096);
+        let mut out = [1.0f32; 4];
+        // Shortfall: two samples queued, the rest silence.
+        tx.push(0.5).unwrap();
+        tx.push(0.25).unwrap();
+        read_monitor(&mut rx, &mut out);
+        assert_eq!(out, [0.5, 0.25, 0.0, 0.0]);
+        // Too much queued: skip to the newest block + backlog.
+        for i in 0..2000 {
+            tx.push(i as f32).unwrap();
+        }
+        read_monitor(&mut rx, &mut out);
+        let first = (2000 - 4 - MONITOR_BACKLOG) as f32;
+        assert_eq!(out, [first, first + 1.0, first + 2.0, first + 3.0]);
+        assert_eq!(rx.slots(), MONITOR_BACKLOG);
     }
 }

@@ -1,4 +1,4 @@
-//! Microphone capture for takes and calibration (AGENTS.md §9).
+//! Microphone capture for takes and calibration, and the live monitor's input (AGENTS.md §9).
 //!
 //! The cpal input callback mixes each block to mono and pushes it into a lock-free ring; a
 //! writer thread drains the ring into memory. The callback never allocates or locks: the block
@@ -30,14 +30,11 @@ pub struct Captured {
 
 /// An open microphone stream, capturing from the moment it starts.
 pub struct Capture {
-    device: String,
-    sample_rate: u32,
+    stream: InputStream,
     level: Arc<AtomicU32>,
     dropped: Arc<AtomicU64>,
     first: rtrb::Consumer<StreamInstant>,
     stop: Arc<AtomicBool>,
-    stream_shutdown: mpsc::Sender<()>,
-    stream_thread: Option<JoinHandle<()>>,
     /// Everything captured so far, appended by the writer thread (never the audio callback).
     samples: Arc<Mutex<Vec<f32>>>,
     writer: Option<JoinHandle<()>>,
@@ -51,46 +48,60 @@ pub fn default_input_name() -> String {
         .unwrap_or_default()
 }
 
-impl Capture {
-    /// Opens the default input device and starts capturing.
-    pub fn start() -> Result<Self> {
+/// An open input stream. cpal streams are not `Send` on every platform, so each lives on its
+/// own thread until dropped. Shared by [`Capture`] and [`MonitorInput`].
+struct InputStream {
+    device: String,
+    sample_rate: u32,
+    shutdown: mpsc::Sender<()>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl InputStream {
+    /// Opens the default input at `rate` (its default rate when `None`) and calls
+    /// `on_block(mono frame, info)` from the audio callback for every frame of every block.
+    /// `on_block` must not allocate or lock.
+    fn open<F>(rate: Option<u32>, on_block: F) -> Result<Self>
+    where
+        F: FnMut(&[f32], &cpal::InputCallbackInfo) + Send + 'static,
+    {
         let device = cpal::default_host()
             .default_input_device()
             .context("no microphone found")?;
         let name = device.name().unwrap_or_default();
-        let config = device
-            .default_input_config()
-            .context("the microphone has no usable format")?;
+        let config = match rate {
+            None => device
+                .default_input_config()
+                .context("the microphone has no usable format")?,
+            Some(wanted) => device
+                .supported_input_configs()?
+                .filter(|c| c.sample_format() == cpal::SampleFormat::F32)
+                .find(|c| c.min_sample_rate().0 <= wanted && wanted <= c.max_sample_rate().0)
+                .map(|c| c.with_sample_rate(cpal::SampleRate(wanted)))
+                .with_context(|| {
+                    format!("the microphone can't run at {wanted} Hz, the output's rate")
+                })?,
+        };
         if config.sample_format() != cpal::SampleFormat::F32 {
             bail!("the microphone does not offer f32 samples");
         }
         let sample_rate = config.sample_rate().0;
         let channels = config.channels() as usize;
-        let (mut producer, consumer) = rtrb::RingBuffer::<f32>::new(RING);
-        let (mut first_tx, first) = rtrb::RingBuffer::<StreamInstant>::new(1);
-        let level = Arc::new(AtomicU32::new(0));
-        let dropped = Arc::new(AtomicU64::new(0));
-        let stop = Arc::new(AtomicBool::new(false));
-        let (stream_shutdown, shutdown_rx) = mpsc::channel::<()>();
+        let (shutdown, shutdown_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
         let stream_config: cpal::StreamConfig = config.into();
-        let (cb_level, cb_dropped) = (level.clone(), dropped.clone());
-
-        let stream_thread = std::thread::spawn(move || {
-            let mut timed = false;
+        let mut on_block = on_block;
+        let thread = std::thread::spawn(move || {
+            // Mixed to mono in a fixed buffer, so the callback never allocates.
+            let mut mono = [0.0f32; 1024];
             let callback = move |data: &[f32], info: &cpal::InputCallbackInfo| {
-                if !timed {
-                    timed = first_tx.push(info.timestamp().capture).is_ok();
-                }
-                let mut peak = 0.0f32;
-                for frame in data.chunks(channels) {
-                    let v = frame.iter().sum::<f32>() / channels as f32;
-                    peak = peak.max(v.abs());
-                    if producer.push(v).is_err() {
-                        cb_dropped.fetch_add(1, Ordering::Relaxed);
+                for block in data.chunks(mono.len() * channels) {
+                    let frames = block.len() / channels;
+                    for (m, frame) in mono.iter_mut().zip(block.chunks(channels)) {
+                        *m = frame.iter().sum::<f32>() / channels as f32;
                     }
+                    on_block(&mono[..frames], info);
                 }
-                cb_level.store(peak.to_bits(), Ordering::Relaxed);
             };
             let stream = device
                 .build_input_stream(
@@ -116,6 +127,76 @@ impl Capture {
             }
         });
         ready_rx.recv().context("input thread exited")??;
+        Ok(Self {
+            device: name,
+            sample_rate,
+            shutdown,
+            thread: Some(thread),
+        })
+    }
+
+    fn close(&mut self) {
+        let _ = self.shutdown.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl Drop for InputStream {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// The microphone for live monitoring (AGENTS.md §7 step 3): mono samples at the output's rate
+/// into a ring that the playback callback drains ([`crate::playback::Playback::attach_monitor`]).
+pub struct MonitorInput {
+    _stream: InputStream,
+}
+
+/// Monitor ring capacity: ~185 ms at 44.1 kHz; the output callback keeps it nearly empty.
+const MONITOR_RING: usize = 8192;
+
+impl MonitorInput {
+    /// Opens the default input at `sample_rate`; returns it and the ring's reading end.
+    pub fn start(sample_rate: u32) -> Result<(Self, rtrb::Consumer<f32>)> {
+        let (mut producer, consumer) = rtrb::RingBuffer::<f32>::new(MONITOR_RING);
+        let stream = InputStream::open(Some(sample_rate), move |mono, _| {
+            // A full ring means the output stopped draining: drop the newest samples.
+            for &v in mono {
+                if producer.push(v).is_err() {
+                    break;
+                }
+            }
+        })?;
+        Ok((Self { _stream: stream }, consumer))
+    }
+}
+
+impl Capture {
+    /// Opens the default input device and starts capturing.
+    pub fn start() -> Result<Self> {
+        let (mut producer, consumer) = rtrb::RingBuffer::<f32>::new(RING);
+        let (mut first_tx, first) = rtrb::RingBuffer::<StreamInstant>::new(1);
+        let level = Arc::new(AtomicU32::new(0));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (cb_level, cb_dropped) = (level.clone(), dropped.clone());
+        let mut timed = false;
+        let stream = InputStream::open(None, move |mono, info| {
+            if !timed {
+                timed = first_tx.push(info.timestamp().capture).is_ok();
+            }
+            let mut peak = 0.0f32;
+            for &v in mono {
+                peak = peak.max(v.abs());
+                if producer.push(v).is_err() {
+                    cb_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            cb_level.store(peak.to_bits(), Ordering::Relaxed);
+        })?;
 
         let writer_stop = stop.clone();
         let samples = Arc::new(Mutex::new(Vec::new()));
@@ -135,21 +216,18 @@ impl Capture {
         });
 
         Ok(Self {
-            device: name,
-            sample_rate,
+            stream,
             level,
             dropped,
             first,
             stop,
-            stream_shutdown,
-            stream_thread: Some(stream_thread),
             samples,
             writer: Some(writer),
         })
     }
 
     pub fn device(&self) -> &str {
-        &self.device
+        &self.stream.device
     }
 
     /// Peak of the latest input block, 0–1.
@@ -164,7 +242,7 @@ impl Capture {
     }
 
     pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        self.stream.sample_rate
     }
 
     /// Stream time of the first captured sample, once the first block has arrived.
@@ -174,7 +252,7 @@ impl Capture {
 
     /// Stops the stream and returns everything captured.
     pub fn finish(mut self) -> Result<Captured> {
-        self.close_stream();
+        self.stream.close();
         self.stop.store(true, Ordering::Release);
         self.writer
             .take()
@@ -188,23 +266,16 @@ impl Capture {
             .map_err(|_| anyhow::anyhow!("the microphone delivered no audio"))?;
         Ok(Captured {
             samples,
-            sample_rate: self.sample_rate,
+            sample_rate: self.stream.sample_rate,
             first,
             dropped: self.dropped.load(Ordering::Relaxed),
         })
-    }
-
-    fn close_stream(&mut self) {
-        let _ = self.stream_shutdown.send(());
-        if let Some(t) = self.stream_thread.take() {
-            let _ = t.join();
-        }
     }
 }
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        self.close_stream();
+        self.stream.close();
         self.stop.store(true, Ordering::Release);
         if let Some(w) = self.writer.take() {
             let _ = w.join();
