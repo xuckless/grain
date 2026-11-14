@@ -4,6 +4,7 @@ pub mod cache;
 pub mod capture;
 pub mod decode;
 pub mod denoise;
+pub mod generate;
 pub mod import;
 pub mod latency;
 pub mod models;

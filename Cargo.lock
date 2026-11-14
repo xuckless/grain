@@ -1172,6 +1172,7 @@ dependencies = [
  "engine-core",
  "engine-ml",
  "flate2",
+ "getrandom 0.3.4",
  "hound",
  "ndarray 0.17.2",
  "ort",
