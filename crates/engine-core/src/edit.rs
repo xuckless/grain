@@ -14,6 +14,7 @@
 use crate::key::Key;
 use crate::melody;
 use crate::pitch::{PitchFrame, PitchTrack};
+use crate::project::Project;
 use crate::shift;
 use crate::stretch::{self, TimeMap};
 use crate::tune::{Scale, TuneSettings};
@@ -198,6 +199,135 @@ pub enum EditOp {
     SetScale {
         scale: Scale,
     },
+}
+
+/// The edit list after a change, and the pitch it now gives (for redrawing).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EditUpdate {
+    pub edit: PitchEdit,
+    pub edited: Vec<Option<f32>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EditError {
+    #[error("no take {0}")]
+    UnknownTake(u32),
+    #[error("this song has no vocal melody to edit")]
+    NoVocal,
+}
+
+/// The pitch track of `source` in `project`.
+pub fn source_track(project: &Project, source: EditSource) -> Result<&PitchTrack, EditError> {
+    match source {
+        EditSource::VocalStem if !project.analysis.reference_notes.is_empty() => {
+            Ok(&project.analysis.reference_pitch)
+        }
+        EditSource::VocalStem => Err(EditError::NoVocal),
+        EditSource::Take { id } => project
+            .takes
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| &t.pitch)
+            .ok_or(EditError::UnknownTake(id)),
+    }
+}
+
+/// The song's key (snapping and segmentation), or C major when the analysis found none.
+fn song_key(project: &Project) -> Key {
+    project.analysis.keys.first().map_or(
+        Key {
+            tonic: 0,
+            mode: crate::key::Mode::Major,
+        },
+        |k| k.key,
+    )
+}
+
+/// The saved edit list of `source`, or a fresh analysis (snapping to auto-tune's scale).
+pub fn edit_of(project: &Project, source: EditSource) -> Result<PitchEdit, EditError> {
+    if let Some(e) = project.pitch_edits.iter().find(|e| e.source == source) {
+        return Ok(e.clone());
+    }
+    let track = source_track(project, source)?;
+    Ok(analyze(
+        source,
+        track,
+        song_key(project),
+        project.tune.scale,
+    ))
+}
+
+/// Opens `source` in the editor (`audio`: its mono audio on the song timeline).
+pub fn open(
+    project: &Project,
+    source: EditSource,
+    audio: &[f32],
+) -> Result<PitchEditView, EditError> {
+    let edit = edit_of(project, source)?;
+    Ok(view(
+        edit,
+        source_track(project, source)?,
+        audio,
+        project.sample_rate,
+    ))
+}
+
+/// Keeps `edit` with the project (replacing that source's list) and returns the redraw.
+pub fn store(project: &mut Project, edit: PitchEdit) -> Result<EditUpdate, EditError> {
+    let edited = edited_pitch(&edit, source_track(project, edit.source)?);
+    match project
+        .pitch_edits
+        .iter_mut()
+        .find(|e| e.source == edit.source)
+    {
+        Some(e) => *e = edit.clone(),
+        None => project.pitch_edits.push(edit.clone()),
+    }
+    Ok(EditUpdate { edit, edited })
+}
+
+/// Applies `op` to `edit`, keeps the result with the project and returns the redraw.
+pub fn apply_op(
+    project: &mut Project,
+    mut edit: PitchEdit,
+    op: &EditOp,
+) -> Result<EditUpdate, EditError> {
+    let track = source_track(project, edit.source)?;
+    apply(&mut edit, op, track);
+    store(project, edit)
+}
+
+/// Seeds take `take`'s edit list from auto-tune's settings and keeps it with the project.
+pub fn seed_from_tune(
+    project: &mut Project,
+    take: u32,
+    settings: TuneSettings,
+) -> Result<EditUpdate, EditError> {
+    let source = EditSource::Take { id: take };
+    let edit = from_tune(
+        source,
+        source_track(project, source)?,
+        song_key(project),
+        &project.analysis.reference_notes,
+        settings,
+    );
+    store(project, edit)
+}
+
+/// Renders the saved (or fresh) edit list of `source` over `audio` (its timeline audio).
+pub fn render_source(
+    project: &Project,
+    source: EditSource,
+    audio: &[f32],
+) -> Result<Vec<f32>, EditError> {
+    let edit = edit_of(project, source)?;
+    Ok(render(
+        &edit,
+        source_track(project, source)?,
+        audio,
+        project.sample_rate,
+    ))
 }
 
 /// Sung pitch of a frame, if voiced.

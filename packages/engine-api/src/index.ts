@@ -18,6 +18,11 @@ import type { TakeAdded } from "./generated/TakeAdded";
 import type { TransportSnapshot } from "./generated/TransportSnapshot";
 import type { TunePreview } from "./generated/TunePreview";
 import type { TuneSettings } from "./generated/TuneSettings";
+import type { EditOp } from "./generated/EditOp";
+import type { EditSource } from "./generated/EditSource";
+import type { EditUpdate } from "./generated/EditUpdate";
+import type { PitchEdit } from "./generated/PitchEdit";
+import type { PitchEditView } from "./generated/PitchEditView";
 
 export type { Accompaniment } from "./generated/Accompaniment";
 export type { Analysis } from "./generated/Analysis";
@@ -71,6 +76,13 @@ export type { TuneMode } from "./generated/TuneMode";
 export type { TunePreview } from "./generated/TunePreview";
 export type { TuneSettings } from "./generated/TuneSettings";
 export type { Vibrato } from "./generated/Vibrato";
+export type { EditNote } from "./generated/EditNote";
+export type { EditOp } from "./generated/EditOp";
+export type { EditSource } from "./generated/EditSource";
+export type { EditUpdate } from "./generated/EditUpdate";
+export type { PitchEdit } from "./generated/PitchEdit";
+export type { PitchEditView } from "./generated/PitchEditView";
+export type { Snap } from "./generated/Snap";
 
 export type ImportOutcome = { kind: "imported"; project: Project } | { kind: "cancelled" };
 
@@ -181,6 +193,21 @@ export type AutoTune = {
   apply(take: number, tune: TuneSettings, settings: ScoreSettings): Promise<TakeAdded>;
 };
 
+/** The pitch editor (AGENTS.md §7.1). Every change is kept with the loaded project (saved on the
+ * next Save); the UI keeps undo/redo as snapshots of the edit list. */
+export type PitchEditor = {
+  /** A take or the vocal stem: its saved edit list (or a fresh analysis), pitch and loudness. */
+  open(source: EditSource): Promise<PitchEditView>;
+  /** Applies one edit to `edit` and keeps the result. */
+  apply(edit: PitchEdit, op: EditOp): Promise<EditUpdate>;
+  /** Replaces a source's edit list (undo and redo). */
+  set(edit: PitchEdit): Promise<EditUpdate>;
+  /** Seeds take `take`'s edit list from auto-tune's settings (the editable correction curve). */
+  fromTune(take: number, settings: TuneSettings): Promise<EditUpdate>;
+  /** Renders a source's edits as a new take, "<source> (edited)", added and scored. */
+  render(source: EditSource, settings: ScoreSettings): Promise<TakeAdded>;
+};
+
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
 export interface EngineHost {
   readonly chrome: WindowChrome;
@@ -193,6 +220,7 @@ export interface EngineHost {
   importFile(quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome>;
   readonly microphone: Microphone;
   readonly autotune: AutoTune;
+  readonly pitchEditor: PitchEditor;
   /** Picks a sung take file, adds it to the loaded song and scores it. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
   /** Sets the loaded song's lyrics (fetched by the UI from LRCLIB, or edited) and returns them

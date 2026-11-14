@@ -5,7 +5,7 @@
 use crate::decode;
 use anyhow::{Context, Result};
 use engine_core::audio::StereoAudio;
-use engine_core::project::{self, Project, ProjectSummary, SongAudio, TrackSource};
+use engine_core::project::{self, Project, ProjectSummary, SongAudio, Stem, TrackSource};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -66,6 +66,23 @@ impl StemCache {
             audio,
             takes,
         })
+    }
+
+    /// The song's vocal (the reference the melody was tracked on: the vocal stem, or the mix
+    /// when unseparated) as mono timeline audio, without decoding the other stems.
+    pub fn vocal_audio(&self, key: &str, project: &Project) -> Result<Vec<f32>> {
+        let source = project
+            .tracks
+            .iter()
+            .map(|t| t.source)
+            .find(|s| {
+                matches!(
+                    s,
+                    TrackSource::Stem { stem: Stem::Vocals } | TrackSource::Mix
+                )
+            })
+            .context("the song has no vocal track")?;
+        Ok(decode::decode(&self.dir(key).join(file_name(&source)))?.to_mono())
     }
 
     /// A stored take's timeline audio (mono, project rate).

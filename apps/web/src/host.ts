@@ -23,6 +23,8 @@ import type {
   Transport,
   TransportSnapshot,
   TunePreview,
+  EditUpdate,
+  PitchEditView,
 } from "@workstation/engine-api";
 import init, { countIn, measureLatency, monitorStatus, projectSummary, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
@@ -539,6 +541,25 @@ export async function createWebHost(): Promise<EngineHost> {
         const song = loadedSong();
         await nextFrame(); // let the UI show it's working before the render blocks
         return playTake(song, song.applyTune(take, tune, settings) as TakeAdded);
+      },
+    },
+    pitchEditor: {
+      async open(source) {
+        return loadedSong().pitchOpen(source) as PitchEditView;
+      },
+      async apply(edit, op) {
+        return loadedSong().pitchApply(edit, op) as EditUpdate;
+      },
+      async set(edit) {
+        return loadedSong().pitchSet(edit) as EditUpdate;
+      },
+      async fromTune(take, settings) {
+        return loadedSong().pitchFromTune(take, settings) as EditUpdate;
+      },
+      async render(source, settings) {
+        const song = loadedSong();
+        await nextFrame(); // let the UI show it's rendering before the render blocks
+        return playTake(song, song.pitchRender(source, settings) as TakeAdded);
       },
     },
     async send(command) {

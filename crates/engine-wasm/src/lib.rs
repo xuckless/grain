@@ -4,6 +4,7 @@
 
 use engine_core::audio::StereoAudio;
 use engine_core::cue;
+use engine_core::edit::{self, EditOp, EditSource};
 use engine_core::live::LiveSession;
 use engine_core::lyrics::{self, LyricsUpdate};
 use engine_core::melody::Note;
@@ -84,6 +85,14 @@ impl WasmSong {
             project: self.project.clone(),
             take: id,
         })
+    }
+
+    /// Mono timeline audio of a pitch-editor source.
+    fn edit_audio(&self, source: EditSource) -> Result<Vec<f32>, JsError> {
+        match source {
+            EditSource::Take { id } => Ok(self.timeline(id)?.to_vec()),
+            EditSource::VocalStem => Ok(project::reference_signal(&self.audio)),
+        }
     }
 
     /// Timeline audio of take `id`.
@@ -251,6 +260,45 @@ impl WasmSong {
             tune::render(&self.project, id, self.timeline(id)?, from_js(tune)?).map_err(js_err)?;
         let pitch = TrackedPitch::yin(&tuned, self.project.sample_rate);
         self.add(TakeSource::Tuned { from: id }, tuned, pitch, settings)
+    }
+
+    /// Opens a pitch-editor source (an `EditSource`); returns a `PitchEditView`.
+    #[wasm_bindgen(js_name = pitchOpen)]
+    pub fn pitch_open(&self, source: JsValue) -> Result<JsValue, JsError> {
+        let source: EditSource = from_js(source)?;
+        let audio = self.edit_audio(source)?;
+        to_js(&edit::open(&self.project, source, &audio).map_err(js_err)?)
+    }
+
+    /// Applies an `EditOp` to a `PitchEdit`, keeping it with the project; returns an `EditUpdate`.
+    #[wasm_bindgen(js_name = pitchApply)]
+    pub fn pitch_apply(&mut self, edit: JsValue, op: JsValue) -> Result<JsValue, JsError> {
+        let op: EditOp = from_js(op)?;
+        to_js(&edit::apply_op(&mut self.project, from_js(edit)?, &op).map_err(js_err)?)
+    }
+
+    /// Replaces a source's edit list (undo and redo); returns an `EditUpdate`.
+    #[wasm_bindgen(js_name = pitchSet)]
+    pub fn pitch_set(&mut self, edit: JsValue) -> Result<JsValue, JsError> {
+        to_js(&edit::store(&mut self.project, from_js(edit)?).map_err(js_err)?)
+    }
+
+    /// Seeds take `id`'s edit list from auto-tune `settings`; returns an `EditUpdate`.
+    #[wasm_bindgen(js_name = pitchFromTune)]
+    pub fn pitch_from_tune(&mut self, id: u32, settings: JsValue) -> Result<JsValue, JsError> {
+        to_js(&edit::seed_from_tune(&mut self.project, id, from_js(settings)?).map_err(js_err)?)
+    }
+
+    /// Renders a source's edits as a new take, "<source> (edited)", and scores it. Returns a
+    /// `TakeAdded`.
+    #[wasm_bindgen(js_name = pitchRender)]
+    pub fn pitch_render(&mut self, source: JsValue, settings: JsValue) -> Result<JsValue, JsError> {
+        let source: EditSource = from_js(source)?;
+        let settings: ScoreSettings = from_js(settings)?;
+        let audio = self.edit_audio(source)?;
+        let edited = edit::render_source(&self.project, source, &audio).map_err(js_err)?;
+        let pitch = TrackedPitch::yin(&edited, self.project.sample_rate);
+        self.add(TakeSource::Edited { from: source }, edited, pitch, settings)
     }
 }
 

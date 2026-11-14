@@ -6,6 +6,7 @@
 mod extractor;
 
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
+use engine_core::edit::{self, EditOp, EditSource, EditUpdate, PitchEdit, PitchEditView};
 use engine_core::live::{LiveSession, LiveUpdate};
 use engine_core::lyrics::{self, LyricsUpdate, ProjectLyrics};
 use engine_core::player::{
@@ -550,6 +551,86 @@ async fn apply_tune(
     .map_err(fail)
 }
 
+/// Mono timeline audio of a pitch-editor source.
+fn edit_audio(
+    engine: &Engine,
+    key: &str,
+    project: &Project,
+    source: EditSource,
+) -> anyhow::Result<Vec<f32>> {
+    match source {
+        EditSource::Take { id } => engine.cache.take_audio(key, id),
+        EditSource::VocalStem => engine.cache.vocal_audio(key, project),
+    }
+}
+
+/// Opens a take or the vocal stem in the pitch editor (AGENTS.md §7.1).
+#[tauri::command]
+async fn pitch_open(app: AppHandle, source: EditSource) -> Result<PitchEditView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let (key, project) =
+            with_loaded(&engine, |l| Ok((l.cache_key.clone(), l.project.clone())))?;
+        let audio = edit_audio(&engine, &key, &project, source)?;
+        Ok(edit::open(&project, source, &audio)?)
+    })
+    .await
+    .map_err(fail)?
+    .map_err(|e: anyhow::Error| fail(e))
+}
+
+/// Applies one pitch-editor edit; the list is kept with the project.
+#[tauri::command]
+fn pitch_apply(engine: State<Engine>, edit: PitchEdit, op: EditOp) -> Result<EditUpdate, String> {
+    with_loaded(&engine, |l| Ok(edit::apply_op(&mut l.project, edit, &op)?)).map_err(fail)
+}
+
+/// Replaces a source's edit list (undo and redo).
+#[tauri::command]
+fn pitch_set(engine: State<Engine>, edit: PitchEdit) -> Result<EditUpdate, String> {
+    with_loaded(&engine, |l| Ok(edit::store(&mut l.project, edit)?)).map_err(fail)
+}
+
+/// Seeds a take's edit list from auto-tune's settings (the editable correction curve).
+#[tauri::command]
+fn pitch_from_tune(
+    engine: State<Engine>,
+    take: u32,
+    settings: TuneSettings,
+) -> Result<EditUpdate, String> {
+    with_loaded(&engine, |l| {
+        Ok(edit::seed_from_tune(&mut l.project, take, settings)?)
+    })
+    .map_err(fail)
+}
+
+/// Renders a source's edits as a new take, "<source> (edited)", and scores it.
+#[tauri::command]
+async fn pitch_render(
+    app: AppHandle,
+    source: EditSource,
+    settings: ScoreSettings,
+) -> Result<TakeAdded, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let (key, project) =
+            with_loaded(&engine, |l| Ok((l.cache_key.clone(), l.project.clone())))?;
+        let audio = edit_audio(&engine, &key, &project, source)?;
+        let edited = edit::render_source(&project, source, &audio)?;
+        let pitch = track_timeline(&engine, &project, &edited)?;
+        add_take(
+            &engine,
+            TakeSource::Edited { from: source },
+            &edited,
+            pitch,
+            settings,
+        )
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
 /// Re-scores a saved take (from its stored pitch; no audio needed).
 #[tauri::command]
 fn score_recorded(
@@ -871,6 +952,11 @@ fn main() {
             set_tune,
             tune_preview,
             apply_tune,
+            pitch_open,
+            pitch_apply,
+            pitch_set,
+            pitch_from_tune,
+            pitch_render,
             list_projects,
             open_project,
             save_project,
