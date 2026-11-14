@@ -3,6 +3,9 @@
 
 import type { ImportStage } from "./generated/ImportStage";
 import type { Latency } from "./generated/Latency";
+import type { LiveUpdate } from "./generated/LiveUpdate";
+import type { LyricsUpdate } from "./generated/LyricsUpdate";
+import type { ProjectLyrics } from "./generated/ProjectLyrics";
 import type { PlayerCommand } from "./generated/PlayerCommand";
 import type { Project } from "./generated/Project";
 import type { ProjectSummary } from "./generated/ProjectSummary";
@@ -16,6 +19,15 @@ export type { Accompaniment } from "./generated/Accompaniment";
 export type { Analysis } from "./generated/Analysis";
 export type { Difficulty } from "./generated/Difficulty";
 export type { FrameComparison } from "./generated/FrameComparison";
+export type { FrameTotals } from "./generated/FrameTotals";
+export type { LineEdit } from "./generated/LineEdit";
+export type { LiveFrame } from "./generated/LiveFrame";
+export type { LiveUpdate } from "./generated/LiveUpdate";
+export type { LyricLine } from "./generated/LyricLine";
+export type { LyricsQuery } from "./generated/LyricsQuery";
+export type { LyricsUpdate } from "./generated/LyricsUpdate";
+export type { ProjectLyrics } from "./generated/ProjectLyrics";
+export type { Syllable } from "./generated/Syllable";
 export type { ImportStage } from "./generated/ImportStage";
 export type { SeparationQuality } from "./generated/SeparationQuality";
 export type { Key } from "./generated/Key";
@@ -107,6 +119,11 @@ export type Microphone =
       start(): Promise<void>;
       /** Peak input level of the latest block, 0–1. */
       level(): Promise<number>;
+      /** Live karaoke pitch while recording (AGENTS.md §6.3): frames sung since the previous
+       * call, on the song timeline with the round-trip latency removed, each compared with the
+       * reference by §5's per-frame rule, plus the run's running totals. Empty until the
+       * count-in has started. */
+      live(settings: ScoreSettings): Promise<LiveUpdate>;
       /** Stops, removes the round-trip latency, adds the take to the song and scores it. */
       finish(settings: ScoreSettings): Promise<TakeAdded>;
       /** Abandons the take. */
@@ -132,6 +149,9 @@ export interface EngineHost {
   readonly microphone: Microphone;
   /** Picks a sung take file, adds it to the loaded song and scores it. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
+  /** Sets the loaded song's lyrics (fetched by the UI from LRCLIB, or edited) and returns them
+   * timed against the reference notes. Kept with the project on the next save. */
+  setLyrics(update: LyricsUpdate): Promise<ProjectLyrics>;
   /** Re-scores take `id` of the loaded song (difficulty or octave changed, or picked again). */
   scoreRecorded(id: number, settings: ScoreSettings): Promise<ScoreReport>;
   send(command: PlayerCommand): Promise<void>;

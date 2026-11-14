@@ -5,9 +5,11 @@ import type {
   EngineHost,
   ImportOutcome,
   Latency,
+  LiveUpdate,
   Microphone,
   PlayerCommand,
   Project,
+  ProjectLyrics,
   ProjectStore,
   ProjectSummary,
   ScoreOutcome,
@@ -19,7 +21,7 @@ import type {
   Transport,
   TransportSnapshot,
 } from "@workstation/engine-api";
-import init, { countIn, measureLatency, projectSummary, WasmSeparator, WasmSong } from "engine-wasm";
+import init, { countIn, measureLatency, projectSummary, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
 import * as store from "./store";
 import wasmUrl from "engine-wasm/engine_wasm_bg.wasm?url";
@@ -43,7 +45,16 @@ type OpenMic = { stream: MediaStream; source: MediaStreamAudioSourceNode; ring: 
 /** What the microphone is doing. */
 type MicState =
   | { kind: "closed" }
-  | { kind: "recording"; mic: OpenMic; chunks: Float32Array[]; timer: number; fromSeconds: number; countInSeconds: number }
+  | {
+      kind: "recording";
+      mic: OpenMic;
+      chunks: Float32Array[];
+      timer: number;
+      fromSeconds: number;
+      countInSeconds: number;
+      /** Live karaoke pitch, started by the first `live()` call; `fed`: chunks already pushed. */
+      live: { kind: "idle" } | { kind: "running"; session: WasmLive; fed: number };
+    }
   | { kind: "calibrating" };
 
 /** The browser's audio processing would change the singer's voice and fight calibration. */
@@ -55,6 +66,11 @@ const DRAIN_MS = 50;
 const PROBE_TAIL_MS = 1100;
 const MAX_LATENCY_MS = 1000;
 const LATENCY_KEY = "grain.latency.";
+
+/** A live update with nothing sung yet. */
+function noLive(): LiveUpdate {
+  return { frames: [], totals: { hit: 0, miss: 0, reference_only: 0, user_only: 0 } };
+}
 
 export async function createWebHost(): Promise<EngineHost> {
   const module = await WebAssembly.compileStreaming(fetch(wasmUrl));
@@ -263,6 +279,7 @@ export async function createWebHost(): Promise<EngineHost> {
                 timer,
                 fromSeconds: from / context.sampleRate,
                 countInSeconds: (command.beats * command.beat_frames) / context.sampleRate,
+                live: { kind: "idle" },
               };
             } catch (e) {
               mic = { kind: "closed" };
@@ -272,11 +289,32 @@ export async function createWebHost(): Promise<EngineHost> {
           async level() {
             return mic.kind === "recording" ? mic.mic.ring.level[0] : 0;
           },
+          async live(settings: ScoreSettings) {
+            if (mic.kind !== "recording") return noLive();
+            const r = mic;
+            if (r.live.kind === "idle") {
+              const latency = await storedLatency();
+              if (mic !== r || r.live.kind !== "idle") return noLive();
+              // Same placement as `finish`: the cue started at capture sample 0.
+              const songZero = r.countInSeconds + latency.ms / 1000 - r.fromSeconds;
+              r.live = { kind: "running", session: loadedSong().liveSession(settings, context.sampleRate, songZero), fed: 0 };
+            }
+            const live = r.live;
+            r.chunks.push(drain(r.mic.ring)); // the freshest samples, not the last timer drain
+            const update = noLive();
+            for (; live.fed < r.chunks.length; live.fed++) {
+              const u = live.session.push(r.chunks[live.fed]) as LiveUpdate;
+              update.frames.push(...u.frames);
+              update.totals = u.totals;
+            }
+            return update;
+          },
           async finish(settings: ScoreSettings) {
             if (mic.kind !== "recording") throw new Error("No take is being recorded.");
             const r = mic;
             mic = { kind: "closed" };
             window.clearInterval(r.timer);
+            if (r.live.kind === "running") r.live.session.free();
             await stopPlayback();
             closeMic(r.mic);
             r.chunks.push(drain(r.mic.ring));
@@ -291,6 +329,7 @@ export async function createWebHost(): Promise<EngineHost> {
           async cancel() {
             if (mic.kind !== "recording") return;
             window.clearInterval(mic.timer);
+            if (mic.live.kind === "running") mic.live.session.free();
             closeMic(mic.mic);
             mic = { kind: "closed" };
             await stopPlayback();
@@ -381,6 +420,9 @@ export async function createWebHost(): Promise<EngineHost> {
     scoreTake,
     async scoreRecorded(id, settings) {
       return loadedSong().scoreTake(id, settings) as ScoreReport;
+    },
+    async setLyrics(update) {
+      return loadedSong().setLyrics(update) as ProjectLyrics;
     },
     microphone,
     async send(command) {

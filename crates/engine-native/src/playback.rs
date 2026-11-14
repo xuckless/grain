@@ -161,6 +161,11 @@ impl Playback {
         while self.cues.pop().is_ok() {}
     }
 
+    /// Like [`Playback::take_cue`], without collecting it.
+    pub fn peek_cue(&self) -> Option<StreamInstant> {
+        self.cues.peek().ok().copied()
+    }
+
     /// Stream time at which the oldest uncollected cue started playing.
     pub fn take_cue(&mut self) -> Option<StreamInstant> {
         self.cues.pop().ok()

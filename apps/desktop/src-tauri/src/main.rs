@@ -3,6 +3,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
+use engine_core::live::{LiveSession, LiveUpdate};
+use engine_core::lyrics::{self, LyricsUpdate, ProjectLyrics};
 use engine_core::player::{PlayerCommand, Transport, TransportSnapshot};
 use engine_core::project::{
     self, ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource,
@@ -12,7 +14,7 @@ use engine_core::score::{ScoreReport, ScoreSettings};
 use engine_core::take::{self, TakeAdded, TakeSource};
 use engine_core::WORKING_SAMPLE_RATE;
 use engine_native::cache::{Lookup, StemCache};
-use engine_native::capture::{self, Capture};
+use engine_native::capture::{self, Capture, StreamInstant};
 use engine_native::decode;
 use engine_native::import::{import_song, Imported, Separation};
 use engine_native::latency::{self, LatencyStore};
@@ -46,9 +48,35 @@ enum Mic {
         capture: Capture,
         from_seconds: f64,
         count_in_seconds: f64,
+        live: Live,
     },
     /// A latency calibration owns the microphone (its capture lives in that command).
     Calibrating,
+}
+
+/// Live karaoke pitch of the take being recorded (AGENTS.md §6.3).
+enum Live {
+    /// Until the count-in cue and the first input block have both arrived, the capture can't be
+    /// placed on the song timeline yet.
+    Waiting,
+    /// `read`: capture samples already fed to the session.
+    Running {
+        session: Box<LiveSession>,
+        read: usize,
+    },
+}
+
+/// Capture time (seconds) of song time 0: the cue's position in the capture, then the count-in,
+/// plus the round-trip latency, minus where on the song the count-in started.
+fn song_zero(
+    cue: StreamInstant,
+    first: StreamInstant,
+    count_in_seconds: f64,
+    latency: &Latency,
+    from_seconds: f64,
+) -> f64 {
+    capture::seconds_between(cue, first) + count_in_seconds + f64::from(latency.ms) / 1000.0
+        - from_seconds
 }
 
 /// Longest wait for the calibration chirp to finish playing.
@@ -430,6 +458,7 @@ fn start_recording(engine: State<Engine>) -> Result<(), String> {
             capture,
             from_seconds: f64::from(from) / f64::from(rate),
             count_in_seconds: f64::from(beats * beat_frames) / f64::from(rate),
+            live: Live::Waiting,
         };
         Ok(())
     })
@@ -459,6 +488,7 @@ async fn finish_recording(app: AppHandle, settings: ScoreSettings) -> Result<Tak
                     capture,
                     from_seconds,
                     count_in_seconds,
+                    ..
                 } = std::mem::replace(&mut l.mic, Mic::Closed)
                 else {
                     anyhow::bail!("no take is being recorded");
@@ -483,10 +513,13 @@ async fn finish_recording(app: AppHandle, settings: ScoreSettings) -> Result<Tak
                 ))
             })?;
         let captured = capture.finish()?;
-        let song_zero = capture::seconds_between(cue, captured.first)
-            + count_in_seconds
-            + f64::from(latency.ms) / 1000.0
-            - from_seconds;
+        let song_zero = song_zero(
+            cue,
+            captured.first,
+            count_in_seconds,
+            &latency,
+            from_seconds,
+        );
         let timeline = take::timeline_from_capture(
             &project,
             &captured.samples,
@@ -507,6 +540,53 @@ async fn finish_recording(app: AppHandle, settings: ScoreSettings) -> Result<Tak
     .await
     .map_err(fail)?
     .map_err(fail)
+}
+
+/// Live pitch of the take being recorded since the previous call, compared with the reference.
+#[tauri::command]
+fn live_pitch(engine: State<Engine>, settings: ScoreSettings) -> Result<LiveUpdate, String> {
+    with_loaded(&engine, |l| {
+        let Mic::Recording {
+            capture,
+            from_seconds,
+            count_in_seconds,
+            live,
+        } = &mut l.mic
+        else {
+            return Ok(LiveUpdate::default());
+        };
+        if let Live::Waiting = live {
+            let (Some(cue), Some(first)) = (l.playback.peek_cue(), capture.first_instant()) else {
+                return Ok(LiveUpdate::default());
+            };
+            let latency = engine
+                .latency
+                .get(&latency::devices(capture.device(), l.playback.device()));
+            *live = Live::Running {
+                session: Box::new(LiveSession::new(
+                    &l.project.analysis.reference_pitch,
+                    f64::from(l.project.frames) / f64::from(l.project.sample_rate),
+                    settings,
+                    capture.sample_rate(),
+                    song_zero(cue, first, *count_in_seconds, &latency, *from_seconds),
+                )),
+                read: 0,
+            };
+        }
+        let Live::Running { session, read } = live else {
+            unreachable!("set above")
+        };
+        let samples = capture.samples_since(*read);
+        *read += samples.len();
+        Ok(session.push(&samples))
+    })
+    .map_err(fail)
+}
+
+/// Sets the loaded song's lyrics (fetched, not found, or edited) and returns them timed.
+#[tauri::command]
+fn set_lyrics(engine: State<Engine>, update: LyricsUpdate) -> Result<ProjectLyrics, String> {
+    with_loaded(&engine, |l| Ok(lyrics::apply(&mut l.project, update)?)).map_err(fail)
 }
 
 /// Abandons the take being recorded.
@@ -646,6 +726,8 @@ fn main() {
             score_recorded,
             start_recording,
             capture_level,
+            live_pitch,
+            set_lyrics,
             finish_recording,
             cancel_recording,
             latency,

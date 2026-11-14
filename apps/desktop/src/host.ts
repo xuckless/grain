@@ -8,8 +8,10 @@ import type {
   EngineHost,
   ImportOutcome,
   ImportStage,
+  LiveUpdate,
   Latency,
   Project,
+  ProjectLyrics,
   ProjectSummary,
   ScoreReport,
   SeparationOffer,
@@ -81,10 +83,12 @@ export async function createDesktopHost(): Promise<EngineHost> {
       return { kind: "scored", added: await invoke<TakeAdded>("score_take", { path, settings }) };
     },
     scoreRecorded: (take, settings) => invoke<ScoreReport>("score_recorded", { take, settings }),
+    setLyrics: (update) => invoke<ProjectLyrics>("set_lyrics", { update }),
     microphone: {
       kind: "available",
       start: () => invoke("start_recording"),
       level: () => invoke<number>("capture_level"),
+      live: (settings) => invoke<LiveUpdate>("live_pitch", { settings }),
       finish: (settings) => invoke<TakeAdded>("finish_recording", { settings }),
       cancel: () => invoke("cancel_recording"),
       latency: () => invoke<Latency>("latency"),

@@ -7,9 +7,9 @@
 
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::StreamInstant;
+pub use cpal::StreamInstant;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -38,7 +38,9 @@ pub struct Capture {
     stop: Arc<AtomicBool>,
     stream_shutdown: mpsc::Sender<()>,
     stream_thread: Option<JoinHandle<()>>,
-    writer: Option<JoinHandle<Vec<f32>>>,
+    /// Everything captured so far, appended by the writer thread (never the audio callback).
+    samples: Arc<Mutex<Vec<f32>>>,
+    writer: Option<JoinHandle<()>>,
 }
 
 /// Name of the default input device ("" if there is none).
@@ -116,16 +118,17 @@ impl Capture {
         ready_rx.recv().context("input thread exited")??;
 
         let writer_stop = stop.clone();
+        let samples = Arc::new(Mutex::new(Vec::new()));
+        let out = samples.clone();
         let writer = std::thread::spawn(move || {
             let mut consumer = consumer;
-            let mut out = Vec::new();
             loop {
                 let available = consumer.slots();
                 if let Ok(chunk) = consumer.read_chunk(available) {
-                    out.extend(chunk);
+                    out.lock().expect("capture buffer").extend(chunk);
                 }
                 if writer_stop.load(Ordering::Acquire) && consumer.slots() == 0 {
-                    return out;
+                    return;
                 }
                 std::thread::sleep(DRAIN_EVERY);
             }
@@ -140,6 +143,7 @@ impl Capture {
             stop,
             stream_shutdown,
             stream_thread: Some(stream_thread),
+            samples,
             writer: Some(writer),
         })
     }
@@ -153,16 +157,31 @@ impl Capture {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
+    /// Samples captured from index `from` on (for live pitch while recording).
+    pub fn samples_since(&self, from: usize) -> Vec<f32> {
+        let samples = self.samples.lock().expect("capture buffer");
+        samples.get(from..).map(<[f32]>::to_vec).unwrap_or_default()
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Stream time of the first captured sample, once the first block has arrived.
+    pub fn first_instant(&self) -> Option<StreamInstant> {
+        self.first.peek().ok().copied()
+    }
+
     /// Stops the stream and returns everything captured.
     pub fn finish(mut self) -> Result<Captured> {
         self.close_stream();
         self.stop.store(true, Ordering::Release);
-        let samples = self
-            .writer
+        self.writer
             .take()
             .expect("writer runs until finish")
             .join()
             .map_err(|_| anyhow::anyhow!("capture writer panicked"))?;
+        let samples = std::mem::take(&mut *self.samples.lock().expect("capture buffer"));
         let first = self
             .first
             .pop()

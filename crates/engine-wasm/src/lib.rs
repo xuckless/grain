@@ -4,6 +4,8 @@
 
 use engine_core::audio::StereoAudio;
 use engine_core::cue;
+use engine_core::live::LiveSession;
+use engine_core::lyrics::{self, LyricsUpdate};
 use engine_core::player::{Player, PlayerCommand, PlayerTrack};
 use engine_core::project::{self, Project, SongAudio, SongSource, TrackedPitch};
 use engine_core::score::ScoreSettings;
@@ -166,6 +168,33 @@ impl WasmSong {
             pitch,
             settings,
         )
+    }
+
+    /// Sets the song's lyrics (a `LyricsUpdate`); returns the timed `ProjectLyrics`.
+    #[wasm_bindgen(js_name = setLyrics)]
+    pub fn set_lyrics(&mut self, update: JsValue) -> Result<JsValue, JsError> {
+        let update: LyricsUpdate = from_js(update)?;
+        to_js(&lyrics::apply(&mut self.project, update).map_err(js_err)?)
+    }
+
+    /// Starts live karaoke pitch for a capture whose song time 0 is at `song_zero_seconds`
+    /// (same placement as [`WasmSong::add_recorded_take`]).
+    #[wasm_bindgen(js_name = liveSession)]
+    pub fn live_session(
+        &self,
+        settings: JsValue,
+        capture_rate: u32,
+        song_zero_seconds: f64,
+    ) -> Result<WasmLive, JsError> {
+        Ok(WasmLive {
+            session: LiveSession::new(
+                &self.project.analysis.reference_pitch,
+                f64::from(self.project.frames) / f64::from(self.project.sample_rate),
+                from_js(settings)?,
+                capture_rate,
+                song_zero_seconds,
+            ),
+        })
     }
 
     /// Re-scores take `id`; returns a `ScoreReport`.
@@ -425,5 +454,19 @@ impl WasmPlayer {
     /// Current `Transport`.
     pub fn transport(&self) -> Result<JsValue, JsError> {
         to_js(&self.player.transport())
+    }
+}
+
+/// Live karaoke pitch of a capture (main thread, fed from the capture ring's drains).
+#[wasm_bindgen]
+pub struct WasmLive {
+    session: LiveSession,
+}
+
+#[wasm_bindgen]
+impl WasmLive {
+    /// Feeds capture samples (in order); returns a `LiveUpdate`.
+    pub fn push(&mut self, samples: &[f32]) -> Result<JsValue, JsError> {
+        to_js(&self.session.push(samples))
     }
 }
