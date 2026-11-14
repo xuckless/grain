@@ -90,16 +90,26 @@ pub struct TuneSettings {
     pub mix: f32,
 }
 
-impl TuneSettings {
-    /// Natural-sounding defaults for a song in `key`.
-    pub fn for_key(key: Key) -> Self {
+/// Natural-sounding defaults, chromatic.
+impl Default for TuneSettings {
+    fn default() -> Self {
         Self {
             mode: TuneMode::Scale,
-            scale: Scale::Key { key },
+            scale: Scale::Chromatic,
             retune_ms: 40.0,
             humanize: 0.3,
             formant_semitones: 0.0,
             mix: 1.0,
+        }
+    }
+}
+
+impl TuneSettings {
+    /// The defaults for a song in `key`.
+    pub fn for_key(key: Key) -> Self {
+        Self {
+            scale: Scale::Key { key },
+            ..Self::default()
         }
     }
 

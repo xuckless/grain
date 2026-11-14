@@ -10,6 +10,7 @@ use crate::pitch::{self, PitchTrack};
 use crate::player::{MixParams, PlayerTrack};
 use crate::take::Take;
 use crate::tempo::{self, Tempo};
+use crate::tune::TuneSettings;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -162,6 +163,10 @@ pub struct Project {
     /// Karaoke lyrics, fetched on demand (see [`crate::lyrics`]).
     #[serde(default)]
     pub lyrics: ProjectLyrics,
+    /// The auto-tune controls (see [`crate::tune`]): the song's key at import; chromatic for
+    /// projects saved before auto-tune existed.
+    #[serde(default)]
+    pub tune: TuneSettings,
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
@@ -238,6 +243,7 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
     let tracks: Vec<(TrackSource, &StereoAudio)> =
         sources.into_iter().zip(track_audio(audio)).collect();
     let first = tracks[0].1;
+    let analysis = analyze(audio, reference);
     Project {
         version: PROJECT_VERSION,
         song,
@@ -256,7 +262,8 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
                 peaks: peaks(&a.to_mono()),
             })
             .collect(),
-        analysis: analyze(audio, reference),
+        tune: TuneSettings::for_key(analysis.keys[0].key),
+        analysis,
         takes: Vec::new(),
         lyrics: ProjectLyrics::NotFetched,
     }

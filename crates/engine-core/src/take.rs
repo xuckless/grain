@@ -20,6 +20,8 @@ pub enum TakeSource {
     Recorded { latency_ms: f32 },
     /// An audio file, lined up with the song by its pitch contour.
     Imported { name: String },
+    /// Take `from` run through auto-tune (AGENTS.md §7); the original is kept.
+    Tuned { from: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -138,9 +140,17 @@ pub fn add_take(
     pitch: TrackedPitch,
 ) -> u32 {
     let id = project.takes.iter().map(|t| t.id + 1).max().unwrap_or(1);
+    let name = match &source {
+        TakeSource::Tuned { from } => project
+            .takes
+            .iter()
+            .find(|t| t.id == *from)
+            .map_or_else(|| format!("Take {id}"), |t| format!("{} (tuned)", t.name)),
+        TakeSource::Recorded { .. } | TakeSource::Imported { .. } => format!("Take {id}"),
+    };
     project.takes.push(Take {
         id,
-        name: format!("Take {id}"),
+        name,
         source,
         start_seconds: first_sound(timeline, project.sample_rate),
         pitch_tracker: pitch.tracker,

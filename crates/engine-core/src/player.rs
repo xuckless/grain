@@ -1,9 +1,13 @@
 //! Multitrack player: mixer + transport state machine. Runs on the audio thread
 //! (cpal callback or AudioWorklet), so `apply`, `render` and `add_track` never allocate
 //! (AGENTS.md §9). Besides the song it renders two cues of its own: the count-in click that
-//! starts a recording and the calibration chirp ([`crate::cue`]).
+//! starts a recording and the calibration chirp ([`crate::cue`]). It also mixes in the
+//! singer's own voice when monitoring is on, dry or through live auto-tune ([`LiveTune`]).
 
 use crate::cue;
+use crate::melody::Note;
+use crate::psola::LiveTune;
+use crate::tune::{self, TuneSettings};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use ts_rs::TS;
@@ -88,7 +92,51 @@ pub enum PlayerCommand {
     },
     /// Plays the calibration chirp.
     Probe,
+    /// What the singer hears of their own voice.
+    Monitor {
+        mode: MonitorMode,
+    },
+    /// The live auto-tune settings.
+    Tune {
+        settings: TuneSettings,
+    },
 }
+
+/// What the singer hears of their own voice, mixed over the song (headphones only: speakers
+/// feed back). The microphone block comes with each [`Player::render`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum MonitorMode {
+    Off,
+    /// The voice as sung, without added delay.
+    Dry,
+    /// Through live auto-tune, [`Player::monitor_latency`] late.
+    Tuned,
+}
+
+/// The monitor as running: its mode and how late the singer hears themself.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MonitorStatus {
+    pub mode: MonitorMode,
+    /// The devices' round trip (the calibrated latency), plus the shifter's delay when tuned.
+    pub latency_ms: f32,
+}
+
+impl MonitorStatus {
+    /// `shifter_ms`: [`Player::monitor_latency`] in ms; `device_ms`: the calibrated round trip.
+    pub fn new(mode: MonitorMode, shifter_ms: f32, device_ms: f32) -> Self {
+        let latency_ms = match mode {
+            MonitorMode::Off => 0.0,
+            MonitorMode::Dry => device_ms,
+            MonitorMode::Tuned => device_ms + shifter_ms,
+        };
+        Self { mode, latency_ms }
+    }
+}
+
+/// Largest block the monitor processes at once; longer renders are split.
+const MONITOR_BLOCK: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub enum CommandError {
@@ -125,11 +173,18 @@ pub struct Player {
     sample_rate: u32,
     click: CountInClick,
     chirp: Vec<f32>,
+    monitor: MonitorMode,
+    tune: LiveTune,
+    /// The tuned voice of the current block.
+    voice: Vec<f32>,
+    /// The reference melody (follow-melody auto-tune), sorted by start.
+    reference: Vec<Note>,
 }
 
 impl Player {
-    /// `sample_rate` is the output rate (cues are synthesized at it).
-    pub fn new(tracks: Vec<PlayerTrack>, sample_rate: u32) -> Self {
+    /// `sample_rate` is the output rate (cues are synthesized at it). `reference`: the song's
+    /// reference melody, for follow-melody auto-tune.
+    pub fn new(tracks: Vec<PlayerTrack>, sample_rate: u32, reference: Vec<Note>) -> Self {
         let length = tracks.iter().map(|t| t.left.len()).max().unwrap_or(0) as u32;
         let mut reserved = Vec::with_capacity(tracks.len() + MAX_ADDED_TRACKS);
         reserved.extend(tracks);
@@ -143,7 +198,16 @@ impl Player {
                 total: 0,
             },
             chirp: cue::chirp(sample_rate),
+            monitor: MonitorMode::Off,
+            tune: LiveTune::new(sample_rate, TuneSettings::default(), MONITOR_BLOCK),
+            voice: vec![0.0; MONITOR_BLOCK],
+            reference,
         }
+    }
+
+    /// Delay of the tuned monitor, in frames (the device's own buffers come on top).
+    pub fn monitor_latency(&self) -> usize {
+        self.tune.latency()
     }
 
     pub fn track_count(&self) -> usize {
@@ -210,6 +274,14 @@ impl Player {
             (T::Stopped | T::Paused { .. }, C::Probe) => T::Probing {
                 remaining: self.chirp.len() as u32,
             },
+            (state, C::Monitor { mode }) => {
+                self.monitor = mode;
+                state
+            }
+            (state, C::Tune { settings }) => {
+                self.tune.set_settings(settings);
+                state
+            }
             (state, C::SetMix { track, params }) => {
                 let t = self
                     .tracks
@@ -228,11 +300,18 @@ impl Player {
     }
 
     /// Fills one block of planar stereo output and advances the transport. A block can span
-    /// a change of state (the count-in ending, the song ending).
-    pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
+    /// a change of state (the count-in ending, the song ending). `input`: the microphone's
+    /// block (mono, same length) for the monitor; empty when there is none.
+    pub fn render(&mut self, left: &mut [f32], right: &mut [f32], input: &[f32]) {
         left.fill(0.0);
         right.fill(0.0);
         let n = left.len();
+        let seconds = match self.transport {
+            Transport::Playing { frame }
+            | Transport::Paused { frame }
+            | Transport::CountIn { frame, .. } => f64::from(frame) / f64::from(self.sample_rate),
+            Transport::Stopped | Transport::Probing { .. } => 0.0,
+        };
         let mut i = 0;
         while i < n {
             let done = match self.transport {
@@ -276,8 +355,35 @@ impl Player {
             };
             i += done.max(1);
         }
+        if input.len() == n {
+            self.render_monitor(left, right, input, seconds);
+        }
         for v in left.iter_mut().chain(right.iter_mut()) {
             *v = v.clamp(-1.0, 1.0);
+        }
+    }
+
+    /// Mixes the singer's voice into the block (centred). The live tuner keeps running while
+    /// the dry voice is heard, so switching to tuned is seamless.
+    fn render_monitor(&mut self, left: &mut [f32], right: &mut [f32], input: &[f32], seconds: f64) {
+        if self.monitor == MonitorMode::Off {
+            return;
+        }
+        let melody = tune::melody_at(&self.reference, seconds);
+        let mut done = 0;
+        while done < input.len() {
+            let k = (input.len() - done).min(MONITOR_BLOCK);
+            let block = &input[done..done + k];
+            self.tune.process(block, &mut self.voice[..k], melody);
+            let heard = match self.monitor {
+                MonitorMode::Tuned => &self.voice[..k],
+                MonitorMode::Dry | MonitorMode::Off => block,
+            };
+            for (i, v) in heard.iter().enumerate() {
+                left[done + i] += v;
+                right[done + i] += v;
+            }
+            done += k;
         }
     }
 
@@ -334,7 +440,7 @@ mod tests {
 
     #[test]
     fn transport_state_machine() {
-        let mut p = Player::new(vec![constant(0.1, 1000)], 1000);
+        let mut p = Player::new(vec![constant(0.1, 1000)], 1000, Vec::new());
         assert!(p.apply(PlayerCommand::Pause).is_err());
         assert!(p.apply(PlayerCommand::Stop).is_err());
         p.apply(PlayerCommand::Seek { frame: 10 }).unwrap();
@@ -342,11 +448,11 @@ mod tests {
         p.apply(PlayerCommand::Play).unwrap();
         assert!(p.apply(PlayerCommand::Play).is_err());
         let (mut l, mut r) = ([0.0; 128], [0.0; 128]);
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert_eq!(p.transport(), Transport::Playing { frame: 138 });
         assert!(p.apply(PlayerCommand::Seek { frame: 1000 }).is_err());
         p.apply(PlayerCommand::Seek { frame: 900 }).unwrap();
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert_eq!(p.transport(), Transport::Stopped);
         assert_eq!(l[99], 0.1);
         assert_eq!(l[100], 0.0);
@@ -354,10 +460,14 @@ mod tests {
 
     #[test]
     fn mix_respects_solo_mute_gain_and_pan() {
-        let mut p = Player::new(vec![constant(0.1, 256), constant(0.2, 256)], 1000);
+        let mut p = Player::new(
+            vec![constant(0.1, 256), constant(0.2, 256)],
+            1000,
+            Vec::new(),
+        );
         p.apply(PlayerCommand::Play).unwrap();
         let (mut l, mut r) = ([0.0; 64], [0.0; 64]);
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert!((l[0] - 0.3).abs() < 1e-6);
 
         let solo = MixParams {
@@ -369,7 +479,7 @@ mod tests {
             params: solo,
         })
         .unwrap();
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert!((l[0] - 0.2).abs() < 1e-6);
 
         let panned = MixParams {
@@ -382,7 +492,7 @@ mod tests {
             params: panned,
         })
         .unwrap();
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert!(l[0].abs() < 1e-6 && (r[0] - 0.4).abs() < 1e-6);
 
         let muted = MixParams {
@@ -394,7 +504,7 @@ mod tests {
             params: muted,
         })
         .unwrap();
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert!((l[0] - 0.1).abs() < 1e-6);
         assert_eq!(
             p.apply(PlayerCommand::SetMix {
@@ -408,7 +518,7 @@ mod tests {
     #[test]
     fn count_in_clicks_then_plays_from_the_position() {
         let sr = 1000;
-        let mut p = Player::new(vec![constant(0.25, 4000)], sr);
+        let mut p = Player::new(vec![constant(0.25, 4000)], sr, Vec::new());
         p.apply(PlayerCommand::Seek { frame: 100 }).unwrap();
         p.apply(PlayerCommand::CountIn {
             beats: 2,
@@ -425,7 +535,7 @@ mod tests {
         assert!(p.apply(PlayerCommand::Play).is_err());
         assert!(p.apply(PlayerCommand::Seek { frame: 5 }).is_err());
         let (mut l, mut r) = ([0.0; 256], [0.0; 256]);
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         // 200 frames of click, then the song (0.25) from frame 100 in the same block.
         assert!(l[..200].iter().any(|v| v.abs() > 0.1));
         assert_eq!(l[200], 0.25);
@@ -441,14 +551,14 @@ mod tests {
     #[test]
     fn probe_plays_the_chirp_and_stops() {
         let sr = 8000;
-        let mut p = Player::new(vec![constant(0.0, 100)], sr);
+        let mut p = Player::new(vec![constant(0.0, 100)], sr, Vec::new());
         p.apply(PlayerCommand::Probe).unwrap();
         assert!(p.apply(PlayerCommand::Pause).is_err());
         let chirp = cue::chirp(sr);
         let mut out = Vec::new();
         let (mut l, mut r) = ([0.0; 128], [0.0; 128]);
         while matches!(p.transport(), Transport::Probing { .. }) {
-            p.render(&mut l, &mut r);
+            p.render(&mut l, &mut r, &[]);
             out.extend_from_slice(&l);
         }
         assert_eq!(&out[..chirp.len()], chirp.as_slice());
@@ -457,16 +567,58 @@ mod tests {
 
     #[test]
     fn added_tracks_play_and_the_reserve_is_bounded() {
-        let mut p = Player::new(vec![constant(0.1, 64)], 1000);
+        let mut p = Player::new(vec![constant(0.1, 64)], 1000, Vec::new());
         p.add_track(constant(0.2, 64)).unwrap();
         assert_eq!(p.track_count(), 2);
         p.apply(PlayerCommand::Play).unwrap();
         let (mut l, mut r) = ([0.0; 32], [0.0; 32]);
-        p.render(&mut l, &mut r);
+        p.render(&mut l, &mut r, &[]);
         assert!((l[0] - 0.3).abs() < 1e-6);
         for _ in 1..MAX_ADDED_TRACKS {
             p.add_track(constant(0.0, 64)).unwrap();
         }
         assert!(p.add_track(constant(0.0, 64)).is_err());
+    }
+
+    #[test]
+    fn monitor_mixes_the_voice_dry_or_tuned() {
+        let sr = 44_100;
+        let mut p = Player::new(vec![constant(0.0, 100_000)], sr, Vec::new());
+        let voice = vec![0.25f32; 512];
+        let (mut l, mut r) = (vec![0.0; 512], vec![0.0; 512]);
+        p.render(&mut l, &mut r, &voice);
+        assert!(l.iter().all(|v| *v == 0.0), "off by default");
+        p.apply(PlayerCommand::Monitor {
+            mode: MonitorMode::Dry,
+        })
+        .unwrap();
+        for _ in 0..4 {
+            p.render(&mut l, &mut r, &voice);
+            assert!(
+                l.iter().chain(&r).all(|v| *v == 0.25),
+                "dry: as sung, no delay"
+            );
+        }
+        p.apply(PlayerCommand::Monitor {
+            mode: MonitorMode::Tuned,
+        })
+        .unwrap();
+        p.apply(PlayerCommand::Tune {
+            settings: TuneSettings {
+                mix: 0.0,
+                ..TuneSettings::default()
+            },
+        })
+        .unwrap();
+        // Tuned at 0% wet: the voice, `monitor_latency` late (the tuner ran during Dry, so
+        // its delay line is already full: 2048 samples > the latency).
+        p.render(&mut l, &mut r, &voice);
+        assert!(l.iter().all(|v| (*v - 0.25).abs() < 1e-6));
+        assert_eq!(
+            p.transport(),
+            Transport::Stopped,
+            "monitoring needs no transport"
+        );
+        assert!(p.monitor_latency() > 0);
     }
 }

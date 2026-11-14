@@ -3,4 +3,4 @@
 /**
  * Where a take came from.
  */
-export type TakeSource = { "kind": "Recorded", latency_ms: number, } | { "kind": "Imported", name: string, };
+export type TakeSource = { "kind": "Recorded", latency_ms: number, } | { "kind": "Imported", name: string, } | { "kind": "Tuned", from: number, };

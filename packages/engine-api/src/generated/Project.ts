@@ -4,6 +4,7 @@ import type { ProjectLyrics } from "./ProjectLyrics";
 import type { SongSource } from "./SongSource";
 import type { Take } from "./Take";
 import type { Track } from "./Track";
+import type { TuneSettings } from "./TuneSettings";
 
 export type Project = { version: number, song: SongSource, sample_rate: number, frames: number, 
 /**
@@ -17,4 +18,9 @@ takes: Array<Take>,
 /**
  * Karaoke lyrics, fetched on demand (see [`crate::lyrics`]).
  */
-lyrics: ProjectLyrics, };
+lyrics: ProjectLyrics, 
+/**
+ * The auto-tune controls (see [`crate::tune`]): the song's key at import; chromatic for
+ * projects saved before auto-tune existed.
+ */
+tune: TuneSettings, };
