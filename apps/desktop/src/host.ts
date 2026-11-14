@@ -3,7 +3,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { EngineHost, ImportOutcome, ImportStage, Project, ScoreReport, StageListener, TransportSnapshot } from "@workstation/engine-api";
+import type {
+  EngineHost,
+  ImportOutcome,
+  ImportStage,
+  Project,
+  ProjectSummary,
+  ScoreReport,
+  StageListener,
+  TransportSnapshot,
+  WindowChrome,
+} from "@workstation/engine-api";
+
+/** macOS draws its window buttons over the page (tauri.conf.json: titleBarStyle "Overlay");
+ * the top bar leaves this much room for them. Other platforms keep native decorations. */
+const MAC_BUTTONS_INSET = 88;
+const chrome: WindowChrome = navigator.userAgent.includes("Mac OS")
+  ? { kind: "overlay", insetLeft: MAC_BUTTONS_INSET }
+  : { kind: "plain" };
 
 const AUDIO = [{ name: "Audio", extensions: ["mp3", "m4a", "wav", "flac", "ogg", "aac"] }];
 
@@ -25,6 +42,14 @@ async function withStages(onStage: StageListener, run: () => Promise<Project>): 
 export async function createDesktopHost(): Promise<EngineHost> {
   const urlImport = await invoke<{ kind: "available" } | { kind: "unavailable" }>("url_import");
   return {
+    chrome,
+    projects: {
+      kind: "available",
+      list: () => invoke<ProjectSummary[]>("list_projects"),
+      open: (id) => invoke<Project>("open_project", { id }),
+      save: () => invoke("save_project"),
+    },
+    close: () => invoke("close_session"),
     urlImport:
       urlImport.kind === "available"
         ? { kind: "available", importUrl: (url, onStage) => withStages(onStage, () => invoke<Project>("import_url", { url })) }

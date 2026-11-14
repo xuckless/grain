@@ -103,6 +103,13 @@ export async function createWebHost(): Promise<EngineHost> {
   }
 
   return {
+    chrome: { kind: "plain" },
+    projects: { kind: "unavailable", reason: "Saving and recent songs need the desktop app for now." },
+    async close() {
+      post({ kind: "unload" });
+      if (session.kind === "loaded") session.song.free();
+      session = { kind: "empty" };
+    },
     urlImport: { kind: "unavailable" },
     importFile,
     scoreTake,

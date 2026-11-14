@@ -98,6 +98,36 @@ pub enum ImportStage {
     Caching,
 }
 
+/// A saved project as listed on the Home screen. `id` is the host's handle for opening it
+/// (the stem-cache key on desktop).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub song: SongSource,
+    pub duration_seconds: f64,
+    pub bpm: f64,
+    /// Best key's display name, if a key was found.
+    pub key: Option<String>,
+    pub tracks: u32,
+    /// Last saved, milliseconds since the Unix epoch.
+    pub saved_ms: f64,
+}
+
+impl ProjectSummary {
+    pub fn new(id: String, project: &Project, saved_ms: f64) -> Self {
+        Self {
+            id,
+            song: project.song.clone(),
+            duration_seconds: f64::from(project.frames) / f64::from(project.sample_rate),
+            bpm: project.analysis.tempo.bpm,
+            key: project.analysis.keys.first().map(|k| k.label.clone()),
+            tracks: project.tracks.len() as u32,
+            saved_ms,
+        }
+    }
+}
+
 /// Song audio as the host hands it to [`build`].
 pub enum SongAudio {
     Unseparated { mix: StereoAudio },

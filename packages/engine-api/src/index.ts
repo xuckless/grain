@@ -4,6 +4,7 @@
 import type { ImportStage } from "./generated/ImportStage";
 import type { PlayerCommand } from "./generated/PlayerCommand";
 import type { Project } from "./generated/Project";
+import type { ProjectSummary } from "./generated/ProjectSummary";
 import type { ScoreReport } from "./generated/ScoreReport";
 import type { ScoreSettings } from "./generated/ScoreSettings";
 import type { TransportSnapshot } from "./generated/TransportSnapshot";
@@ -24,6 +25,7 @@ export type { PitchFrame } from "./generated/PitchFrame";
 export type { PitchTrack } from "./generated/PitchTrack";
 export type { PlayerCommand } from "./generated/PlayerCommand";
 export type { Project } from "./generated/Project";
+export type { ProjectSummary } from "./generated/ProjectSummary";
 export type { ReferenceSource } from "./generated/ReferenceSource";
 export type { ScoreReport } from "./generated/ScoreReport";
 export type { Scores } from "./generated/Scores";
@@ -49,9 +51,29 @@ export type UrlImport =
   | { kind: "available"; importUrl(url: string, onStage: StageListener): Promise<ImportOutcome> }
   | { kind: "unavailable" };
 
+/** How the UI meets the window frame. `overlay`: the OS window buttons sit over the top-left
+ * of the page (macOS desktop), so the top bar insets its content and acts as the drag area. */
+export type WindowChrome = { kind: "overlay"; insetLeft: number } | { kind: "plain" };
+
+/** Saved projects (desktop: the stem cache). */
+export type ProjectStore =
+  | {
+      kind: "available";
+      list(): Promise<ProjectSummary[]>;
+      /** Opens a saved project and makes it the loaded song. */
+      open(id: string): Promise<Project>;
+      /** Saves the loaded song's mix settings. */
+      save(): Promise<void>;
+    }
+  | { kind: "unavailable"; reason: string };
+
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
 export interface EngineHost {
+  readonly chrome: WindowChrome;
   readonly urlImport: UrlImport;
+  readonly projects: ProjectStore;
+  /** Stops playback and unloads the song. */
+  close(): Promise<void>;
   /** Picks a song file, imports it and makes it the loaded song. */
   importFile(onStage: StageListener): Promise<ImportOutcome>;
   /** Picks a sung take and scores it against the loaded song. */

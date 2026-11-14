@@ -10,12 +10,31 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Workstation", "width": 1280, "height": 860 }],
-    "security": { "csp": null }
+    "windows": [
+      {
+        "title": "Workstation",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 640,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 26
+        },
+        "backgroundColor": "#050506"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }

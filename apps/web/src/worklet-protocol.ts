@@ -7,6 +7,7 @@ export type TrackData = { left: Float32Array; right: Float32Array; mix: MixParam
 export type ToWorklet =
   | { kind: "init"; module: WebAssembly.Module }
   | { kind: "load"; tracks: TrackData[] }
+  | { kind: "unload" }
   | { kind: "command"; command: PlayerCommand };
 
 export type FromWorklet =

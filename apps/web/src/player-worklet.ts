@@ -50,6 +50,14 @@ class PlayerProcessor extends AudioWorkletProcessor {
         this.post({ kind: "transport", transport: player.transport() });
         return;
       }
+      case "unload": {
+        if (this.state.kind !== "playing") return;
+        const memory = this.state.output.memory;
+        this.state.output.player.free();
+        this.state = { kind: "idle", memory };
+        this.post({ kind: "transport", transport: { kind: "Stopped" } });
+        return;
+      }
       case "command": {
         if (this.state.kind !== "playing") return this.post({ kind: "rejected", message: "no song loaded" });
         try {

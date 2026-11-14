@@ -3,7 +3,7 @@
 
 use crate::decode;
 use anyhow::{Context, Result};
-use engine_core::project::{Project, SongAudio, TrackSource};
+use engine_core::project::{Project, ProjectSummary, SongAudio, TrackSource};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -83,6 +83,32 @@ impl StemCache {
         }
         std::fs::write(dir.join("project.json"), serde_json::to_string(project)?)?;
         Ok(())
+    }
+
+    /// Every complete cache entry, most recently saved first. Unreadable entries are skipped.
+    pub fn list(&self) -> Result<Vec<ProjectSummary>> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut list: Vec<ProjectSummary> = entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let manifest = entry.path().join("project.json");
+                let saved = std::fs::metadata(&manifest).ok()?.modified().ok()?;
+                let project: Project =
+                    serde_json::from_str(&std::fs::read_to_string(&manifest).ok()?).ok()?;
+                let saved_ms = saved
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_millis() as f64;
+                let key = entry.file_name().to_string_lossy().into_owned();
+                Some(ProjectSummary::new(key, &project, saved_ms))
+            })
+            .collect();
+        list.sort_by(|a, b| b.saved_ms.total_cmp(&a.saved_ms));
+        Ok(list)
     }
 
     /// Persists edited mix settings of a cached project.
