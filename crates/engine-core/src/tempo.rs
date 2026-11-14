@@ -89,23 +89,56 @@ mod tests {
     use super::*;
     use crate::onset;
 
-    fn click_track(bpm: f64, seconds: f64, sr: u32) -> Vec<f32> {
+    /// Clicks on every beat; every second beat (the backbeat) is `accent` times louder.
+    fn click_track(bpm: f64, seconds: f64, sr: u32, accent: f32) -> Vec<f32> {
         let mut x = vec![0.0f32; (seconds * sr as f64) as usize];
         let period = (60.0 / bpm * sr as f64) as usize;
-        for start in (0..x.len()).step_by(period) {
+        for (beat, start) in (0..x.len()).step_by(period).enumerate() {
+            let gain = if beat % 2 == 1 { accent } else { 1.0 };
             for i in 0..400.min(x.len() - start) {
                 // Short decaying noise-like burst.
-                x[start + i] = ((i as f32 * 1.7).sin() * 13.3).fract() * (-(i as f32) / 80.0).exp();
+                x[start + i] =
+                    gain * ((i as f32 * 1.7).sin() * 13.3).fract() * (-(i as f32) / 80.0).exp();
             }
         }
         x
     }
 
     #[test]
+    fn kick_on_every_beat_with_snare_backbeat_is_not_halved() {
+        let sr = 44_100u32;
+        let bpm = 120.0;
+        let period = (60.0 / bpm * sr as f64) as usize;
+        let mut x = vec![0.0f32; 12 * sr as usize];
+        for (beat, start) in (0..x.len()).step_by(period).enumerate() {
+            for i in 0..4000.min(x.len() - start) {
+                let t = i as f32 / sr as f32;
+                let kick =
+                    (2.0 * std::f32::consts::PI * 60.0 * t * (1.0 + 2.0 * (-t * 40.0).exp())).sin();
+                let noise = ((i as f32 * 1.7).sin() * 13.3).fract() - 0.5;
+                let snare = if beat % 2 == 1 {
+                    0.5 * noise * (-t * 30.0).exp()
+                } else {
+                    0.0
+                };
+                x[start + i] += 0.6 * kick * (-t * 18.0).exp() + snare;
+            }
+        }
+        let tempo = estimate(&onset::envelope(&x, sr));
+        assert!((tempo.bpm - bpm).abs() / bpm < 0.03, "got {}", tempo.bpm);
+    }
+
+    #[test]
     fn detects_click_track_tempo() {
         let sr = 44_100;
-        for bpm in [90.0, 120.0, 140.0] {
-            let env = onset::envelope(&click_track(bpm, 12.0, sr), sr);
+        for (bpm, accent) in [
+            (90.0, 1.0),
+            (120.0, 1.0),
+            (140.0, 1.0),
+            (120.0, 3.0),
+            (100.0, 3.0),
+        ] {
+            let env = onset::envelope(&click_track(bpm, 12.0, sr, accent), sr);
             let tempo = estimate(&env);
             assert!(
                 (tempo.bpm - bpm).abs() / bpm < 0.03,

@@ -2,7 +2,6 @@
 
 use crate::melody::Note;
 use crate::note::fold_octave;
-use crate::onset::OnsetEnvelope;
 use crate::pitch::{PitchFrame, PitchTrack};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -139,24 +138,37 @@ pub struct ScoreReport {
     pub scores: Scores,
 }
 
-/// Offset (seconds) maximizing the cross-correlation of two onset envelopes.
-pub fn estimate_offset(reference: &OnsetEnvelope, take: &OnsetEnvelope) -> f64 {
-    let max_lag = (MAX_OFFSET_SECONDS / reference.hop_seconds) as isize;
-    let (r, u) = (&reference.values, &take.values);
+/// Offset (seconds) at which the take's pitch contour best agrees with the reference: each
+/// frame where both are voiced scores 1 at unison (octave-folded), falling to 0 at 100 cents.
+pub fn estimate_offset(reference: &PitchTrack, take: &PitchTrack) -> f64 {
+    let hop = reference.hop_seconds;
+    let max_lag = (MAX_OFFSET_SECONDS / hop) as isize;
+    let midi = |f: &PitchFrame| match f {
+        PitchFrame::Voiced { midi } => Some(*midi),
+        PitchFrame::Unvoiced => None,
+    };
+    let r: Vec<(usize, f32)> = reference
+        .frames
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| Some((i, midi(f)?)))
+        .collect();
+    let u: Vec<Option<f32>> = take.frames.iter().map(midi).collect();
+    let agreement = |lag: isize| -> f32 {
+        r.iter()
+            .filter_map(|(i, rm)| {
+                let j = *i as isize + lag;
+                let um = (*u.get(usize::try_from(j).ok()?)?)?;
+                Some((1.0 - fold_octave(100.0 * (um - rm)).abs() / 100.0).max(0.0))
+            })
+            .sum()
+    };
     let best = (-max_lag..=max_lag)
-        .map(|lag| {
-            let sum: f32 = (0..r.len())
-                .filter_map(|t| {
-                    let j = t as isize + lag;
-                    (j >= 0 && (j as usize) < u.len()).then(|| r[t] * u[j as usize])
-                })
-                .sum();
-            (lag, sum)
-        })
-        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|lag| (lag, agreement(lag)))
+        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.abs().cmp(&a.0.abs())))
         .map(|(lag, _)| lag)
         .unwrap_or(0);
-    best as f64 * reference.hop_seconds
+    best as f64 * hop
 }
 
 pub fn score(
@@ -365,7 +377,6 @@ mod tests {
     use super::*;
     use crate::melody::segment;
     use crate::melody::tests::{synthetic_track, C_MAJOR};
-    use crate::onset::OnsetEnvelope;
 
     fn reference() -> (PitchTrack, Vec<Note>) {
         let track = synthetic_track(
@@ -511,22 +522,14 @@ mod tests {
 
     #[test]
     fn offset_estimation_recovers_shift() {
-        let mut values = vec![0.0f32; 400];
-        for (i, v) in values.iter_mut().enumerate() {
-            if i % 37 == 0 || i % 53 == 0 {
-                *v = 1.0;
-            }
-        }
-        let reference = OnsetEnvelope {
+        let (r, _) = reference();
+        let mut late = synthetic_track(&[(None, 1.23)], 0.0);
+        late.frames.extend(r.frames.iter().copied());
+        assert!((estimate_offset(&r, &late) - 1.23).abs() < 1e-6);
+        let early = PitchTrack {
             hop_seconds: 0.01,
-            values: values.clone(),
+            frames: r.frames[40..].to_vec(),
         };
-        let mut shifted = vec![0.0f32; 120];
-        shifted.extend(values);
-        let take = OnsetEnvelope {
-            hop_seconds: 0.01,
-            values: shifted,
-        };
-        assert!((estimate_offset(&reference, &take) - 1.2).abs() < 1e-6);
+        assert!((estimate_offset(&r, &early) + 0.40).abs() < 1e-6);
     }
 }

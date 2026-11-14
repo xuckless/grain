@@ -21,6 +21,12 @@ impl StereoAudio {
         self.len() as f64 / self.sample_rate as f64
     }
 
+    /// RMS level over both channels in dBFS.
+    pub fn rms_db(&self) -> f32 {
+        let energy: f32 = self.left.iter().chain(&self.right).map(|v| v * v).sum();
+        10.0 * (energy / (2 * self.len()).max(1) as f32 + 1e-12).log10()
+    }
+
     pub fn to_mono(&self) -> Vec<f32> {
         self.left
             .iter()

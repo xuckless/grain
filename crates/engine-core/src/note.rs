@@ -16,9 +16,14 @@ pub fn midi_to_hz(midi: f32) -> f32 {
 /// Scientific pitch name of the nearest semitone, e.g. `A4`, `C#3`.
 pub fn note_name(midi: f32) -> String {
     let n = midi.round() as i32;
-    let name = NOTE_NAMES[n.rem_euclid(12) as usize];
+    let name = pitch_class_name(n.rem_euclid(12) as u8);
     let octave = n.div_euclid(12) - 1;
     format!("{name}{octave}")
+}
+
+/// Name of a pitch class, 0 = C.
+pub fn pitch_class_name(pitch_class: u8) -> &'static str {
+    NOTE_NAMES[pitch_class as usize % 12]
 }
 
 /// Signed distance from `reference_hz` to `hz` in cents.

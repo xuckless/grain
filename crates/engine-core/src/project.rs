@@ -164,27 +164,18 @@ fn mono_sum(audio: &SongAudio, include: impl Fn(Stem) -> bool) -> Vec<f32> {
 }
 
 /// Scores a sung take (same sample rate as the song) against the reference vocal (AGENTS.md §5).
-pub fn score_take(
-    project: &Project,
-    audio: &SongAudio,
-    take: &StereoAudio,
-    settings: ScoreSettings,
-) -> ScoreReport {
-    let sr = sample_rate(audio);
+pub fn score_take(project: &Project, take: &StereoAudio, settings: ScoreSettings) -> ScoreReport {
     assert_eq!(
-        take.sample_rate, sr,
+        take.sample_rate, project.sample_rate,
         "resample the take to the song rate first"
     );
-    let take_mono = take.to_mono();
-    let vocals = mono_sum(audio, |s| s == Stem::Vocals);
-    let offset = score::estimate_offset(
-        &onset::envelope(&vocals, sr),
-        &onset::envelope(&take_mono, sr),
-    );
+    let take_pitch = pitch::track(&take.to_mono(), take.sample_rate);
+    let reference = &project.analysis.reference_pitch;
+    let offset = score::estimate_offset(reference, &take_pitch);
     score::score(
-        &project.analysis.reference_pitch,
+        reference,
         &project.analysis.reference_notes,
-        &pitch::track(&take_mono, sr),
+        &take_pitch,
         offset,
         settings,
     )

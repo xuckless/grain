@@ -1,11 +1,11 @@
 //! Short-time Fourier transform with the same framing as `torch.stft(center=True,
 //! pad_mode="reflect")` and a Hann window, so model front-ends can be computed on the host.
 
-use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
-pub type Spectrum = Vec<Complex32>;
+pub use realfft::num_complex::Complex32 as Complex;
+pub type Spectrum = Vec<Complex>;
 
 pub struct Stft {
     n_fft: usize,
