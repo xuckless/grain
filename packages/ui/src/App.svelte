@@ -4,6 +4,7 @@
   import TransportBar from "./TransportBar.svelte";
   import ScorePanel from "./ScorePanel.svelte";
   import { describeProgress, errorMessage, type AppState } from "./state";
+  import { enter, installMotionTokens } from "./motion";
 
   let { host }: { host: EngineHost } = $props();
 
@@ -58,6 +59,8 @@
     }
   }
 
+  $effect(() => installMotionTokens());
+
   // Poll the engine's transport once per animation frame while a song is loaded.
   $effect(() => {
     if (app.kind !== "ready") return;
@@ -96,6 +99,10 @@
     {/if}
   </header>
 
+  <!-- State swaps crossfade with old and new layers overlapping in one grid cell (motion rule 16). -->
+  <div class="stage">
+  {#key app.kind}
+  <div class="layer" transition:enter>
   {#if app.kind === "empty"}
     <p class="hint">Open an audio file{host.urlImport.kind === "available" ? " or paste a YouTube link" : ""} to split it into stems.</p>
   {:else if app.kind === "importing"}
@@ -110,6 +117,9 @@
     <Timeline project={app.project} {snapshot} onSeek={(frame) => send({ kind: "Seek", frame })} onMix={setMix} />
     <ScorePanel project={app.project} score={app.score} onScore={score} onSeek={(frame) => send({ kind: "Seek", frame })} sampleRate={snapshot.sample_rate} />
   {/if}
+  </div>
+  {/key}
+  </div>
 </main>
 
 <style>
@@ -159,11 +169,55 @@
   :global(button:disabled) {
     opacity: 0.5;
   }
+  /* Motion rule 4: press feedback. Timing comes from motion.ts tokens. */
+  :global(button) {
+    transition: transform var(--motion-press-dur) var(--motion-ease-enter);
+  }
+  :global(button:active:not(:disabled)) {
+    transform: scale(var(--motion-press-scale));
+  }
+  /* Motion rule 5: range thumbs stretch along their travel (see knobStretch in motion.ts). */
+  :global(input[type="range"]) {
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line);
+    border: none;
+    padding: 0;
+  }
+  :global(input[type="range"]::-webkit-slider-thumb) {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--accent);
+    transform: scaleX(var(--knob-stretch, 1));
+    transition: transform var(--knob-settle, 0ms);
+  }
+  :global(input[type="range"]::-moz-range-thumb) {
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    transform: scaleX(var(--knob-stretch, 1));
+    transition: transform var(--knob-settle, 0ms);
+  }
   main {
     padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+  .stage {
+    display: grid;
+  }
+  .layer {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
   }
   header {
     display: flex;

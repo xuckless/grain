@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FrameComparison, NoteResult, Project, ScoreReport } from "@workstation/engine-api";
+  import { reveal } from "./motion";
 
   let { project, report, onSeek }: { project: Project; report: ScoreReport; onSeek: (seconds: number) => void } = $props();
 
@@ -48,7 +49,7 @@
     if (!g) return;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, width, height);
-    const [line, muted, good, warn, bad, text] = ["--line", "--muted", "--good", "--warn", "--bad", "--text"].map(css);
+    const [line, muted, good, warn, bad] = ["--line", "--muted", "--good", "--warn", "--bad"].map(css);
 
     const notes = report.notes.map((n) => n.note);
     const lo = Math.min(...notes.map((n) => n.midi)) - 3;
@@ -94,7 +95,6 @@
       const h = (Math.max(-STRIP_RANGE, Math.min(STRIP_RANGE, f.cents)) / STRIP_RANGE) * ((STRIP - 8) / 2);
       g.fillRect(x(i * report.hop_seconds), mid - Math.max(0, h), 1, Math.max(1, Math.abs(h)));
     });
-    g.fillStyle = text;
   });
 
   function click(event: MouseEvent) {
@@ -106,7 +106,7 @@
 </script>
 
 <div bind:clientWidth={width}>
-  <canvas bind:this={canvas} style:width="{width}px" style:height="{height}px" onclick={click}></canvas>
+  <canvas bind:this={canvas} use:reveal={report} style:width="{width}px" style:height="{height}px" onclick={click}></canvas>
 </div>
 <p class="legend">Bars: reference notes (green = hit, yellow = partly, red = missed). Dots: your pitch. Strip: cents sharp (up) / flat (down). Click a note to play from it.</p>
 

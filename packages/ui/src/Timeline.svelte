@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MixParams, Project, TrackMode, TransportSnapshot } from "@workstation/engine-api";
+  import { detailDelay, enter, knobStretch, pulse, reveal, rubberBand, springBack } from "./motion";
 
   let {
     project,
@@ -13,6 +14,19 @@
     onMix: (track: number, params: MixParams) => void;
   } = $props();
 
+  /** Furthest the playhead gives when scrubbed past either end (motion rule 19). */
+  const RUBBER_LIMIT_PX = 24;
+
+  /**
+   * Playhead scrubbing. While scrubbing the playhead follows the pointer directly (rule 14);
+   * past either end it gives with damped resistance and springs back on release (rule 19).
+   */
+  type Scrub =
+    | { kind: "idle" }
+    | { kind: "scrubbing"; seconds: number; overshootPx: number }
+    | { kind: "settling"; seconds: number; overshootPx: number; cancel: () => void };
+  let scrub: Scrub = $state({ kind: "idle" });
+
   const RULER = 22;
   const NOTES_LANE = 64;
   const TRACK = 64;
@@ -23,6 +37,7 @@
   const duration = $derived(project.frames / project.sample_rate);
   const height = $derived(RULER + NOTES_LANE + TRACK * project.tracks.length);
   const playhead = $derived.by(() => {
+    if (scrub.kind !== "idle") return scrub.seconds;
     const t = snapshot.transport;
     switch (t.kind) {
       case "Stopped":
@@ -95,23 +110,53 @@
       }
     });
 
+    const offset = scrub.kind === "idle" ? 0 : scrub.overshootPx;
     g.fillStyle = text;
-    g.fillRect(x(playhead), 0, 1.5, height);
+    g.fillRect(x(playhead) + offset, 0, 1.5, height);
   });
 
-  function seek(event: MouseEvent) {
+  function scrubTo(event: PointerEvent) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const seconds = ((event.clientX - rect.left) / rect.width) * duration;
-    onSeek(Math.max(0, Math.floor(seconds * snapshot.sample_rate)));
+    const px = event.clientX - rect.left;
+    const clamped = Math.min(rect.width, Math.max(0, px));
+    const seconds = (clamped / rect.width) * duration;
+    scrub = { kind: "scrubbing", seconds, overshootPx: rubberBand(px - clamped, RUBBER_LIMIT_PX) };
+    // The last frame is not seekable; stay one frame inside the song.
+    onSeek(Math.min(Math.floor(duration * snapshot.sample_rate) - 1, Math.floor(seconds * snapshot.sample_rate)));
+  }
+
+  function scrubStart(event: PointerEvent) {
+    if (scrub.kind === "settling") scrub.cancel();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    scrubTo(event);
+  }
+
+  function scrubMove(event: PointerEvent) {
+    if (scrub.kind === "scrubbing") scrubTo(event);
+  }
+
+  function scrubEnd() {
+    if (scrub.kind !== "scrubbing") return;
+    const { seconds, overshootPx } = scrub;
+    const cancel = springBack(
+      overshootPx,
+      (v) => {
+        if (scrub.kind === "settling") scrub = { ...scrub, overshootPx: v };
+      },
+      () => {
+        scrub = { kind: "idle" };
+      },
+    );
+    if (scrub.kind === "scrubbing") scrub = { kind: "settling", seconds, overshootPx, cancel };
   }
 </script>
 
-<div class="timeline">
+<div class="timeline" use:pulse={project}>
   <div class="headers">
     <div style:height="{RULER}px"></div>
     <div class="lane-title" style:height="{NOTES_LANE}px">Reference vocal</div>
     {#each project.tracks as track, i (track.name)}
-      <div class="track" style:height="{TRACK}px">
+      <div class="track" style:height="{TRACK}px" in:enter={{ delay: detailDelay(i) }}>
         <div class="row">
           <span class="name">{track.name}</span>
           <button
@@ -132,6 +177,7 @@
             max="2"
             step="0.01"
             title="Gain"
+            use:knobStretch
             value={track.mix.gain}
             oninput={(e) => onMix(i, { ...track.mix, gain: Number(e.currentTarget.value) })}
           />
@@ -141,6 +187,7 @@
             max="1"
             step="0.01"
             title="Pan"
+            use:knobStretch
             value={track.mix.pan}
             oninput={(e) => onMix(i, { ...track.mix, pan: Number(e.currentTarget.value) })}
           />
@@ -149,7 +196,16 @@
     {/each}
   </div>
   <div class="lanes" bind:clientWidth={width}>
-    <canvas bind:this={canvas} style:width="{width}px" style:height="{height}px" onclick={seek}></canvas>
+    <canvas
+      bind:this={canvas}
+      use:reveal={project}
+      style:width="{width}px"
+      style:height="{height}px"
+      onpointerdown={scrubStart}
+      onpointermove={scrubMove}
+      onpointerup={scrubEnd}
+      onpointercancel={scrubEnd}
+    ></canvas>
   </div>
 </div>
 
@@ -191,10 +247,27 @@
     padding: 0 6px;
     min-width: 24px;
   }
-  .row button.on {
+  /* Motion rule 17: the "on" colour wipes in with a clip-path instead of fading. */
+  .row button {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+  .row button::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
     background: var(--accent);
+    clip-path: inset(0 100% 0 0);
+    transition: clip-path var(--motion-wipe-dur) var(--motion-ease-move);
+  }
+  .row button.on {
     color: white;
     border-color: var(--accent);
+  }
+  .row button.on::before {
+    clip-path: inset(0 0 0 0);
   }
   .row input[type="range"] {
     width: 80px;
@@ -206,5 +279,6 @@
   canvas {
     display: block;
     cursor: pointer;
+    touch-action: none;
   }
 </style>

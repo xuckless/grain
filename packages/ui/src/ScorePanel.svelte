@@ -2,6 +2,7 @@
   import type { Difficulty, OctaveMode, Project, ScoreSettings } from "@workstation/engine-api";
   import ScoreGraph from "./ScoreGraph.svelte";
   import type { ScoreState } from "./state";
+  import { celebrate, detailDelay, enter, pulse } from "./motion";
 
   let {
     project,
@@ -43,22 +44,38 @@
     </button>
   </div>
 
-  {#if score.kind === "scoring"}
-    <p class="muted">Tracking your pitch and aligning it to the reference…</p>
-  {:else if score.kind === "failed"}
-    <p class="error">{score.message}</p>
-  {:else if score.kind === "scored"}
-    {@const s = score.report.scores}
-    <div class="cards">
-      <div class="card overall"><span>Overall</span><strong>{s.overall.toFixed(0)}</strong></div>
-      <div class="card"><span>Pitch</span><strong>{s.pitch.toFixed(0)}</strong></div>
-      <div class="card"><span>Timing</span><strong>{s.timing.toFixed(0)}</strong></div>
-      <div class="card"><span>Stability</span><strong>{s.stability.toFixed(0)}</strong></div>
-      <div class="card"><span>Coverage</span><strong>{s.coverage.toFixed(0)}</strong></div>
-      <div class="card"><span>Take offset</span><strong>{score.report.offset_seconds.toFixed(2)} s</strong></div>
-    </div>
-    <ScoreGraph {project} report={score.report} onSeek={(seconds) => onSeek(Math.floor(seconds * sampleRate))} />
-  {/if}
+  <!-- Score states crossfade with overlap (motion rule 16). -->
+  <div class="stage">
+    {#key score.kind}
+      <div class="layer" transition:enter>
+        {#if score.kind === "scoring"}
+          <p class="muted">Tracking your pitch and aligning it to the reference…</p>
+        {:else if score.kind === "failed"}
+          <p class="error">{score.message}</p>
+        {:else if score.kind === "scored"}
+          {@const s = score.report.scores}
+          {@const details = [
+            ["Pitch", s.pitch.toFixed(0)],
+            ["Timing", s.timing.toFixed(0)],
+            ["Stability", s.stability.toFixed(0)],
+            ["Coverage", s.coverage.toFixed(0)],
+            ["Take offset", `${score.report.offset_seconds.toFixed(2)} s`],
+          ]}
+          <div class="cards">
+            <!-- The final score reveal is the one celebratory, overshooting moment (rule 13) and pulses once (rule 8). -->
+            <div class="card overall" in:celebrate={{ delay: detailDelay(0) }} use:pulse={score.report}>
+              <span>Overall</span><strong>{s.overall.toFixed(0)}</strong>
+            </div>
+            <!-- Details follow the container in a short stagger (rules 3 and 6). -->
+            {#each details as [label, value], i (label)}
+              <div class="card" in:enter={{ delay: detailDelay(i + 1) }}><span>{label}</span><strong>{value}</strong></div>
+            {/each}
+          </div>
+          <ScoreGraph {project} report={score.report} onSeek={(seconds) => onSeek(Math.floor(seconds * sampleRate))} />
+        {/if}
+      </div>
+    {/key}
+  </div>
 </section>
 
 <style>
@@ -86,6 +103,16 @@
     gap: 6px;
     align-items: center;
     color: var(--muted);
+  }
+  .stage {
+    display: grid;
+  }
+  .layer {
+    grid-area: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
   }
   .cards {
     display: flex;
