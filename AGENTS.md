@@ -366,7 +366,8 @@ Keep this table current: update the Status column whenever a milestone moves.
      - No A/B take playback (click a note in the Score graph to hear reference vs take).
      - No web project persistence (OPFS/archive).
      - `yt-dlp`/`ffmpeg` are found on `PATH` instead of being bundled as sidecars.
-     - The RoFormer cascade is slow on CPU (~7 min for a 4 min song, about 8 GB peak), so it is an opt-in "Best vocals" import. CoreML and int8 did not help (see §4.2). On eill-finale both the cascade and the PyTorch reference still keep nearly the whole song in Vocals: the "orchestral" material there reads as voice to both model families.
+     - The RoFormer cascade is slow on CPU (~7 min for a 4 min song, about 8 GB peak), so it is an opt-in "Best vocals" import: a quality option for songs with real accompaniment. CoreML and int8 did not help (see §4.2).
+     - Test-song note: `samples/eill-finale.mp3` ("Finale" by eill) is a cappella, a solo vocal with doubling and reverb and no backing music. Both HTDemucs and the cascade put nearly everything into Vocals, which is correct for this song; it is not a model limit.
 3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
 4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
 5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up.

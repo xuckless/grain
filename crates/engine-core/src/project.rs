@@ -118,8 +118,8 @@ pub struct Project {
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
-/// RoFormer vocal cascade, several times slower but it keeps orchestral and choral material out
-/// of the vocal stem.
+/// RoFormer vocal cascade: an opt-in quality option for songs with real accompaniment, several
+/// times slower, with a cleaner vocal stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum SeparationQuality {

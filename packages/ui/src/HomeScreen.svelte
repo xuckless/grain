@@ -124,7 +124,7 @@
                   {#if host.separation.kind === "choice"}
                     <Toggle
                       checked={quality === "BestVocals"}
-                      label="Best vocals: slower, keeps orchestras and choirs out of the vocal stem"
+                      label="Best vocals: slower, a cleaner vocal stem for songs with a backing track"
                       onToggle={(on) => (quality = on ? "BestVocals" : "Fast")}
                     />
                   {:else}
