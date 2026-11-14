@@ -47,21 +47,12 @@ impl Stft {
 
     /// Centered, reflect-padded, unnormalized STFT. Returns `1 + len / hop` frames.
     pub fn forward(&self, signal: &[f32]) -> Vec<Spectrum> {
-        let half = self.n_fft / 2;
-        let padded = reflect_pad(signal, half, half);
-        let frames = 1 + signal.len() / self.hop;
-        let mut input = self.forward.make_input_vec();
-        let mut scratch = self.forward.make_scratch_vec();
-        (0..frames)
+        let padded = reflect_pad(signal, self.n_fft / 2, self.n_fft / 2);
+        let mut buffers = Buffers::new(self);
+        (0..1 + signal.len() / self.hop)
             .map(|f| {
-                let start = f * self.hop;
-                for (i, v) in input.iter_mut().enumerate() {
-                    *v = padded[start + i] * self.window[i];
-                }
                 let mut out = self.forward.make_output_vec();
-                self.forward
-                    .process_with_scratch(&mut input, &mut out, &mut scratch)
-                    .expect("buffer sizes come from the plan");
+                self.analyze(&padded, f, &mut buffers, &mut out);
                 out
             })
             .collect()
@@ -69,32 +60,105 @@ impl Stft {
 
     /// Inverse of [`Stft::forward`] (windowed overlap-add, `torch.istft(center=True)`).
     pub fn inverse(&self, frames: &[Spectrum], length: usize) -> Vec<f32> {
-        let half = self.n_fft / 2;
-        let total = self.n_fft + self.hop * frames.len().saturating_sub(1);
-        let mut out = vec![0.0f32; total];
-        let mut norm = vec![0.0f32; total];
-        let mut spectrum = self.inverse.make_input_vec();
-        let mut time = self.inverse.make_output_vec();
-        let mut scratch = self.inverse.make_scratch_vec();
-        let scale = 1.0 / self.n_fft as f32;
+        let mut ola = OverlapAdd::new(self, frames.len());
+        let mut buffers = Buffers::new(self);
         for (f, frame) in frames.iter().enumerate() {
-            spectrum.copy_from_slice(frame);
-            // A real signal's DC and Nyquist bins are real; realfft rejects anything else.
-            spectrum[0].im = 0.0;
-            spectrum[half].im = 0.0;
-            self.inverse
-                .process_with_scratch(&mut spectrum, &mut time, &mut scratch)
-                .expect("buffer sizes come from the plan");
-            let start = f * self.hop;
-            for i in 0..self.n_fft {
-                out[start + i] += time[i] * scale * self.window[i];
-                norm[start + i] += self.window[i] * self.window[i];
-            }
+            buffers.spectrum.copy_from_slice(frame);
+            self.synthesize(f, &mut buffers, &mut ola);
         }
+        ola.finish(self.n_fft / 2, length)
+    }
+
+    /// Forward STFT, `edit(frame index, spectrum)` on each frame in order, then the inverse:
+    /// the same result as `inverse(forward(signal) edited)` without holding every frame.
+    pub fn map(&self, signal: &[f32], mut edit: impl FnMut(usize, &mut [Complex])) -> Vec<f32> {
+        let padded = reflect_pad(signal, self.n_fft / 2, self.n_fft / 2);
+        let frames = 1 + signal.len() / self.hop;
+        let mut ola = OverlapAdd::new(self, frames);
+        let mut buffers = Buffers::new(self);
+        let mut spectrum = self.forward.make_output_vec();
+        for f in 0..frames {
+            self.analyze(&padded, f, &mut buffers, &mut spectrum);
+            edit(f, &mut spectrum);
+            buffers.spectrum.copy_from_slice(&spectrum);
+            self.synthesize(f, &mut buffers, &mut ola);
+        }
+        ola.finish(self.n_fft / 2, signal.len())
+    }
+
+    /// Windowed FFT of frame `f` of the padded signal into `out`.
+    fn analyze(&self, padded: &[f32], f: usize, b: &mut Buffers, out: &mut [Complex]) {
+        let start = f * self.hop;
+        for (i, v) in b.input.iter_mut().enumerate() {
+            *v = padded[start + i] * self.window[i];
+        }
+        self.forward
+            .process_with_scratch(&mut b.input, out, &mut b.scratch)
+            .expect("buffer sizes come from the plan");
+    }
+
+    /// Inverse FFT of `b.spectrum`, windowed and added at frame `f`.
+    fn synthesize(&self, f: usize, b: &mut Buffers, ola: &mut OverlapAdd) {
+        let half = self.n_fft / 2;
+        // A real signal's DC and Nyquist bins are real; realfft rejects anything else.
+        b.spectrum[0].im = 0.0;
+        b.spectrum[half].im = 0.0;
+        self.inverse
+            .process_with_scratch(&mut b.spectrum, &mut b.time, &mut b.scratch)
+            .expect("buffer sizes come from the plan");
+        let scale = 1.0 / self.n_fft as f32;
+        let start = f * self.hop;
+        for i in 0..self.n_fft {
+            ola.out[start + i] += b.time[i] * scale * self.window[i];
+            ola.norm[start + i] += self.window[i] * self.window[i];
+        }
+    }
+}
+
+/// Per-transform FFT buffers.
+struct Buffers {
+    input: Vec<f32>,
+    spectrum: Vec<Complex>,
+    time: Vec<f32>,
+    scratch: Vec<Complex>,
+}
+
+impl Buffers {
+    fn new(stft: &Stft) -> Self {
+        let scratch = stft
+            .forward
+            .get_scratch_len()
+            .max(stft.inverse.get_scratch_len());
+        Self {
+            input: stft.forward.make_input_vec(),
+            spectrum: stft.inverse.make_input_vec(),
+            time: stft.inverse.make_output_vec(),
+            scratch: vec![Complex::default(); scratch],
+        }
+    }
+}
+
+/// The overlap-add accumulator of an inverse STFT.
+struct OverlapAdd {
+    out: Vec<f32>,
+    norm: Vec<f32>,
+}
+
+impl OverlapAdd {
+    fn new(stft: &Stft, frames: usize) -> Self {
+        let total = stft.n_fft + stft.hop * frames.saturating_sub(1);
+        Self {
+            out: vec![0.0; total],
+            norm: vec![0.0; total],
+        }
+    }
+
+    /// Window-normalized output, `length` samples from `half` (undoing the centering pad).
+    fn finish(self, half: usize, length: usize) -> Vec<f32> {
         (0..length)
             .map(|i| {
                 let j = i + half;
-                match (out.get(j), norm.get(j)) {
+                match (self.out.get(j), self.norm.get(j)) {
                     (Some(v), Some(n)) if *n > 1e-8 => v / n,
                     _ => 0.0,
                 }
@@ -148,6 +212,27 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(max_err < 1e-4, "max error {max_err}");
+    }
+
+    #[test]
+    fn map_matches_forward_then_inverse() {
+        let stft = Stft::new(512, 128);
+        let signal: Vec<f32> = (0..5_000).map(|i| (i as f32 * 0.03).sin()).collect();
+        // Identity edit reconstructs; a scaling edit matches the batch path.
+        let same = stft.map(&signal, |_, _| {});
+        let mut frames = stft.forward(&signal);
+        frames
+            .iter_mut()
+            .enumerate()
+            .for_each(|(f, s)| s.iter_mut().for_each(|c| *c *= 1.0 + f as f32 * 0.001));
+        let batch = stft.inverse(&frames, signal.len());
+        let mapped = stft.map(&signal, |f, s| {
+            s.iter_mut().for_each(|c| *c *= 1.0 + f as f32 * 0.001)
+        });
+        for i in 0..signal.len() {
+            assert!((same[i] - signal[i]).abs() < 1e-4);
+            assert!((mapped[i] - batch[i]).abs() < 1e-5);
+        }
     }
 
     #[test]
