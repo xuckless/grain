@@ -375,10 +375,12 @@ host contract is `EngineHost.producer`.
   `render` runs it offline. `measure` reads integrated loudness (BS.1770-4 K-weighting with gates;
   a −20 dBFS-peak 1 kHz sine reads −23.0 LUFS), sample peak, tilt (2–6 kHz over 150 Hz–1 kHz) and
   sibilance (5–10 kHz over 150 Hz–5 kHz). `settings(preset, measures, bpm)`: every preset sets
-  the compressor threshold, de-esser threshold and output gain from the take's loudness (aiming
-  at −16 LUFS), and *Auto* additionally moves presence and air halfway towards a neutral tilt and
-  scales de-essing with the measured sibilance. Tests cover every stage, block-size independence,
-  the LUFS reference, and Auto on synthetic bright/dark/quiet/loud voices.
+  the compressor and de-esser thresholds from the take's loudness, and *Auto* additionally moves presence and air halfway towards a neutral tilt and
+  scales de-essing with the measured sibilance. `produce::pick` then sets the output gain
+  from a trial render, so every preset lands on −16 LUFS (within 0.5 LU in tests; the gain is capped
+  at ±24 dB). Tests cover every stage, block-size independence,
+  the LUFS reference, and Auto on synthetic bright/dark/quiet/loud voices. The whole chain costs
+  **~0.34% of one core** in 128-frame blocks (release, `chain_cpu`), well inside §10's live budget.
 - **Harmony** (`engine-core::harmony`): diatonic thirds and sixths (above and below) in the
   song's key, per note of the source's melody (the reference notes for the vocal stem, segmented
   notes for a take); out-of-scale notes keep their chromatic offset. The per-frame correction is

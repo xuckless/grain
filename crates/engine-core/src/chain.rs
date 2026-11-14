@@ -733,6 +733,30 @@ mod tests {
         assert_eq!(whole, again);
     }
 
+    /// CPU cost of the full chain in 128-frame blocks (the live budget, AGENTS.md §10).
+    /// `cargo test --release -p engine-core chain_cpu -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing, run in release"]
+    fn chain_cpu() {
+        let x = voice(1.0, 0.02, 0.3);
+        let mut s = settings(ChainPreset::Pop, &measure(&x, SR), 120.0);
+        s.reverb_mix = 0.3;
+        let mut chain = VocalChain::new(SR);
+        chain.set(s);
+        let mut buf = x.clone();
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            for b in buf.chunks_mut(128) {
+                chain.process(b);
+            }
+        }
+        let audio = 10.0 * x.len() as f64 / f64::from(SR);
+        eprintln!(
+            "vocal chain: {:.3}% of one core",
+            100.0 * start.elapsed().as_secs_f64() / audio
+        );
+    }
+
     #[test]
     fn lufs_matches_bs1770_on_a_sine() {
         // A full-scale 1 kHz sine reads −3.01 LUFS.

@@ -50,6 +50,16 @@ export function producedTakes(project: Project): Take[] {
   return project.takes.filter((t) => PRODUCED.has(t.source.kind)).reverse();
 }
 
+/** The source opened first: the newest sung take that Produce didn't make, else the vocal stem,
+ * else the newest take. */
+export function produceSource(project: Project): EditSource | null {
+  const sung = project.takes.filter((t) => !PRODUCED.has(t.source.kind)).at(-1);
+  if (sung) return { kind: "Take", id: sung.id };
+  if (project.analysis.reference_notes.length > 0) return { kind: "VocalStem" };
+  const any = project.takes.at(-1);
+  return any ? { kind: "Take", id: any.id } : null;
+}
+
 /** What a produced take keeps about how it was made, for its row. */
 export function describeOutput(t: Take): string {
   const s = t.source;

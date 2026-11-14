@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Measures, Project, Take } from "@workstation/engine-api";
-import { canGenerate, describeOutput, generationTask, generatorAction, jobNext, meterRows, producedTakes, randomSeed, type Job } from "./produce.ts";
+import { canGenerate, describeOutput, generationTask, generatorAction, jobNext, meterRows, produceSource, producedTakes, randomSeed, type Job } from "./produce.ts";
 
 test("a job runs once at a time and ends in one outcome", () => {
   let j: Job = { kind: "idle" };
@@ -55,6 +55,8 @@ test("produced outputs list newest first with how they were made", () => {
   assert.deepEqual(producedTakes(project).map((t) => t.id), [3, 2]);
   assert.equal(describeOutput(producedTakes(project)[0]), "acestep-v15-base · seed 7 · “lofi”");
   assert.equal(describeOutput(producedTakes(project)[1]), "Third above, same voice");
+  // Outputs never become the default source.
+  assert.deepEqual(produceSource({ ...project, analysis: { reference_notes: [] } } as unknown as Project), { kind: "Take", id: 1 });
 });
 
 test("meters show before and after on fixed scales", () => {

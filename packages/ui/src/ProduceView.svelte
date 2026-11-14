@@ -5,7 +5,7 @@
   import Toggle from "./Toggle.svelte";
   import { dotFill } from "./grain";
   import { enter } from "./motion";
-  import { defaultSource, sourceFromId, sourceId, sourceOptions } from "./pitch";
+  import { sourceFromId, sourceId, sourceOptions } from "./pitch";
   import {
     CHAIN_CONTROLS,
     INSTRUMENTS,
@@ -21,6 +21,7 @@
     jobNext,
     meterRows,
     presetLabel,
+    produceSource,
     producedTakes,
     randomSeed,
     type Job,
@@ -65,7 +66,7 @@
   const source = $derived.by<EditSource | null>(() => {
     const p = picked;
     if (p && (p.kind === "VocalStem" || project.takes.some((t) => t.id === p.id))) return p;
-    return defaultSource(project);
+    return produceSource(project);
   });
   const sources = $derived(sourceOptions(project));
 
@@ -82,6 +83,8 @@
   async function run(job: Job, set: (j: Job) => void, work: () => Promise<JobEvent>) {
     const started = jobNext(job, { kind: "start" });
     if (!started) return;
+    // Results don't become the source: the view stays on what was being worked on.
+    if (source) picked = $state.snapshot(source) as EditSource;
     set(started);
     let event: JobEvent;
     try {
@@ -287,7 +290,7 @@
         <span class="muted small">DeepFilterNet 3 noise suppression</span>
         <span class="spacer"></span>
         {#if producer.denoise.kind === "available"}
-          <button class="press primary" onclick={cleanUp} disabled={clean.kind === "running"}>{clean.kind === "running" ? "Cleaning up" : "Clean up take"}</button>
+          <button class="press primary big" onclick={cleanUp} disabled={clean.kind === "running"}>{clean.kind === "running" ? "Cleaning up" : "Clean up take"}</button>
         {/if}
       </div>
       {#if producer.denoise.kind === "unavailable"}
@@ -307,7 +310,7 @@
         <Menu label="Preset" value={preset} options={PRESETS.map((p) => ({ id: p, label: p === "Auto" ? "Auto (from this take)" : presetLabel(p) }))} onPick={(p) => (preset = p)} />
         <Toggle checked={live.kind === "on"} label="Hear it live" onToggle={(on) => void setLive(on)} />
         <span class="spacer"></span>
-        <button class="press primary" onclick={applyChain} disabled={chain.kind !== "ready" || chained.kind === "running"}>{chained.kind === "running" ? "Rendering" : "Apply to take"}</button>
+        <button class="press primary big" onclick={applyChain} disabled={chain.kind !== "ready" || chained.kind === "running"}>{chained.kind === "running" ? "Rendering" : "Apply to take"}</button>
       </div>
       {#if live.kind === "on"}
         <p class="muted small">Live on your voice over the song. Headphones only: speakers feed back.</p>
@@ -349,7 +352,7 @@
       </div>
       <div class="controls">
         {#each INTERVALS as i (i)}
-          <button class="press" onclick={() => sing(i)} disabled={harmony.kind === "running"}>{intervalLabel(i)}</button>
+          <button class="press raised big" onclick={() => sing(i)} disabled={harmony.kind === "running"}>{intervalLabel(i)}</button>
         {/each}
         <span class="spacer"></span>
         <button class="press quiet" onclick={() => exportMidi(null)}>Melody MIDI</button>
@@ -399,7 +402,7 @@
             <input class="prompt" type="text" placeholder="Style, e.g. warm lo-fi keys, brushed drums" bind:value={prompt} aria-label="Style prompt" />
             <label class="seed mono small">seed <input type="number" min="0" bind:value={seed} aria-label="Seed" /></label>
             <button class="press quiet" onclick={() => (seed = randomSeed())}>New seed</button>
-            <button class="press primary" onclick={generate} disabled={!canGenerate(genState) || generation.kind === "running"}>{generation.kind === "running" ? "Generating" : "Generate"}</button>
+            <button class="press primary big" onclick={generate} disabled={!canGenerate(genState) || generation.kind === "running"}>{generation.kind === "running" ? "Generating" : "Generate"}</button>
           </div>
           <p class="muted small">Conditioned on {project.analysis.tempo.bpm.toFixed(0)} BPM{project.analysis.keys[0] ? `, ${project.analysis.keys[0].label}` : ""} and {task === "Repaint" ? "the song's mix" : "the source's vocal"}. Stereo results are kept as one mono track.</p>
         {/if}
