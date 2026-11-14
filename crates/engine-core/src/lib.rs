@@ -3,6 +3,7 @@
 //! No I/O, no threads, no platform APIs: everything here must build for
 //! `wasm32-unknown-unknown` (AGENTS.md §3).
 
+pub mod align;
 pub mod audio;
 pub mod key;
 pub mod melody;

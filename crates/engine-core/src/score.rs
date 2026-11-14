@@ -1,5 +1,6 @@
 //! Offline performance scoring (AGENTS.md §5).
 
+use crate::align;
 use crate::melody::Note;
 use crate::note::fold_octave;
 use crate::pitch::{PitchFrame, PitchTrack};
@@ -8,8 +9,9 @@ use ts_rs::TS;
 
 /// Search range for the take's offset against the reference.
 const MAX_OFFSET_SECONDS: f64 = 10.0;
-/// A note's onset is searched from this long before its start.
-const ONSET_LEAD_SECONDS: f64 = 0.25;
+/// How far (seconds) fine alignment may move the take from the coarse offset: the
+/// Sakoe-Chiba band radius of [`align::warp`].
+const MAX_DRIFT_SECONDS: f64 = 2.0;
 /// Onset error at which the timing score of a note reaches zero.
 const TIMING_ZERO_MS: f32 = 300.0;
 /// Pitch spread at which the stability score of a note reaches zero.
@@ -98,11 +100,22 @@ pub enum NoteResult {
         mean_cents: f32,
         /// Fraction of the note's duration sung within tolerance.
         hit_ratio: f32,
+        /// Timing error at the note's start: how late (positive) the take sang it.
         onset_ms: f32,
         stability_cents: f32,
         vibrato: Vibrato,
     },
     Missed,
+}
+
+/// How far the take ran ahead of (negative) or behind (positive) the reference, beyond the
+/// coarse offset, over the frames where the reference sings.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TimingDeviation {
+    pub mean_ms: f32,
+    pub mean_abs_ms: f32,
+    pub max_abs_ms: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
@@ -132,8 +145,11 @@ pub struct ScoreReport {
     pub hop_seconds: f64,
     /// One entry per reference pitch frame.
     pub frames: Vec<FrameComparison>,
-    /// The user's pitch track shifted onto the reference timeline.
+    /// The user's pitch track on the reference timeline: shifted by the offset, then warped
+    /// (dynamic time warping), so pitch is compared moment for moment even if the tempo drifts.
     pub user_pitch: PitchTrack,
+    /// Timing, reported apart from pitch: the warp's distance from the offset alone.
+    pub timing_deviation: TimingDeviation,
     pub notes: Vec<NoteReport>,
     pub scores: Scores,
 }
@@ -184,18 +200,30 @@ pub fn score(
     );
     let hop = reference.hop_seconds;
     let shift = (offset_seconds / hop).round() as isize;
+    let shifted: Vec<PitchFrame> = (0..reference.frames.len() as isize)
+        .map(|i| {
+            let j = i + shift;
+            if j >= 0 && (j as usize) < take.frames.len() {
+                take.frames[j as usize]
+            } else {
+                PitchFrame::Unvoiced
+            }
+        })
+        .collect();
+    let warp = align::warp(
+        &reference.frames,
+        &shifted,
+        (MAX_DRIFT_SECONDS / hop) as usize,
+    );
+    // Milliseconds the take is late at reference frame i.
+    let deviation_ms: Vec<f32> = warp
+        .iter()
+        .enumerate()
+        .map(|(i, j)| ((*j as f64 - i as f64) * hop * 1000.0) as f32)
+        .collect();
     let user_pitch = PitchTrack {
         hop_seconds: hop,
-        frames: (0..reference.frames.len() as isize)
-            .map(|i| {
-                let j = i + shift;
-                if j >= 0 && (j as usize) < take.frames.len() {
-                    take.frames[j as usize]
-                } else {
-                    PitchFrame::Unvoiced
-                }
-            })
-            .collect(),
+        frames: warp.iter().map(|j| shifted[*j]).collect(),
     };
     let tol = settings.difficulty.tolerance_cents();
     let error = |midi: f32, reference_midi: f32| {
@@ -229,7 +257,7 @@ pub fn score(
         .iter()
         .map(|note| NoteReport {
             note: *note,
-            result: score_note(note, &user_pitch, tol, &error),
+            result: score_note(note, &user_pitch, &deviation_ms, tol, &error),
         })
         .collect();
 
@@ -268,6 +296,18 @@ pub fn score(
             .map(|(_, s)| 100.0 * (1.0 - s / STABILITY_ZERO_CENTS).max(0.0))
             .collect(),
     );
+    let sung_deviation: Vec<f32> = reference
+        .frames
+        .iter()
+        .zip(&deviation_ms)
+        .filter(|(f, _)| matches!(f, PitchFrame::Voiced { .. }))
+        .map(|(_, d)| *d)
+        .collect();
+    let timing_deviation = TimingDeviation {
+        mean_ms: mean(sung_deviation.clone()),
+        mean_abs_ms: mean(sung_deviation.iter().map(|d| d.abs()).collect()),
+        max_abs_ms: sung_deviation.iter().fold(0.0, |m, d| m.max(d.abs())),
+    };
     let [wp, wt, ws, wc] = SCORE_WEIGHTS;
     ScoreReport {
         settings,
@@ -275,6 +315,7 @@ pub fn score(
         hop_seconds: hop,
         frames,
         user_pitch,
+        timing_deviation,
         notes,
         scores: Scores {
             overall: wp * pitch + wt * timing + ws * stability + wc * coverage,
@@ -289,6 +330,7 @@ pub fn score(
 fn score_note(
     note: &Note,
     user: &PitchTrack,
+    deviation_ms: &[f32],
     tol: f32,
     error: &dyn Fn(f32, f32) -> f32,
 ) -> NoteResult {
@@ -304,11 +346,9 @@ fn score_note(
         _ => None,
     };
 
-    let onset = (frame_of(note.start - ONSET_LEAD_SECONDS)..last)
-        .find(|i| voiced_error(*i).is_some_and(|e| e.abs() <= 2.0 * tol));
-    let Some(onset) = onset else {
+    if !(first..last).any(|i| voiced_error(i).is_some_and(|e| e.abs() <= 2.0 * tol)) {
         return NoteResult::Missed;
-    };
+    }
     let errors: Vec<f32> = (first..last).filter_map(voiced_error).collect();
     if errors.is_empty() {
         return NoteResult::Missed;
@@ -323,7 +363,7 @@ fn score_note(
     NoteResult::Sung {
         mean_cents,
         hit_ratio,
-        onset_ms: ((onset as f64 * hop - note.start) * 1000.0) as f32,
+        onset_ms: deviation_ms.get(first).copied().unwrap_or(0.0),
         stability_cents,
         vibrato,
     }
@@ -514,6 +554,7 @@ mod tests {
         late.frames.extend(r.frames.iter().copied());
         let report = score(&r, &notes, &late, 1.5, ScoreSettings::default());
         assert!(report.scores.overall > 97.0);
+        assert!(report.timing_deviation.max_abs_ms < 1.0);
         assert!(
             score(&r, &notes, &late, 0.0, ScoreSettings::default())
                 .scores
@@ -533,5 +574,49 @@ mod tests {
             frames: r.frames[40..].to_vec(),
         };
         assert!((estimate_offset(&r, &early) + 0.40).abs() < 1e-6);
+    }
+
+    /// A take that drifts 4% slow over 22 s (≈0.9 s late by the end): offset alone loses the
+    /// later notes; the warp keeps pitch intact and reports the growing lateness as timing.
+    #[test]
+    fn tempo_drift_is_warped_and_reported_as_timing() {
+        let pattern: Vec<(Option<f32>, f64)> = (0..10)
+            .flat_map(|k| {
+                let base = 60.0 + (k % 3) as f32 * 2.0;
+                [
+                    (Some(base), 0.6),
+                    (None, 0.2),
+                    (Some(base + 4.0), 0.6),
+                    (None, 0.8),
+                ]
+            })
+            .collect();
+        let r = synthetic_track(&pattern, 0.0);
+        let notes = segment(&r, C_MAJOR);
+        let drift = 1.04;
+        let slow = PitchTrack {
+            hop_seconds: r.hop_seconds,
+            frames: (0..(r.frames.len() as f64 * drift) as usize)
+                .map(|j| r.frames[((j as f64 / drift) as usize).min(r.frames.len() - 1)])
+                .collect(),
+        };
+        let report = score(&r, &notes, &slow, 0.0, ScoreSettings::default());
+        assert!(report.scores.pitch > 95.0, "pitch {}", report.scores.pitch);
+        assert!(
+            report.scores.coverage > 95.0,
+            "coverage {}",
+            report.scores.coverage
+        );
+        let last = report.notes.last().unwrap();
+        let NoteResult::Sung { onset_ms, .. } = last.result else {
+            panic!("last note sung")
+        };
+        let expected = (last.note.start * (drift - 1.0) * 1000.0) as f32;
+        assert!(
+            (onset_ms - expected).abs() < 40.0,
+            "onset {onset_ms} vs {expected}"
+        );
+        assert!(report.timing_deviation.max_abs_ms > 700.0);
+        assert!(report.scores.timing < 60.0);
     }
 }

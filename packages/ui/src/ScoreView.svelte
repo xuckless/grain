@@ -111,6 +111,7 @@
             ["Stability", s.stability.toFixed(0)],
             ["Coverage", s.coverage.toFixed(0)],
             ["Take offset", `${score.report.offset_seconds.toFixed(2)} s`],
+            ["Timing drift", `${score.report.timing_deviation.mean_ms >= 0 ? "+" : ""}${score.report.timing_deviation.mean_ms.toFixed(0)} ms avg, ${score.report.timing_deviation.max_abs_ms.toFixed(0)} max`],
           ]}
           <div class="result">
             <div class="overall">

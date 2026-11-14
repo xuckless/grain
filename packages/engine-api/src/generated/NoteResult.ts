@@ -5,4 +5,8 @@ export type NoteResult = { "kind": "Sung", mean_cents: number,
 /**
  * Fraction of the note's duration sung within tolerance.
  */
-hit_ratio: number, onset_ms: number, stability_cents: number, vibrato: Vibrato, } | { "kind": "Missed" };
+hit_ratio: number, 
+/**
+ * Timing error at the note's start: how late (positive) the take sang it.
+ */
+onset_ms: number, stability_cents: number, vibrato: Vibrato, } | { "kind": "Missed" };

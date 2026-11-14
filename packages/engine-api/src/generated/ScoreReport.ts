@@ -4,6 +4,7 @@ import type { NoteReport } from "./NoteReport";
 import type { PitchTrack } from "./PitchTrack";
 import type { ScoreSettings } from "./ScoreSettings";
 import type { Scores } from "./Scores";
+import type { TimingDeviation } from "./TimingDeviation";
 
 export type ScoreReport = { settings: ScoreSettings, 
 /**
@@ -15,6 +16,11 @@ offset_seconds: number, hop_seconds: number,
  */
 frames: Array<FrameComparison>, 
 /**
- * The user's pitch track shifted onto the reference timeline.
+ * The user's pitch track on the reference timeline: shifted by the offset, then warped
+ * (dynamic time warping), so pitch is compared moment for moment even if the tempo drifts.
  */
-user_pitch: PitchTrack, notes: Array<NoteReport>, scores: Scores, };
+user_pitch: PitchTrack, 
+/**
+ * Timing, reported apart from pitch: the warp's distance from the offset alone.
+ */
+timing_deviation: TimingDeviation, notes: Array<NoteReport>, scores: Scores, };
