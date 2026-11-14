@@ -5,6 +5,8 @@ import type { ImportStage } from "./generated/ImportStage";
 import type { Latency } from "./generated/Latency";
 import type { LiveUpdate } from "./generated/LiveUpdate";
 import type { LyricsUpdate } from "./generated/LyricsUpdate";
+import type { MonitorMode } from "./generated/MonitorMode";
+import type { MonitorStatus } from "./generated/MonitorStatus";
 import type { ProjectLyrics } from "./generated/ProjectLyrics";
 import type { PlayerCommand } from "./generated/PlayerCommand";
 import type { Project } from "./generated/Project";
@@ -14,6 +16,8 @@ import type { ScoreSettings } from "./generated/ScoreSettings";
 import type { SeparationQuality } from "./generated/SeparationQuality";
 import type { TakeAdded } from "./generated/TakeAdded";
 import type { TransportSnapshot } from "./generated/TransportSnapshot";
+import type { TunePreview } from "./generated/TunePreview";
+import type { TuneSettings } from "./generated/TuneSettings";
 
 export type { Accompaniment } from "./generated/Accompaniment";
 export type { Analysis } from "./generated/Analysis";
@@ -36,6 +40,8 @@ export type { Latency } from "./generated/Latency";
 export type { LatencySource } from "./generated/LatencySource";
 export type { MixParams } from "./generated/MixParams";
 export type { Mode } from "./generated/Mode";
+export type { MonitorMode } from "./generated/MonitorMode";
+export type { MonitorStatus } from "./generated/MonitorStatus";
 export type { Note } from "./generated/Note";
 export type { NoteReport } from "./generated/NoteReport";
 export type { NoteResult } from "./generated/NoteResult";
@@ -60,6 +66,10 @@ export type { TrackMode } from "./generated/TrackMode";
 export type { TrackSource } from "./generated/TrackSource";
 export type { Transport } from "./generated/Transport";
 export type { TransportSnapshot } from "./generated/TransportSnapshot";
+export type { Scale } from "./generated/Scale";
+export type { TuneMode } from "./generated/TuneMode";
+export type { TunePreview } from "./generated/TunePreview";
+export type { TuneSettings } from "./generated/TuneSettings";
 export type { Vibrato } from "./generated/Vibrato";
 
 export type ImportOutcome = { kind: "imported"; project: Project } | { kind: "cancelled" };
@@ -156,6 +166,21 @@ export type Microphone =
     }
   | { kind: "unavailable"; reason: string };
 
+/** Auto-tune (AGENTS.md §7): live monitoring through the player, and offline rendering of a
+ * take into a new, tuned take. */
+export type AutoTune = {
+  /** Turns live monitoring off, or on dry or tuned. Rejects (with the reason) when the
+   * microphone can't be opened. */
+  setMonitor(mode: MonitorMode): Promise<MonitorStatus>;
+  /** The live tuner's settings, used from the next audio block. */
+  setTune(settings: TuneSettings): Promise<void>;
+  /** What tuning take `take` would do (from its stored pitch, instant). */
+  preview(take: number, settings: TuneSettings): Promise<TunePreview>;
+  /** Renders take `take` tuned (high quality) as a new take, "<take> (tuned)", added to the
+   * song and scored. The original is kept. */
+  apply(take: number, tune: TuneSettings, settings: ScoreSettings): Promise<TakeAdded>;
+};
+
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
 export interface EngineHost {
   readonly chrome: WindowChrome;
@@ -167,6 +192,7 @@ export interface EngineHost {
   /** Picks a song file, imports it and makes it the loaded song. */
   importFile(quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome>;
   readonly microphone: Microphone;
+  readonly autotune: AutoTune;
   /** Picks a sung take file, adds it to the loaded song and scores it. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
   /** Sets the loaded song's lyrics (fetched by the UI from LRCLIB, or edited) and returns them

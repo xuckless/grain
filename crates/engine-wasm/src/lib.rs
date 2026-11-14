@@ -6,10 +6,12 @@ use engine_core::audio::StereoAudio;
 use engine_core::cue;
 use engine_core::live::LiveSession;
 use engine_core::lyrics::{self, LyricsUpdate};
-use engine_core::player::{Player, PlayerCommand, PlayerTrack};
+use engine_core::melody::Note;
+use engine_core::player::{MonitorStatus, Player, PlayerCommand, PlayerTrack};
 use engine_core::project::{self, Project, SongAudio, SongSource, TrackedPitch};
 use engine_core::score::ScoreSettings;
 use engine_core::take::{self, TakeAdded, TakeSource};
+use engine_core::tune;
 use engine_ml::demucs::{ModelSpec, Separator, SeparatorState};
 use wasm_bindgen::prelude::*;
 
@@ -82,6 +84,17 @@ impl WasmSong {
             project: self.project.clone(),
             take: id,
         })
+    }
+
+    /// Timeline audio of take `id`.
+    fn timeline(&self, id: u32) -> Result<&[f32], JsError> {
+        let i = self
+            .project
+            .takes
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or_else(|| JsError::new("no such take"))?;
+        Ok(&self.takes[i])
     }
 }
 
@@ -207,13 +220,37 @@ impl WasmSong {
     /// Timeline audio of take `id` (for the player).
     #[wasm_bindgen(js_name = takeAudio)]
     pub fn take_audio(&self, id: u32) -> Result<js_sys::Float32Array, JsError> {
-        let i = self
-            .project
-            .takes
-            .iter()
-            .position(|t| t.id == id)
-            .ok_or_else(|| JsError::new("no such take"))?;
-        Ok(js_sys::Float32Array::from(self.takes[i].as_slice()))
+        Ok(js_sys::Float32Array::from(self.timeline(id)?))
+    }
+
+    /// Stores the auto-tune settings (a `TuneSettings`) so a save keeps them.
+    #[wasm_bindgen(js_name = setTune)]
+    pub fn set_tune(&mut self, settings: JsValue) -> Result<(), JsError> {
+        self.project.tune = from_js(settings)?;
+        Ok(())
+    }
+
+    /// What auto-tune would do to take `id` with `settings` (a `TuneSettings`); returns a
+    /// `TunePreview`.
+    #[wasm_bindgen(js_name = tunePreview)]
+    pub fn tune_preview(&self, id: u32, settings: JsValue) -> Result<JsValue, JsError> {
+        to_js(&tune::preview(&self.project, id, from_js(settings)?).map_err(js_err)?)
+    }
+
+    /// Adds take `id` auto-tuned as a new take, "<take> (tuned)", and scores it. Returns a
+    /// `TakeAdded`.
+    #[wasm_bindgen(js_name = applyTune)]
+    pub fn apply_tune(
+        &mut self,
+        id: u32,
+        tune: JsValue,
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let settings: ScoreSettings = from_js(settings)?;
+        let tuned =
+            tune::render(&self.project, id, self.timeline(id)?, from_js(tune)?).map_err(js_err)?;
+        let pitch = TrackedPitch::yin(&tuned, self.project.sample_rate);
+        self.add(TakeSource::Tuned { from: id }, tuned, pitch, settings)
     }
 }
 
@@ -274,6 +311,13 @@ pub fn project_summary(project: JsValue, id: String, saved_ms: f64) -> Result<Js
 #[wasm_bindgen(js_name = countIn)]
 pub fn count_in(bpm: f64, sample_rate: u32) -> Result<JsValue, JsError> {
     to_js(&cue::count_in(bpm, sample_rate))
+}
+
+/// The `MonitorStatus` for `mode` (a `MonitorMode`): `shifter_ms` is the player's
+/// `monitorLatency` in ms, `device_ms` the calibrated round trip.
+#[wasm_bindgen(js_name = monitorStatus)]
+pub fn monitor_status(mode: JsValue, shifter_ms: f32, device_ms: f32) -> Result<JsValue, JsError> {
+    to_js(&MonitorStatus::new(from_js(mode)?, shifter_ms, device_ms))
 }
 
 /// Round-trip latency from a calibration capture: `[ms, confidence]`, or an error saying why
@@ -364,6 +408,7 @@ impl WasmSeparator {
 #[derive(Default)]
 pub struct PlayerBuilder {
     tracks: Vec<PlayerTrack>,
+    reference: Vec<Note>,
 }
 
 #[wasm_bindgen]
@@ -388,23 +433,33 @@ impl PlayerBuilder {
         Ok(())
     }
 
+    /// The song's reference melody (`Note[]`), for follow-melody auto-tune.
+    #[wasm_bindgen(js_name = setReference)]
+    pub fn set_reference(&mut self, notes: JsValue) -> Result<(), JsError> {
+        self.reference = from_js(notes)?;
+        Ok(())
+    }
+
     /// `sample_rate`: the AudioContext's rate (cues are synthesized at it).
     pub fn build(self, sample_rate: u32) -> WasmPlayer {
         WasmPlayer {
-            player: Player::new(self.tracks, sample_rate),
+            player: Player::new(self.tracks, sample_rate, self.reference),
             left: vec![0.0; MAX_BLOCK],
             right: vec![0.0; MAX_BLOCK],
+            input: vec![0.0; MAX_BLOCK],
         }
     }
 }
 
 /// Real-time player for the AudioWorklet. JS reads the output through views on wasm memory
-/// at [`WasmPlayer::left_ptr`] / [`WasmPlayer::right_ptr`], so a block never allocates.
+/// at [`WasmPlayer::left_ptr`] / [`WasmPlayer::right_ptr`], and writes the microphone block
+/// for the monitor at [`WasmPlayer::input_ptr`], so a block never allocates.
 #[wasm_bindgen]
 pub struct WasmPlayer {
     player: Player,
     left: Vec<f32>,
     right: Vec<f32>,
+    input: Vec<f32>,
 }
 
 #[wasm_bindgen]
@@ -434,11 +489,24 @@ impl WasmPlayer {
             .map_err(|_| JsError::new("too many takes in one session"))
     }
 
-    /// Renders `frames` (≤ 1024) samples into the output buffers.
-    pub fn render(&mut self, frames: usize) {
+    /// Renders `frames` (≤ 1024) samples into the output buffers. `with_input`: the
+    /// microphone block was written at [`WasmPlayer::input_ptr`] (for the monitor).
+    pub fn render(&mut self, frames: usize, with_input: bool) {
         let n = frames.min(MAX_BLOCK);
+        let input = if with_input { &self.input[..n] } else { &[] };
         self.player
-            .render(&mut self.left[..n], &mut self.right[..n]);
+            .render(&mut self.left[..n], &mut self.right[..n], input);
+    }
+
+    #[wasm_bindgen(js_name = inputPtr)]
+    pub fn input_ptr(&mut self) -> *mut f32 {
+        self.input.as_mut_ptr()
+    }
+
+    /// Delay of the tuned monitor, in frames.
+    #[wasm_bindgen(js_name = monitorLatency)]
+    pub fn monitor_latency(&self) -> usize {
+        self.player.monitor_latency()
     }
 
     #[wasm_bindgen(js_name = leftPtr)]

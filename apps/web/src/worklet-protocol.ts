@@ -1,12 +1,13 @@
 // Messages between the main thread and the player AudioWorklet.
 
-import type { MixParams, PlayerCommand, Transport } from "@workstation/engine-api";
+import type { MixParams, Note, PlayerCommand, Transport } from "@workstation/engine-api";
 
 export type TrackData = { left: Float32Array; right: Float32Array; mix: MixParams };
 
 export type ToWorklet =
   | { kind: "init"; module: WebAssembly.Module }
-  | { kind: "load"; tracks: TrackData[] }
+  /** `reference`: the song's reference melody (follow-melody auto-tune). */
+  | { kind: "load"; tracks: TrackData[]; reference: Note[] }
   | { kind: "unload" }
   | { kind: "command"; command: PlayerCommand }
   /** Adds a take as a player track. */
@@ -19,6 +20,8 @@ export type ToWorklet =
 
 export type FromWorklet =
   | { kind: "ready" }
+  /** A song was loaded; `monitorLatency`: the tuned monitor's delay in frames. */
+  | { kind: "loaded"; monitorLatency: number }
   | { kind: "transport"; transport: Transport }
   | { kind: "rejected"; message: string }
   /** The cue started: the transport right after it (a count-in holds the song position). */

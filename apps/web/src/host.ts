@@ -7,6 +7,8 @@ import type {
   Latency,
   LiveUpdate,
   Microphone,
+  MonitorMode,
+  MonitorStatus,
   PlayerCommand,
   Project,
   ProjectLyrics,
@@ -20,8 +22,9 @@ import type {
   TakeAdded,
   Transport,
   TransportSnapshot,
+  TunePreview,
 } from "@workstation/engine-api";
-import init, { countIn, measureLatency, projectSummary, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
+import init, { countIn, measureLatency, monitorStatus, projectSummary, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
 import * as store from "./store";
 import wasmUrl from "engine-wasm/engine_wasm_bg.wasm?url";
@@ -39,8 +42,18 @@ type Separation =
 /** `id`: the song's OPFS project, once saved or opened. */
 type Session = { kind: "empty" } | { kind: "loaded"; song: WasmSong; id: string | null };
 
-/** An open microphone feeding the player worklet's input. */
-type OpenMic = { stream: MediaStream; source: MediaStreamAudioSourceNode; ring: Ring; buffer: SharedArrayBuffer };
+/** The microphone connected to the player worklet's input. Takes, calibration and the live
+ * monitor share it (each is a holder), so the input never carries the voice twice. */
+type MicInput =
+  | { kind: "closed" }
+  | { kind: "opening"; ready: Promise<void>; holders: number }
+  | { kind: "open"; stream: MediaStream; source: MediaStreamAudioSourceNode; holders: number };
+
+/** A capture of the microphone (a take or a calibration) into a ring. */
+type OpenMic = { ring: Ring; buffer: SharedArrayBuffer };
+
+/** Whether the live monitor holds the microphone input (the player knows dry or tuned). */
+type MonitorHold = { kind: "off" } | { kind: "listening" };
 
 /** What the microphone is doing. */
 type MicState =
@@ -88,6 +101,8 @@ export async function createWebHost(): Promise<EngineHost> {
   node.connect(context.destination);
 
   let snapshot: TransportSnapshot = { transport: { kind: "Stopped" }, sample_rate: context.sampleRate };
+  /** The tuned monitor's delay (frames), reported when a song loads. */
+  let monitorFrames = 0;
   let cueStarted: ((t: Transport) => void) | undefined;
   let rejected: ((message: string) => void) | undefined;
   const ready = new Promise<void>((resolve) => {
@@ -96,6 +111,9 @@ export async function createWebHost(): Promise<EngineHost> {
       switch (m.kind) {
         case "ready":
           resolve();
+          return;
+        case "loaded":
+          monitorFrames = m.monitorLatency;
           return;
         case "transport":
           snapshot = { transport: m.transport, sample_rate: context.sampleRate };
@@ -131,7 +149,9 @@ export async function createWebHost(): Promise<EngineHost> {
         return { left, right: new Float32Array(left), mix: t.mix };
       }),
     ];
-    post({ kind: "load", tracks }, tracks.flatMap((t) => [t.left.buffer, t.right.buffer]));
+    post({ kind: "load", tracks, reference: project.analysis.reference_notes }, tracks.flatMap((t) => [t.left.buffer, t.right.buffer]));
+    // The new player starts with its monitor off.
+    endMonitor();
     if (session.kind === "loaded") session.song.free();
     session = { kind: "loaded", song, id };
     return project;
@@ -144,20 +164,100 @@ export async function createWebHost(): Promise<EngineHost> {
     return session.song;
   }
 
-  async function openMic(): Promise<OpenMic> {
-    await context.resume();
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO });
-    const source = context.createMediaStreamSource(stream);
-    source.connect(node);
-    await new Promise((r) => setTimeout(r, MIC_SETTLE_MS));
-    const buffer = createRing();
-    return { stream, source, buffer, ring: ringViews(buffer) };
+  let input: MicInput = { kind: "closed" };
+
+  /** Holds the microphone input, connecting it on the first hold. */
+  async function holdInput(): Promise<void> {
+    switch (input.kind) {
+      case "open":
+        input.holders += 1;
+        return;
+      case "opening":
+        input.holders += 1;
+        return input.ready;
+      case "closed": {
+        const opening = (async () => {
+          await context.resume();
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO });
+          const source = context.createMediaStreamSource(stream);
+          source.connect(node);
+          opened(stream, source);
+        })();
+        input = { kind: "opening", ready: opening, holders: 1 };
+        try {
+          await opening;
+        } catch (e) {
+          input = { kind: "closed" };
+          throw e;
+        }
+        return;
+      }
+    }
   }
 
-  function closeMic(m: OpenMic) {
+  /** The microphone finished opening; if every holder let go meanwhile, it closes again. */
+  function opened(stream: MediaStream, source: MediaStreamAudioSourceNode) {
+    if (input.kind !== "opening") return;
+    const open = { kind: "open", stream, source, holders: input.holders } as const;
+    input = open;
+    if (open.holders === 0) disconnect(open);
+  }
+
+  /** Lets go of the microphone input, disconnecting it with the last hold. */
+  function releaseInput() {
+    switch (input.kind) {
+      case "closed":
+        return;
+      case "opening":
+        input.holders -= 1;
+        return;
+      case "open":
+        if (--input.holders === 0) disconnect(input);
+        return;
+    }
+  }
+
+  function disconnect(open: Extract<MicInput, { kind: "open" }>) {
+    open.source.disconnect();
+    for (const t of open.stream.getTracks()) t.stop();
+    input = { kind: "closed" };
+  }
+
+  async function openMic(): Promise<OpenMic> {
+    await holdInput();
+    await new Promise((r) => setTimeout(r, MIC_SETTLE_MS));
+    const buffer = createRing();
+    return { buffer, ring: ringViews(buffer) };
+  }
+
+  function closeMic() {
     post({ kind: "endCapture" });
-    m.source.disconnect();
-    for (const t of m.stream.getTracks()) t.stop();
+    releaseInput();
+  }
+
+  let monitor: MonitorHold = { kind: "off" };
+
+  function endMonitor() {
+    if (monitor.kind === "off") return;
+    monitor = { kind: "off" };
+    releaseInput();
+  }
+
+  async function setMonitor(mode: MonitorMode): Promise<MonitorStatus> {
+    loadedSong();
+    if (mode === "Off") {
+      post({ kind: "command", command: { kind: "Monitor", mode } });
+      endMonitor();
+    } else {
+      if (!crossOriginIsolated || !navigator.mediaDevices?.getUserMedia) throw new Error("Monitoring needs a browser with microphone access.");
+      if (monitor.kind === "off") {
+        await holdInput();
+        monitor = { kind: "listening" };
+      }
+      post({ kind: "command", command: { kind: "Monitor", mode } });
+    }
+    const device = await storedLatency();
+    return monitorStatus(mode, (monitorFrames * 1000) / context.sampleRate, device.ms) as MonitorStatus;
   }
 
   /** Starts capturing and applies `command` in the same quantum; resolves with the transport. */
@@ -316,7 +416,7 @@ export async function createWebHost(): Promise<EngineHost> {
             window.clearInterval(r.timer);
             if (r.live.kind === "running") r.live.session.free();
             await stopPlayback();
-            closeMic(r.mic);
+            closeMic();
             r.chunks.push(drain(r.mic.ring));
             const capture = concat(r.chunks);
             const latency = await storedLatency();
@@ -330,7 +430,7 @@ export async function createWebHost(): Promise<EngineHost> {
             if (mic.kind !== "recording") return;
             window.clearInterval(mic.timer);
             if (mic.live.kind === "running") mic.live.session.free();
-            closeMic(mic.mic);
+            closeMic();
             mic = { kind: "closed" };
             await stopPlayback();
           },
@@ -353,7 +453,7 @@ export async function createWebHost(): Promise<EngineHost> {
                 while (snapshot.transport.kind === "Probing") await new Promise((r) => setTimeout(r, 20));
                 await new Promise((r) => setTimeout(r, PROBE_TAIL_MS));
               } finally {
-                closeMic(m);
+                closeMic();
               }
               const [ms, confidence] = measureLatency(drain(m.ring), context.sampleRate, 0);
               return storeLatency({ ms, source: { kind: "Measured", confidence }, devices: await devicePair() });
@@ -410,6 +510,7 @@ export async function createWebHost(): Promise<EngineHost> {
     projects,
     async close() {
       if (microphone.kind === "available") await microphone.cancel();
+      endMonitor();
       post({ kind: "unload" });
       if (session.kind === "loaded") session.song.free();
       session = { kind: "empty" };
@@ -425,6 +526,21 @@ export async function createWebHost(): Promise<EngineHost> {
       return loadedSong().setLyrics(update) as ProjectLyrics;
     },
     microphone,
+    autotune: {
+      setMonitor,
+      async setTune(settings) {
+        loadedSong().setTune(settings);
+        post({ kind: "command", command: { kind: "Tune", settings } });
+      },
+      async preview(take, settings) {
+        return loadedSong().tunePreview(take, settings) as TunePreview;
+      },
+      async apply(take, tune, settings) {
+        const song = loadedSong();
+        await nextFrame(); // let the UI show it's working before the render blocks
+        return playTake(song, song.applyTune(take, tune, settings) as TakeAdded);
+      },
+    },
     async send(command) {
       await context.resume();
       // Mix settings are part of the project; a save keeps them (as on desktop).

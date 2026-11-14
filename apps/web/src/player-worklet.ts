@@ -13,7 +13,7 @@ declare function registerProcessor(name: string, ctor: new () => AudioWorkletPro
 /** Post the transport every this many render quanta (~23 ms at 128 frames / 44.1 kHz). */
 const TRANSPORT_EVERY = 8;
 
-type Output = { player: WasmPlayer; memory: WebAssembly.Memory; buffer: ArrayBuffer; left: Float32Array; right: Float32Array };
+type Output = { player: WasmPlayer; memory: WebAssembly.Memory; buffer: ArrayBuffer; left: Float32Array; right: Float32Array; input: Float32Array };
 
 type WorkletState =
   | { kind: "uninitialized" }
@@ -51,8 +51,10 @@ class PlayerProcessor extends AudioWorkletProcessor {
         if (this.state.kind === "playing") this.state.output.player.free();
         const builder = new PlayerBuilder();
         for (const t of message.tracks) builder.pushTrack(t.left, t.right, t.mix);
+        builder.setReference(message.reference);
         const player = builder.build(sampleRate);
         this.state = { kind: "playing", output: this.views(player, memory) };
+        this.post({ kind: "loaded", monitorLatency: player.monitorLatency() });
         this.post({ kind: "transport", transport: player.transport() });
         return;
       }
@@ -101,7 +103,7 @@ class PlayerProcessor extends AudioWorkletProcessor {
     }
   }
 
-  /** Float32 views onto the player's output buffers in wasm memory. */
+  /** Float32 views onto the player's output and input buffers in wasm memory. */
   private views(player: WasmPlayer, memory: WebAssembly.Memory): Output {
     const buffer = memory.buffer as ArrayBuffer;
     return {
@@ -110,21 +112,30 @@ class PlayerProcessor extends AudioWorkletProcessor {
       buffer,
       left: new Float32Array(buffer, player.leftPtr(), 1024),
       right: new Float32Array(buffer, player.rightPtr(), 1024),
+      input: new Float32Array(buffer, player.inputPtr(), 1024),
     };
+  }
+
+  /** The output views, renewed if wasm memory grew (and detached the old ones). */
+  private fresh(out: Output): Output {
+    if (out.memory.buffer === out.buffer) return out;
+    const renewed = this.views(out.player, out.memory);
+    this.state = { kind: "playing", output: renewed };
+    return renewed;
   }
 
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     if (this.state.kind !== "playing") return true;
-    let out = this.state.output;
+    let out = this.fresh(this.state.output);
     const [left, right] = outputs[0];
     // The microphone block of this quantum lines up with the output block rendered below.
-    if (this.capture.kind === "on") writeBlock(this.capture.ring, inputs[0]?.[0], left.length);
-    out.player.render(left.length);
-    // Wasm memory may have grown (and detached old views) since the last block.
-    if (out.memory.buffer !== out.buffer) {
-      out = this.views(out.player, out.memory);
-      this.state = { kind: "playing", output: out };
-    }
+    const mic = inputs[0]?.[0];
+    if (this.capture.kind === "on") writeBlock(this.capture.ring, mic, left.length);
+    // The monitor hears the microphone while one is connected.
+    const withInput = mic !== undefined && mic.length === left.length;
+    if (withInput) out.input.set(mic);
+    out.player.render(left.length, withInput);
+    out = this.fresh(out);
     left.set(out.left.subarray(0, left.length));
     right.set(out.right.subarray(0, right.length));
     if (++this.blocks % TRANSPORT_EVERY === 0) this.post({ kind: "transport", transport: out.player.transport() });
