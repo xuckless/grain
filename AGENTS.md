@@ -127,7 +127,7 @@ services/
   ml-sidecar/      # opt-in local Python (FastAPI) sidecar for models we cannot export to ONNX: ACE-Step, etc.
 models/            # model manifest (name, url, sha256, license, input spec). Weights are NOT committed.
 prototype/         # main.py moves here once the new engine reaches parity
-docs/research/     # longer notes, benchmarks, model evaluations
+docs/research/     # local-only notes, benchmarks, model evaluations (git-ignored)
 ```
 
 **Dependency rule:** `engine-core` depends on nothing platform-specific. `engine-native` and `engine-wasm` depend on `engine-core`, and never the other way round. The UI only talks to the engine through the API in `packages/engine-api`.
