@@ -18,9 +18,11 @@ pub mod player;
 pub mod project;
 pub mod resample;
 pub mod score;
+pub mod shift;
 pub mod stft;
 pub mod take;
 pub mod tempo;
+pub mod tune;
 
 /// Sample rate of every analysis and separation step (AGENTS.md §4.1).
 pub const WORKING_SAMPLE_RATE: u32 = 44_100;
