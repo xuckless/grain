@@ -119,6 +119,25 @@
     }
   }
 
+  /** The editable correction curve: seeds the take's pitch-editor list from these settings (each
+   * note centred where auto-tune would pull it) and opens it in the Pitch view, so the curve can
+   * be adjusted note by note and rendered from there (AGENTS.md §7.1). */
+  let seeding = $state<{ kind: "idle" } | { kind: "seeding" } | { kind: "failed"; message: string }>({ kind: "idle" });
+
+  async function editCurve() {
+    if (take === null || seeding.kind === "seeding") return;
+    const id = take;
+    seeding = { kind: "seeding" };
+    try {
+      await host.pitchEditor.fromTune(id, settings());
+      if (session.save.kind === "clean") session.save = { kind: "dirty" };
+      session.pitchSource = { kind: "Take", id };
+      session.view = "Pitch";
+    } catch (e) {
+      seeding = { kind: "failed", message: errorMessage(e) };
+    }
+  }
+
   // ---- A/B ------------------------------------------------------------------------------------
 
   const tuned = $derived(take === null ? null : tunedVersion(project, take));
@@ -211,6 +230,7 @@
         <Menu label="Take" value={String(take)} options={takeOptions} onPick={(id) => (picked = Number(id))} />
         <Menu label="Hear" value={listen.kind === "song" ? "song" : String(listen.take)} options={listenOptions} onPick={hear} />
         <span class="spacer"></span>
+        <button class="press" onclick={editCurve} disabled={seeding.kind === "seeding"} title="Open this correction in the Pitch view to adjust it note by note">Edit curve…</button>
         <button class="press primary big" onclick={applyToTake} disabled={apply.kind === "applying"}>
           {apply.kind === "applying" ? "Tuning the take" : "Apply to take…"}
         </button>
@@ -221,6 +241,9 @@
         <p class="muted" in:enter>Added “{added?.name}”, kept with the song. Its score is in the Score tab; compare it with the original under Hear.</p>
       {:else if apply.kind === "failed"}
         <p class="muted" in:enter>Couldn't tune the take: {apply.message}</p>
+      {/if}
+      {#if seeding.kind === "failed"}
+        <p class="muted" in:enter>Couldn't open the curve: {seeding.message}</p>
       {/if}
       {#if preview.kind === "ready"}
         <TuneGraph preview={preview.preview} onSeek={(s) => onSeek(Math.floor(s * session.project.sample_rate))} />

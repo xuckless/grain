@@ -1,7 +1,7 @@
 // Every app-level UI state is declared here (AGENTS.md ground rules 1–2). Component-local
 // states (menus, sliders, toasts) are declared as unions in their components.
 
-import type { ImportStage, Project, ScoreReport, ScoreSettings, TransportSnapshot } from "@workstation/engine-api";
+import type { ImportStage, Project, ScoreReport, ScoreSettings, TransportSnapshot, EditSource } from "@workstation/engine-api";
 import type { Backing } from "./takes";
 
 /** Import progress: `Starting` until the host reports its first engine stage. */
@@ -29,7 +29,7 @@ export const VIEWS: readonly ViewDef[] = [
   { id: "Score", label: "Score", availability: { kind: "ready" } },
   { id: "Karaoke", label: "Karaoke", availability: { kind: "ready" } },
   { id: "AutoTune", label: "Auto-tune", availability: { kind: "ready" } },
-  { id: "Pitch", label: "Pitch", availability: { kind: "unavailable", reason: "Note-by-note pitch editing, coming in M4." } },
+  { id: "Pitch", label: "Pitch", availability: { kind: "ready" } },
   { id: "Produce", label: "Produce", availability: { kind: "unavailable", reason: "AI vocal enhancement and backing tracks, coming in M5." } },
 ];
 
@@ -41,10 +41,11 @@ export function viewsFor(project: Project): readonly ViewDef[] {
   return VIEWS.map((v) => (v.id === "Karaoke" ? { ...v, availability: { kind: "unavailable", reason: "No vocal melody was found in this song to sing along to." } } : v));
 }
 
-export type Session = { project: Project; score: ScoreState; save: SaveState; view: ViewId; settings: ScoreSettings; backing: Backing | null };
+/** `pitchSource`: what the Pitch view edits (null: its default, the newest take). */
+export type Session = { project: Project; score: ScoreState; save: SaveState; view: ViewId; settings: ScoreSettings; backing: Backing | null; pitchSource: EditSource | null };
 
 export function newSession(project: Project): Session {
-  return { project, score: { kind: "none" }, save: { kind: "clean" }, view: "Mix", settings: { difficulty: "Medium", octave: "Fold" }, backing: null };
+  return { project, score: { kind: "none" }, save: { kind: "clean" }, view: "Mix", settings: { difficulty: "Medium", octave: "Fold" }, backing: null, pitchSource: null };
 }
 
 /** Song position (seconds) of the playhead. A count-in holds its start position; the

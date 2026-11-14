@@ -16,4 +16,8 @@ edited: Array<number | null>,
 /**
  * Loudness per frame, 0–1 (the loudest frame is 1).
  */
-amplitude: Array<number>, };
+amplitude: Array<number>, 
+/**
+ * Pitch classes of the edit's scale (bit 0 = C), for the scale lines.
+ */
+scale_mask: number, };

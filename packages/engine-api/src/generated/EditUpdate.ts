@@ -4,4 +4,8 @@ import type { PitchEdit } from "./PitchEdit";
 /**
  * The edit list after a change, and the pitch it now gives (for redrawing).
  */
-export type EditUpdate = { edit: PitchEdit, edited: Array<number | null>, };
+export type EditUpdate = { edit: PitchEdit, edited: Array<number | null>, 
+/**
+ * Pitch classes of the edit's scale (bit 0 = C), for the scale lines.
+ */
+scale_mask: number, };

@@ -127,6 +127,8 @@ pub struct PitchEditView {
     pub edited: Vec<Option<f32>>,
     /// Loudness per frame, 0–1 (the loudest frame is 1).
     pub amplitude: Vec<f32>,
+    /// Pitch classes of the edit's scale (bit 0 = C), for the scale lines.
+    pub scale_mask: u16,
 }
 
 /// How a pitch drag lands.
@@ -207,6 +209,8 @@ pub enum EditOp {
 pub struct EditUpdate {
     pub edit: PitchEdit,
     pub edited: Vec<Option<f32>>,
+    /// Pitch classes of the edit's scale (bit 0 = C), for the scale lines.
+    pub scale_mask: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -284,7 +288,11 @@ pub fn store(project: &mut Project, edit: PitchEdit) -> Result<EditUpdate, EditE
         Some(e) => *e = edit.clone(),
         None => project.pitch_edits.push(edit.clone()),
     }
-    Ok(EditUpdate { edit, edited })
+    Ok(EditUpdate {
+        scale_mask: edit.scale.mask(),
+        edit,
+        edited,
+    })
 }
 
 /// Applies `op` to `edit`, keeps the result with the project and returns the redraw.
@@ -401,6 +409,7 @@ pub fn view(edit: PitchEdit, track: &PitchTrack, audio: &[f32], sample_rate: u32
         sung: track.frames.iter().map(voiced).collect(),
         edited: edited_pitch(&edit, track),
         amplitude: amplitude(track, audio, sample_rate),
+        scale_mask: edit.scale.mask(),
         edit,
     }
 }
