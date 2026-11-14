@@ -278,6 +278,27 @@ Offline, note-based editing of a **monophonic** vocal (the user's take or the vo
 4. **Rendering:** turn the edits into a time-varying pitch-ratio curve (plus a time map for timing edits), then run M3's offline high-quality shifter with formant preservation. Re-render only the edited regions, and crossfade at their boundaries.
 5. **Shared code:** the target-note and scale snapping is the same code as auto-tune §7 step 2. Live auto-tune is just this editor's "Correct pitch" applied in real time with a smoothing filter, so the two share one engine module.
 
+### 7.2 As built (M3)
+- **Target selection** (`engine-core::tune`, shared by live, offline and M4): `Scale` (Chromatic | Key | Custom pitch-class mask) with `snap`; `TuneMode` (Scale | FollowMelody, the reference note in the singer's octave, the scale where the melody rests); `Tuner`, one frame at a time, allocation-free, with an explicit `Target` (Free | Holding) and 15 ¢ hysteresis (`HYSTERESIS`). Retune is a one-pole filter on the *correction* (target − sung), so vibrato faster than the time constant survives; 0 ms snaps. Humanize lengthens the time constant by up to 400 ms as a note is held (full after 0.25 s). Unvoiced frames reset it and pass through. `correction_curve` runs the tuner over a take; `preview` gives the graph's sung, target and corrected curves; `render` makes the tuned take.
+- **Settings live on the project** (`Project.tune`, the detected key at import; `#[serde(default)]` chromatic for older projects), so they save with the song. The hosts' `setTune` updates the project and the live tuner together.
+- **Live: our TD-PSOLA** (`engine-core::psola`): `Psola` puts analysis marks one YIN period apart, at the largest sample within ±¼ period (peak picking), and a fixed period while unvoiced. Grains are Hann, asymmetric (previous period up, next period down), so at ratio 1 the output rebuilds the input (SNR 146 dB). Synthesis marks are spaced period ÷ ratio, each taking the nearest mark whose grain has fully arrived; it never waits, so playback never misses a grain. A formant shift resamples the grains. `LiveTune` = `pitch::frame_pitch` (the offline tracker's window, hop and voicing) + `Tuner` + `Psola` + dry/wet mix with the dry voice on the same delay. Everything is preallocated; `process` doesn't allocate or lock.
+  - **Latency:** fixed at (formant max + 1.5) × the longest period (90 Hz) = **31.5 ms** at 44.1 kHz, plus the devices' round trip. The UI shows the total (`MonitorStatus`: calibrated round trip + shifter delay).
+  - **CPU:** 0.3% of one core at 128-frame blocks (release benchmark `psola::tests::live_cpu_under_a_quarter_core`; budget 25%).
+  - **Accuracy:** ±1/±3/±12 st on a synthetic sung vowel within 0.1 ¢. Formant error (the harmonics against the vowel's true resonances) is 1.4 dB, against 7.9 dB for plain resampling at +3 st.
+- **Monitor in the player:** `PlayerCommand::Monitor { mode: Off | Dry | Tuned }` and `Tune { settings }`. `Player::render(left, right, input)` takes the mic block; the tuner keeps running in Dry, so switching is seamless. Dry adds no delay.
+  - Desktop: `capture::MonitorInput` opens the input at the *output's* rate (it fails with the reason if the device can't, which shows as the UI's Failed state). It pushes mono into an `rtrb` ring handed to the playback callback through a feed ring; replaced rings go back through a `retired` ring, so the callback never frees one. Queued input beyond one block + 512 frames is skipped, so clock drift can't build up delay. `Capture` and `MonitorInput` share one `InputStream` (thread-owned cpal stream).
+  - Web: the worklet copies `inputs[0][0]` into the player's input buffer each quantum (same clock, no resampling). Takes, calibration and the monitor share one mic connection (`MicInput`: Closed | Opening | Open, with holders), so the input never carries the voice twice.
+- **Offline shifter: our own phase vocoder** (`engine-core::shift`) on `Stft::map`, a streaming forward → edit → inverse sharing `Stft`'s analysis and overlap-add code, so a long take never holds all its frames. Each frame is whitened by its spectral envelope; partials move to `k · ratio` with peak-locked phases (Laroche–Dolson identity locking, done in the zero-phase frame (`+πk`), so a stretched main lobe stays one coherent sinusoid); then the envelope, optionally formant-shifted, goes back on. Frames with no correction pass through bit-exact.
+  - **Envelope:** the cepstrum finds the pitch period, and the envelope is the log-magnitude running maximum over one harmonic spacing, smoothed. This passes through the harmonic peaks. A plain liftered cepstrum averaged peaks with valleys and was 2× worse in the formant test.
+  - **Accuracy:** ±1/±3/−12 st within 0.02 ¢, +12 st −3.7 ¢. Formant error 1.8 dB (resampling: 7.9 dB). A +3 then −3 st round trip: formant error 2.6 dB, log-spectral distance 2.6 dB. About 190× faster than real time (release).
+  - **Why not Signalsmith or Rubber Band:** Signalsmith Stretch is C++; it would need a C++ toolchain in the wasm32 build, and it time-stretches rather than taking a per-frame pitch curve. Rubber Band is native-only. Ours is pure Rust on the existing STFT, so desktop and web run the same shifter, and M4's editor can drive it with any curve.
+- **Tuned takes:** "Apply to take" renders `tune::render` (correction curve → shifter → dry/wet) and adds a new take with `TakeSource::Tuned { from }`, named "<take> (tuned)". It is re-tracked with the project's tracker, scored, saved like any take (desktop: cache `take-<id>.wav`, read back with `StemCache::take_audio`; web: in the `.grain`), and the original is untouched.
+- **View** (`AutoTuneView.svelte`, `TuneGraph.svelte`, `autotune.ts`):
+  - Controls: Key (the analysis's keys, Chromatic, or Custom notes on a one-octave keyboard), Pull to (scale or melody), Retune, Humanize, Formant, Mix, and the monitor toggles with the headphones hint.
+  - Monitor state: Off → Switching → On(status) | Failed(message). Leaving the view turns it off.
+  - Take picker, Apply state Idle → Applying → Applied | Failed, and a "Hear" A/B (the song, the original take, or the tuned take in place of the vocal; `listenCommands`).
+  - The graph shows the sung pitch, target notes and corrected pitch from `preview` before rendering.
+
 ---
 
 ## 8. F5: AI production
@@ -374,7 +395,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | ✅ done |
 | **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ✅ done (desktop, opt-in "Best vocals"; web is Fast-only) |
 | **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | ✅ done (UltraStar-style word timing; ML alignment later) |
-| **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | planned |
+| **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | ✅ done (see §7.2) |
 | **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | planned (needs M3's offline shifter) |
 | **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | planned |
 
@@ -411,7 +432,14 @@ Keep this table current: update the Status column whenever a milestone moves.
      - The live preview against an RMVPE reference compares YIN with RMVPE, so it can differ slightly from the final (RMVPE-vs-RMVPE) take score. The final score in Score is authoritative.
      - Lyrics for a song whose file is a different edit from LRCLIB's need the offset nudge or line edits. For example, "Finale" by eill: the file is 225 s, while LRCLIB's synced versions are 242–244 s and `/api/get` finds nothing, so the search fallback picks the nearest one.
      - Karaoke's live score is a preview: frames only, no timing or stability. Each run's full report is in Score.
-4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
+4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter. **Done** (see §7.2).
+   - **Still open in M3:**
+     - The editable correction curve ("graphical mode", §7 step 5) arrives with M4's pitch editor, which drives the same `tune` and `shift` modules.
+     - The live monitor and the accuracy tests have been checked on synthetic voices and the benchmarks only. Real-mic feel (the 31.5 ms plus device latency) needs a listen on hardware.
+     - The live path follows YIN, so it inherits YIN's octave slips on breathy notes. Offline tuned takes use the take's stored pitch (RMVPE on desktop).
+     - Desktop monitoring needs the microphone to run at the output's rate; otherwise it reports Failed instead of resampling live.
+     - Custom notes start from all twelve; they don't start from the current key.
+     - Projects saved before M3 open with chromatic auto-tune settings.
 5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up.
 6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar.
 

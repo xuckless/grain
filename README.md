@@ -97,6 +97,15 @@ project, and **Save** keeps them (and any edits).
 - Lyrics early or late? Use **Lyrics offset** − / + (100 ms steps), or **Edit lines** to fix a line's
   text or start time.
 
+## Auto-tune
+
+Open a song and go to **Auto-tune**.
+
+- **Key** defaults to the song's detected key. You can also pick another key the analysis found, Chromatic, or **Custom notes** (tap the keys of the one-octave keyboard). **Pull to** chooses the nearest scale note, or **Follow the melody**, which pulls to the song's own melody in your octave.
+- **Retune speed:** 0 is the hard, robotic snap; 50–400 ms sounds natural. **Humanize** lets held notes keep their vibrato. **Formant** shifts the voice's character without changing pitch. **Mix** blends the dry voice back in.
+- **Hear yourself live** monitors the microphone over the song, dry or **Tuned**. Use headphones: speakers feed back. The hint shows how far behind you the monitor is (about 32 ms for the tuner, plus your devices' latency).
+- Pick a take and **Apply to take…** to render a tuned copy, "Take 2 (tuned)", with the high-quality offline shifter. The original is kept. The copy is saved with the song, scored in **Score**, and you can compare it under **Hear**: the song, the original take, or the tuned one in place of the vocal. Before you apply, the graph shows your pitch (grey), the notes it is pulled to, and the corrected pitch (pink).
+
 ## Checks
 
 ```bash
