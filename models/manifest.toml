@@ -92,6 +92,23 @@ sha256 = "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec"
 size = 230444
 
 [[model]]
+id = "deepfilternet3"
+task = "noise suppression (Produce → Clean up, AGENTS.md §8)"
+distribution = "default"
+license = "MIT OR Apache-2.0"
+license_note = "Rikorose/DeepFilterNet README (commit 7b14b89): all code and model weights are dual-licensed MIT or Apache-2.0. Archive pinned to commit d375b2d; runs in the vendored deep-filter-rt (third_party/, MIT OR Apache-2.0). Desktop only."
+source = "https://github.com/Rikorose/DeepFilterNet"
+sample_rate = 48000
+inputs = "tar.gz of config.ini, enc.onnx, erb_dec.onnx, df_dec.onnx (read by deep-filter-rt; 10 ms hops)"
+outputs = "enhanced audio (same rate), 30 ms delay compensated by the host"
+
+[[model.file]]
+name = "DeepFilterNet3_onnx.tar.gz"
+url = "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz"
+sha256 = "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616"
+size = 7983136
+
+[[model]]
 id = "muscriptor_large"
 task = "audio to MIDI (multi-instrument; not wired up yet)"
 distribution = "opt-in"

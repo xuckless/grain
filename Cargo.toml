@@ -9,6 +9,8 @@ members = [
     "crates/engine-wasm",
     "apps/desktop/src-tauri",
 ]
+# Vendored third-party code (not linted as ours).
+exclude = ["third_party/deep-filter-rt"]
 
 [workspace.package]
 version = "0.1.0"

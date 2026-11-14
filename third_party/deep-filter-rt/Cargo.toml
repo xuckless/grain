@@ -1,0 +1,24 @@
+[package]
+name = "deep-filter-rt"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Hendrik Schröter", "Thomas Heck <t@b128.net>"]
+description = "Real-time noise suppression with DeepFilterNet3 (vendored, without the embedded model; see NOTICE.md)"
+license = "MIT OR Apache-2.0"
+repository = "https://gitlab.com/chpio/voice-filter"
+
+[dependencies]
+anyhow = "1"
+itertools = "0.15"
+log = "0.4"
+ndarray = "0.17"
+num-complex = "0.4"
+realfft = "3.1"
+rust-ini = "0.21"
+tract-core = "0.23.9"
+tract-onnx = "0.23.9"
+tract-pulse = "0.23.9"
+
+[features]
+timings = []
