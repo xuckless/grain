@@ -449,6 +449,26 @@ pub(crate) mod tests {
         assert!(moved > 3.0, "formants should move: {moved} dB");
     }
 
+    /// Offline speed, for the record (`cargo test --release -p engine-core offline_speed`).
+    #[test]
+    #[cfg_attr(any(debug_assertions, target_arch = "wasm32"), ignore)]
+    fn offline_speed() {
+        let seconds = 20.0;
+        let input = vowel(196.0, seconds, SR);
+        let curve: Vec<f32> = (0..(seconds / 0.01) as usize)
+            .map(|i| 0.3 * (i as f32 * 0.01).sin())
+            .collect();
+        let started = std::time::Instant::now();
+        let out = shift(&input, SR, &curve, 0.01, 0.0);
+        let factor = started.elapsed().as_secs_f32() / seconds;
+        eprintln!(
+            "offline shifter: {:.1}× faster than real time",
+            1.0 / factor
+        );
+        assert_eq!(out.len(), input.len());
+        assert!(factor < 0.5, "{factor}");
+    }
+
     /// Log-spectral distance: mean over frames of the RMS dB difference of the magnitude
     /// spectra (200 Hz – 4 kHz).
     fn log_spectral_distance(a: &[f32], b: &[f32]) -> f32 {
