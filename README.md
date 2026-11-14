@@ -64,6 +64,27 @@ takes in the **Take** menu; click a note in the graph to hear the original, then
   a `.grain` file (stems and takes as 16-bit PCM plus the project), and **Open project file…**
   reopens one. Recording needs the cross-origin isolation headers the dev and preview servers send.
 
+## Karaoke
+
+Open a song and go to **Karaoke** (it needs a vocal melody to sing against). The first time a song
+opens there, its lyrics are looked up on [LRCLIB](https://lrclib.net): the artist and title are
+guessed from the video title or file name (`Artist - Title.mp3`), and you can correct them and
+**Search** again. Only the artist, title and song length are sent. Found lyrics are kept with the
+project, and **Save** keeps them (and any edits).
+
+- Seek to where you want to start and press **Sing**: a one-bar count-in, then the song plays with
+  the backing you chose (the same choice and latency calibration as Score).
+- The lane scrolls the song's notes past the playhead. Your voice draws a trail: white is in tune,
+  amber is close, violet is off. Notes fill as you pass them, hits burst and build your **Streak**,
+  and **Score** is the share of the melody you've sung in tune. Octave folding lets you sing an
+  octave up or down.
+- Two lyric lines show at a time, and the current one wipes syllable by syllable (Japanese and
+  Chinese by character), timed to the song's notes.
+- **Pause** saves what you've sung so far as a take; **Resume** counts you back in. **Finish** (or the
+  song's end) saves the last run. Each take is scored in full in **Score**.
+- Lyrics early or late? Use **Lyrics offset** − / + (100 ms steps), or **Edit lines** to fix a line's
+  text or start time.
+
 ## Checks
 
 ```bash

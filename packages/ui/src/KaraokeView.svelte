@@ -269,6 +269,8 @@
   <div class="status">
     {#if karaoke.kind === "countIn"}
       <p class="muted">Count-in: sing from the next bar.</p>
+    {:else if karaoke.kind === "singing"}
+      <p class="muted">Pause saves what you've sung so far; Finish (or the song's end) wraps up.</p>
     {:else if karaoke.kind === "paused"}
       <p class="muted">Paused at {formatTime(karaoke.frame / snapshot.sample_rate)}. That run is saved as a take; Resume counts you back in.</p>
     {:else if karaoke.kind === "pausing" || karaoke.kind === "finishing"}

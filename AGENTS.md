@@ -219,6 +219,22 @@ Convert the reference f0 track into discrete notes, in the style of UltraStar or
 - Two lyric lines, with word-level karaoke wipe on the current one.
 - Render with Canvas or WebGL in one requestAnimationFrame loop. Never create DOM elements per note.
 
+### 6.5 As built (M2)
+- **Lyrics** (`engine-core::lyrics`, `packages/ui/src/lyrics.ts`, `LyricsPanel.svelte`):
+  - Looked up the first time a song opens in Karaoke, never at import: `/api/get` (artist, title, rounded duration), then `/api/search`, preferring synced results and then the closest duration. Instrumental results are skipped.
+  - Only the artist, title and duration are sent. Browsers can't set `User-Agent`, so both hosts name the client in the `Lrclib-Client: Grain/0.1` header, which LRCLIB accepts and allows through CORS. The lookup runs in the shared UI with `fetch` (the desktop webview has no CSP), so there's one code path.
+  - Artist and title are guessed from the video title or the file name (`Artist - Title`, `artist-title`) and can be edited before searching again.
+  - The result is stored on the project (`Project.lyrics: ProjectLyrics`, NotFetched | NotFound | Plain | Synced), so it is "cached" in the desktop cache entry's `project.json` and in the web OPFS `.grain`. Lyric changes mark the session unsaved, like a mix change; the explicit Save persists them. Text lives only in the user's own project.
+  - UI states: Idle → Fetching → Synced | PlainOnly | NotFound | Failed (Retry). Plain-only lyrics show as static text, with no wipe.
+  - LRC parsing: `[offset:]` tags (positive means earlier, per the format), several timestamps on one line, metadata tags skipped, `<mm:ss.xx>` word tags stripped. The user's offset nudge is ±100 ms per step (positive means later). Per-line edits change text and start time. Times are shown and edited with the offset applied.
+- **Word timing, UltraStar-style** (`lyrics::split_units`, `time_syllables`): a line splits into sung units (one per CJK character, with small kana, `ー` and closing punctuation attached; one per Latin word). The units are spread over the reference notes that start inside the line, in order: with fewer units than notes, each unit takes a run of notes; with more, a note's time is shared. With no notes, the line's time is shared evenly. **ML forced alignment (§6.1.2) is a later upgrade**: it needs an MIT/Apache aligner model and only improves the wipe, not scoring.
+- **Live pitch** (`engine-core::live`): `LivePitch` runs the offline YIN tracker incrementally (same window, hop and voicing via the shared `pitch::frame_pitch`), and `LiveSession` compares each frame with the reference using the shared `score::compare_frame`, keeping `FrameTotals`. A test proves the live frames and verdicts equal the offline tracker's and scorer's. The live path is YIN on CPU on both hosts, even when the reference was tracked by RMVPE.
+  - Desktop: the capture writer thread's growing buffer is read by the `live_pitch` command (never the audio callback). The song time of a capture sample comes from the same cue and first-capture instants and the latency that `finish_recording` uses. Web: `WasmLive` is fed from the same SAB ring drain as the take.
+  - Latency: frames are placed on the song timeline with the stored round-trip latency already removed. The trail head shows up to one YIN window (46 ms) plus a UI frame behind the playhead, within the 80 ms target, because it's drawn where it was sung rather than at the playhead.
+- **Lane** (`KaraokeView.svelte`, `grain.ts` `PitchTrail`, the one class also used by the Score preview): the y-axis is semitones over the song's note range ±2, and the trail is folded to the octave of the note being sung when octave folding is on. Grains are placed at their song time and scroll with the notes. A note fills hit, near or miss (`feedback.ts`, the same thresholds as the Score graph) once the song passes it; hits burst and add to the streak. The running score is the share of the reference's voiced frames sung in tune (`inTune` = hit / (hit + miss + reference only)).
+- **Session** (`karaoke.ts`): Idle → CountIn → Singing ⇄ Paused → Finished, plus Failed. Each uninterrupted run (count-in to Pause or Finish) is recorded, saved as a take and scored offline (`microphone.finish`), so pausing never loses singing and the takes show in Score. Resume counts in again from the paused position. Finish during a count-in drops that empty run. Leaving the view mid-run finishes it.
+- **Shared with Score:** `SettingsControls` (difficulty and octave, kept on the session), `RecordingSetup` (the backing choice, latency nudge and calibration), and the `recorder.ts` arm/finish/cancel helpers.
+
 ---
 
 ## 7. F4: Auto-tune (DSP)
@@ -346,7 +362,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **UI** Grain design pass | Home → Session, blended title bar, view tabs, shared particle module, desktop save/open, recents | 🔄 in progress |
 | **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | 🔄 all done except bundled sidecars (planned below) |
 | **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ✅ done (desktop, opt-in "Best vocals"; web is Fast-only) |
-| **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | planned |
+| **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | ✅ done (UltraStar-style word timing; ML alignment later) |
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | planned |
 | **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | planned (needs M3's offline shifter) |
 | **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | planned |
@@ -375,7 +391,14 @@ Keep this table current: update the Status column whenever a milestone moves.
      - Calibration can only be checked by ear on real hardware: the automated tests use synthetic captures, and a headless browser cannot loop its output back into its input.
      - The RoFormer cascade is slow on CPU (~7 min for a 4 min song, about 8 GB peak), so it is an opt-in "Best vocals" import: a quality option for songs with real accompaniment. CoreML and int8 did not help (see §4.2).
      - Test-song note: `samples/eill-finale.mp3` ("Finale" by eill) is a cappella, a solo vocal with doubling and reverb and no backing music. Both HTDemucs and the cascade put nearly everything into Vocals, which is correct for this song; it is not a model limit.
-3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
+3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration. **Done** (see §6.5).
+   - **Still open in M2:**
+     - ML forced alignment of words (§6.1.2). Word timing is spread over the reference notes instead, so the wipe follows the melody, not the consonants.
+     - SwiftF0 as a robust live estimator. Live is YIN only, which is fine with headphones and weaker with bleed.
+     - Our own AEC for singing without headphones. The web host already asks for `echoCancellation`.
+     - The live preview against an RMVPE reference compares YIN with RMVPE, so it can differ slightly from the final (RMVPE-vs-RMVPE) take score. The final score in Score is authoritative.
+     - Lyrics for a song whose file is a different edit from LRCLIB's need the offset nudge or line edits. For example, "Finale" by eill: the file is 225 s, while LRCLIB's synced versions are 242–244 s and `/api/get` finds nothing, so the search fallback picks the nearest one.
+     - Karaoke's live score is a preview: frames only, no timing or stability. Each run's full report is in Score.
 4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
 5. **M4, quality + pitch editor:** the Melodyne-style pitch editor (§7.1) in a new **Pitch** session view, plus basic-pitch MIDI layers and a model manager with opt-in NC downloads. The RoFormer vocal cascade was split out as M4a and moved up.
 6. **M5, F5:** DeepFilterNet and the vocal chain, then the ACE-Step local sidecar.
