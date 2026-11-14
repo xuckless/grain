@@ -82,6 +82,11 @@ impl StemCache {
                 )
             })
             .context("the song has no vocal track")?;
+        self.track_audio(key, source)
+    }
+
+    /// One stored track's audio as mono, without decoding the others.
+    pub fn track_audio(&self, key: &str, source: TrackSource) -> Result<Vec<f32>> {
         Ok(decode::decode(&self.dir(key).join(file_name(&source)))?.to_mono())
     }
 

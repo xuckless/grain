@@ -37,6 +37,20 @@ pub struct Transcription {
     pub notes: Vec<MidiNote>,
 }
 
+/// The result of asking for a track's MIDI layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export)]
+pub enum TranscribeOutcome {
+    /// The layer is kept with the project (returned updated).
+    Done { project: Box<Project> },
+    /// The track needs model `model` (a manifest id) downloaded first.
+    NeedsModel { model: String },
+}
+
+/// The manifest id of basic-pitch.
+pub const BASIC_PITCH_MODEL: &str = "basic_pitch";
+
 /// How a track is transcribed: the drum stem by the classifier, anything else by basic-pitch.
 pub fn method_for(source: TrackSource) -> TranscriptionMethod {
     match source {

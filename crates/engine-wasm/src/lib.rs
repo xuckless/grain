@@ -4,16 +4,20 @@
 
 use engine_core::audio::StereoAudio;
 use engine_core::cue;
+use engine_core::drums;
 use engine_core::edit::{self, EditOp, EditSource};
 use engine_core::live::LiveSession;
 use engine_core::lyrics::{self, LyricsUpdate};
 use engine_core::melody::Note;
+use engine_core::midi::{self, Transcription, TranscriptionMethod};
 use engine_core::player::{MonitorStatus, Player, PlayerCommand, PlayerTrack};
-use engine_core::project::{self, Project, SongAudio, SongSource, TrackedPitch};
+use engine_core::project::{self, Project, SongAudio, SongSource, TrackSource, TrackedPitch};
 use engine_core::score::ScoreSettings;
 use engine_core::take::{self, TakeAdded, TakeSource};
 use engine_core::tune;
+use engine_ml::basic_pitch;
 use engine_ml::demucs::{ModelSpec, Separator, SeparatorState};
+use engine_ml::models::{self, ModelState};
 use wasm_bindgen::prelude::*;
 
 /// Largest block the worklet renders at once (Web Audio uses 128).
@@ -85,6 +89,17 @@ impl WasmSong {
             project: self.project.clone(),
             take: id,
         })
+    }
+
+    /// Mono audio of project track `source`.
+    fn track_mono(&self, source: TrackSource) -> Result<Vec<f32>, JsError> {
+        let i = self
+            .project
+            .tracks
+            .iter()
+            .position(|t| t.source == source)
+            .ok_or_else(|| JsError::new("no such track"))?;
+        Ok(project::track_audio(&self.audio)[i].to_mono())
     }
 
     /// Mono timeline audio of a pitch-editor source.
@@ -262,6 +277,66 @@ impl WasmSong {
         self.add(TakeSource::Tuned { from: id }, tuned, pitch, settings)
     }
 
+    /// basic-pitch's input for track `source` (a `TrackSource`): `count` windows of
+    /// `basic_pitch::WINDOW` samples, back to back. Run them through the model in order.
+    #[wasm_bindgen(js_name = basicPitchInput)]
+    pub fn basic_pitch_input(&self, source: JsValue) -> Result<js_sys::Float32Array, JsError> {
+        let audio = self.track_mono(from_js(source)?)?;
+        let input = basic_pitch::input(&audio, self.project.sample_rate).map_err(js_err)?;
+        Ok(js_sys::Float32Array::from(&input.windows[..]))
+    }
+
+    /// Decodes basic-pitch's note and onset outputs for track `source` into its MIDI layer, kept
+    /// with the project. Returns the `Project`.
+    #[wasm_bindgen(js_name = basicPitchFinish)]
+    pub fn basic_pitch_finish(
+        &mut self,
+        source: JsValue,
+        note: Vec<f32>,
+        onset: Vec<f32>,
+    ) -> Result<JsValue, JsError> {
+        let source: TrackSource = from_js(source)?;
+        let audio = self.track_mono(source)?;
+        // Re-derive the window count and length the input had (cheap next to the model).
+        let input = basic_pitch::input(&audio, self.project.sample_rate).map_err(js_err)?;
+        let notes = basic_pitch::notes(&note, &onset, input.count, input.samples);
+        midi::store(
+            &mut self.project,
+            Transcription {
+                source,
+                method: TranscriptionMethod::BasicPitch,
+                notes,
+            },
+        );
+        to_js(&self.project)
+    }
+
+    /// Transcribes the drum track `source` with the onset classifier; returns the `Project`.
+    #[wasm_bindgen(js_name = transcribeDrums)]
+    pub fn transcribe_drums(&mut self, source: JsValue) -> Result<JsValue, JsError> {
+        let source: TrackSource = from_js(source)?;
+        let notes = drums::transcribe(&self.track_mono(source)?, self.project.sample_rate);
+        midi::store(
+            &mut self.project,
+            Transcription {
+                source,
+                method: TranscriptionMethod::DrumClassifier,
+                notes,
+            },
+        );
+        to_js(&self.project)
+    }
+
+    /// Track `source`'s MIDI layer as a Standard MIDI File.
+    #[wasm_bindgen(js_name = midiFile)]
+    pub fn midi_file(&self, source: JsValue) -> Result<js_sys::Uint8Array, JsError> {
+        let t = midi::transcription(&self.project, from_js(source)?)
+            .ok_or_else(|| JsError::new("this track has no MIDI yet"))?;
+        Ok(js_sys::Uint8Array::from(
+            &midi::smf(t, self.project.analysis.tempo.bpm)[..],
+        ))
+    }
+
     /// Opens a pitch-editor source (an `EditSource`); returns a `PitchEditView`.
     #[wasm_bindgen(js_name = pitchOpen)]
     pub fn pitch_open(&self, source: JsValue) -> Result<JsValue, JsError> {
@@ -299,6 +374,87 @@ impl WasmSong {
         let edited = edit::render_source(&self.project, source, &audio).map_err(js_err)?;
         let pitch = TrackedPitch::yin(&edited, self.project.sample_rate);
         self.add(TakeSource::Edited { from: source }, edited, pitch, settings)
+    }
+}
+
+/// How track `source` (a `TrackSource`) is transcribed: a `TranscriptionMethod`.
+#[wasm_bindgen(js_name = transcriptionMethod)]
+pub fn transcription_method(source: JsValue) -> Result<JsValue, JsError> {
+    to_js(&midi::method_for(from_js(source)?))
+}
+
+/// basic-pitch's model file, tensor names and sizes.
+#[wasm_bindgen(js_name = basicPitchSpec)]
+pub fn basic_pitch_spec() -> Result<JsValue, JsError> {
+    #[derive(serde::Serialize)]
+    struct Spec {
+        model: &'static str,
+        file: &'static str,
+        input: &'static str,
+        note: &'static str,
+        onset: &'static str,
+        window: usize,
+    }
+    to_js(&Spec {
+        model: midi::BASIC_PITCH_MODEL,
+        file: basic_pitch::MODEL_FILE,
+        input: basic_pitch::INPUT,
+        note: basic_pitch::NOTE_OUTPUT,
+        onset: basic_pitch::ONSET_OUTPUT,
+        window: basic_pitch::WINDOW,
+    })
+}
+
+/// Every model in the manifest (`ModelInfo[]`), for the web model manager.
+#[wasm_bindgen(js_name = modelManifest)]
+pub fn model_manifest() -> Result<JsValue, JsError> {
+    to_js(&models::manifest())
+}
+
+/// The model state after a `ModelEvent`, or `null` when it doesn't apply.
+#[wasm_bindgen(js_name = modelNext)]
+pub fn model_next(state: JsValue, event: JsValue) -> Result<JsValue, JsError> {
+    let state: ModelState = from_js(state)?;
+    to_js(&models::next(&state, from_js(event)?))
+}
+
+/// Whether a download URL is on a model host.
+#[wasm_bindgen(js_name = modelUrlAllowed)]
+pub fn model_url_allowed(url: &str) -> bool {
+    models::allowed(url)
+}
+
+/// Streaming SHA-256 for verifying downloads.
+#[wasm_bindgen]
+pub struct ModelChecksum(Option<models::Checksum>);
+
+#[wasm_bindgen]
+impl ModelChecksum {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> ModelChecksum {
+        ModelChecksum(Some(models::Checksum::new()))
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        if let Some(c) = &mut self.0 {
+            c.update(bytes);
+        }
+    }
+
+    /// Whether everything fed in matches `file` (a `ModelFile`); finishes the checksum.
+    pub fn verify(&mut self, file: JsValue) -> Result<bool, JsError> {
+        let file: models::ModelFile = from_js(file)?;
+        let c = self
+            .0
+            .take()
+            .ok_or_else(|| JsError::new("checksum already finished"))?;
+        Ok(models::matches(&file, &c.finish()))
+    }
+}
+
+impl Default for ModelChecksum {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

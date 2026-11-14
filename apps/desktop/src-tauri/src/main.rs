@@ -5,29 +5,35 @@
 #[cfg(feature = "youtube")]
 mod extractor;
 
+use anyhow::Context;
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
 use engine_core::edit::{self, EditOp, EditSource, EditUpdate, PitchEdit, PitchEditView};
 use engine_core::live::{LiveSession, LiveUpdate};
 use engine_core::lyrics::{self, LyricsUpdate, ProjectLyrics};
+use engine_core::midi::{self, TranscribeOutcome};
 use engine_core::player::{
     MonitorMode, MonitorStatus, PlayerCommand, Transport, TransportSnapshot,
 };
 use engine_core::project::{
     self, ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource,
-    TrackedPitch,
+    TrackSource, TrackedPitch,
 };
 use engine_core::score::{ScoreReport, ScoreSettings};
 use engine_core::take::{self, TakeAdded, TakeSource};
 use engine_core::tune::{self, TunePreview, TuneSettings};
 use engine_core::WORKING_SAMPLE_RATE;
+use engine_ml::basic_pitch;
+use engine_ml::models::{self, Distribution, ModelEntry, ModelState};
 use engine_native::cache::{Lookup, StemCache};
 use engine_native::capture::{self, Capture, MonitorInput, StreamInstant};
 use engine_native::decode;
 use engine_native::import::{import_song, Imported, Separation};
 use engine_native::latency::{self, LatencyStore};
+use engine_native::models::ModelStore;
 use engine_native::pitch::Pitch;
 use engine_native::playback::Playback;
 use engine_native::separate::Separators;
+use engine_native::transcribe::Missing;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -117,9 +123,17 @@ struct Engine {
     pitch: Mutex<Pitch>,
     cache: StemCache,
     latency: LatencyStore,
-    model_dirs: Vec<PathBuf>,
+    /// Downloaded models (app data) and, in development builds, the repository's weights.
+    models: Mutex<ModelStore>,
     #[cfg(feature = "youtube")]
     extractor: extractor::Extractor,
+}
+
+impl Engine {
+    /// Directories models are looked up in.
+    fn model_dirs(&self) -> Vec<PathBuf> {
+        self.models.lock().expect("models lock").dirs().to_vec()
+    }
 }
 
 /// Errors cross IPC as strings.
@@ -134,9 +148,10 @@ fn import(
     quality: SeparationQuality,
 ) -> anyhow::Result<Project> {
     let engine = app.state::<Engine>();
+    let dirs = engine.model_dirs();
     let mut model = engine.model.lock().expect("model lock");
     if let Model::NotLoaded = *model {
-        *model = match Separators::find(&engine.model_dirs)? {
+        *model = match Separators::find(&dirs)? {
             Some(m) => Model::Loaded(Box::new(m)),
             None => Model::Missing,
         };
@@ -328,7 +343,7 @@ enum SeparationOffer {
 
 #[tauri::command]
 fn separation_offer(engine: State<Engine>) -> SeparationOffer {
-    if Separators::offers(&engine.model_dirs, SeparationQuality::BestVocals) {
+    if Separators::offers(&engine.model_dirs(), SeparationQuality::BestVocals) {
         SeparationOffer::Choice
     } else {
         SeparationOffer::FastOnly {
@@ -631,6 +646,133 @@ async fn pitch_render(
     .map_err(fail)
 }
 
+/// The model manager's list: every manifest model and where it is on this device.
+#[tauri::command]
+fn models_list(engine: State<Engine>) -> Vec<ModelEntry> {
+    engine.models.lock().expect("models lock").entries()
+}
+
+/// A model state change, for the model manager's progress.
+#[derive(Clone, Serialize)]
+struct ModelProgress {
+    id: String,
+    state: ModelState,
+}
+
+/// Downloads (and verifies) model `id` into app data. Opt-in (restricted) models need the user
+/// to have accepted the licence. Returns the final state; progress arrives as "model-state".
+#[tauri::command]
+async fn model_download(
+    app: AppHandle,
+    id: String,
+    accept_license: bool,
+) -> Result<ModelState, String> {
+    let info = models::model(&id).ok_or_else(|| format!("unknown model {id}"))?;
+    if info.distribution == Distribution::OptIn && !accept_license {
+        return Err(format!(
+            "{} is under {}: accept its licence first",
+            info.id, info.license
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let dir = engine
+            .models
+            .lock()
+            .expect("models lock")
+            .download_dir()
+            .to_path_buf();
+        let _ = engine_native::models::download(&info, &dir, |event| {
+            let state = engine
+                .models
+                .lock()
+                .expect("models lock")
+                .advance(&info, event);
+            let _ = app.emit(
+                "model-state",
+                ModelProgress {
+                    id: info.id.clone(),
+                    state,
+                },
+            );
+        });
+        models_changed(&engine);
+        let state = engine.models.lock().expect("models lock").state(&info);
+        state
+    })
+    .await
+    .map_err(fail)
+}
+
+/// Deletes a downloaded model's files from app data.
+#[tauri::command]
+fn model_delete(engine: State<Engine>, id: String) -> Result<ModelState, String> {
+    let info = models::model(&id).ok_or_else(|| format!("unknown model {id}"))?;
+    let state = engine
+        .models
+        .lock()
+        .expect("models lock")
+        .delete(&info)
+        .map_err(fail)?;
+    models_changed(&engine);
+    Ok(state)
+}
+
+/// Installed models changed: separation and pitch look for their weights again.
+fn models_changed(engine: &Engine) {
+    let dirs = engine.model_dirs();
+    *engine.model.lock().expect("model lock") = Model::NotLoaded;
+    *engine.pitch.lock().expect("pitch lock") = Pitch::find(&dirs);
+}
+
+/// Transcribes a track of the loaded song to MIDI (basic-pitch, or the drum classifier) and
+/// keeps it with the project.
+#[tauri::command]
+async fn transcribe(app: AppHandle, source: TrackSource) -> Result<TranscribeOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let (key, rate) = with_loaded(&engine, |l| {
+            Ok((l.cache_key.clone(), l.project.sample_rate))
+        })?;
+        let model = engine
+            .models
+            .lock()
+            .expect("models lock")
+            .find(basic_pitch::MODEL_FILE);
+        let audio = engine.cache.track_audio(&key, source)?;
+        let t = match engine_native::transcribe::transcribe(source, &audio, rate, model.as_deref())
+        {
+            Ok(t) => t,
+            Err(Missing::Model) => {
+                return Ok(TranscribeOutcome::NeedsModel {
+                    model: midi::BASIC_PITCH_MODEL.to_string(),
+                })
+            }
+            Err(Missing::Failed(e)) => return Err(e),
+        };
+        with_loaded(&engine, |l| {
+            midi::store(&mut l.project, t);
+            Ok(TranscribeOutcome::Done {
+                project: Box::new(l.project.clone()),
+            })
+        })
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Writes a track's MIDI layer to `path` as a Standard MIDI File.
+#[tauri::command]
+fn export_midi(engine: State<Engine>, source: TrackSource, path: PathBuf) -> Result<(), String> {
+    let bytes = with_loaded(&engine, |l| {
+        let t = midi::transcription(&l.project, source).context("this track has no MIDI yet")?;
+        Ok(midi::smf(t, l.project.analysis.tempo.bpm))
+    })
+    .map_err(fail)?;
+    std::fs::write(path, bytes).map_err(fail)
+}
+
 /// Re-scores a saved take (from its stored pitch; no audio needed).
 #[tauri::command]
 fn score_recorded(
@@ -922,7 +1064,7 @@ fn main() {
                 pitch: Mutex::new(Pitch::find(&model_dirs)),
                 cache: StemCache::new(data.join("stems")),
                 latency: LatencyStore::new(data.join("latency.json")),
-                model_dirs,
+                models: Mutex::new(ModelStore::new(model_dirs)),
                 #[cfg(feature = "youtube")]
                 extractor: extractor::Extractor::new(&data),
             });
@@ -957,6 +1099,11 @@ fn main() {
             pitch_set,
             pitch_from_tune,
             pitch_render,
+            models_list,
+            model_download,
+            model_delete,
+            transcribe,
+            export_midi,
             list_projects,
             open_project,
             save_project,

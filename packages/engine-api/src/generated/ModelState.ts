@@ -3,4 +3,4 @@
 /**
  * Where one model is on this device.
  */
-export type ModelState = { "kind": "NotDownloaded" } | { "kind": "Downloading", received: bigint, total: bigint, } | { "kind": "Verifying" } | { "kind": "Ready" } | { "kind": "Failed", message: string, };
+export type ModelState = { "kind": "NotDownloaded" } | { "kind": "Downloading", received: number, total: number, } | { "kind": "Verifying" } | { "kind": "Ready" } | { "kind": "Failed", message: string, };

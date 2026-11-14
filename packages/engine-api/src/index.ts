@@ -23,6 +23,10 @@ import type { EditSource } from "./generated/EditSource";
 import type { EditUpdate } from "./generated/EditUpdate";
 import type { PitchEdit } from "./generated/PitchEdit";
 import type { PitchEditView } from "./generated/PitchEditView";
+import type { ModelEntry } from "./generated/ModelEntry";
+import type { ModelState } from "./generated/ModelState";
+import type { TrackSource } from "./generated/TrackSource";
+import type { TranscribeOutcome } from "./generated/TranscribeOutcome";
 
 export type { Accompaniment } from "./generated/Accompaniment";
 export type { Analysis } from "./generated/Analysis";
@@ -83,6 +87,17 @@ export type { EditUpdate } from "./generated/EditUpdate";
 export type { PitchEdit } from "./generated/PitchEdit";
 export type { PitchEditView } from "./generated/PitchEditView";
 export type { Snap } from "./generated/Snap";
+export type { Distribution } from "./generated/Distribution";
+export type { ModelEntry } from "./generated/ModelEntry";
+export type { ModelEvent } from "./generated/ModelEvent";
+export type { ModelFile } from "./generated/ModelFile";
+export type { ModelInfo } from "./generated/ModelInfo";
+export type { ModelState } from "./generated/ModelState";
+export type { Obtain } from "./generated/Obtain";
+export type { MidiNote } from "./generated/MidiNote";
+export type { Transcription } from "./generated/Transcription";
+export type { TranscriptionMethod } from "./generated/TranscriptionMethod";
+export type { TranscribeOutcome } from "./generated/TranscribeOutcome";
 
 export type ImportOutcome = { kind: "imported"; project: Project } | { kind: "cancelled" };
 
@@ -208,6 +223,32 @@ export type PitchEditor = {
   render(source: EditSource, settings: ScoreSettings): Promise<TakeAdded>;
 };
 
+/** The model manager (AGENTS.md §10): every manifest model, downloaded on request into the
+ * host's model store (app data on desktop, the origin's private storage on the web) and verified
+ * against its checksum. */
+export type ModelManager = {
+  /** Where downloads are kept, for display. */
+  readonly location: string;
+  list(): Promise<ModelEntry[]>;
+  /** Downloads and verifies model `id`. Opt-in (restricted) models need `acceptLicense`, which
+   * the UI only passes after the user accepted the licence. `onState` sees each state change;
+   * resolves with the final state (`Ready` or `Failed`). */
+  download(id: string, acceptLicense: boolean, onState: (state: ModelState) => void): Promise<ModelState>;
+  /** Deletes a downloaded model. */
+  delete(id: string): Promise<ModelState>;
+};
+
+/** Saving a file the user picks a place for. */
+export type ExportOutcome = { kind: "saved" } | { kind: "cancelled" };
+
+/** MIDI layers (AGENTS.md §4.3): basic-pitch for pitched tracks, a classifier for drums. */
+export type Transcriber = {
+  /** Transcribes a track of the loaded song and keeps the layer with the project. */
+  transcribe(source: TrackSource): Promise<TranscribeOutcome>;
+  /** Saves a track's MIDI layer as a .mid file. */
+  exportMidi(source: TrackSource): Promise<ExportOutcome>;
+};
+
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
 export interface EngineHost {
   readonly chrome: WindowChrome;
@@ -221,6 +262,8 @@ export interface EngineHost {
   readonly microphone: Microphone;
   readonly autotune: AutoTune;
   readonly pitchEditor: PitchEditor;
+  readonly models: ModelManager;
+  readonly transcriber: Transcriber;
   /** Picks a sung take file, adds it to the loaded song and scores it. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
   /** Sets the loaded song's lyrics (fetched by the UI from LRCLIB, or edited) and returns them

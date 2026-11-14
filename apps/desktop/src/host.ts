@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   EngineHost,
   ImportOutcome,
@@ -22,6 +22,10 @@ import type {
   TunePreview,
   EditUpdate,
   PitchEditView,
+  ModelEntry,
+  ModelState,
+  TrackSource,
+  TranscribeOutcome,
   WindowChrome,
   ExtractorOrigin,
   ExtractorUpdate,
@@ -120,6 +124,31 @@ export async function createDesktopHost(): Promise<EngineHost> {
       set: (edit) => invoke<EditUpdate>("pitch_set", { edit }),
       fromTune: (take, settings) => invoke<EditUpdate>("pitch_from_tune", { take, settings }),
       render: (source, settings) => invoke<TakeAdded>("pitch_render", { source, settings }),
+    },
+    models: {
+      location: "the app's data folder",
+      list: () => invoke<ModelEntry[]>("models_list"),
+      async download(id, acceptLicense, onState) {
+        const unlisten = await listen<{ id: string; state: ModelState }>("model-state", (e) => {
+          if (e.payload.id === id) onState(e.payload.state);
+        });
+        try {
+          return await invoke<ModelState>("model_download", { id, acceptLicense });
+        } finally {
+          unlisten();
+        }
+      },
+      delete: (id) => invoke<ModelState>("model_delete", { id }),
+    },
+    transcriber: {
+      transcribe: (source) => invoke<TranscribeOutcome>("transcribe", { source }),
+      async exportMidi(source: TrackSource) {
+        const name = source.kind === "Mix" ? "Mix.mid" : `${source.stem}.mid`;
+        const path = await save({ defaultPath: name, filters: [{ name: "MIDI", extensions: ["mid"] }] });
+        if (!path) return { kind: "cancelled" };
+        await invoke("export_midi", { source, path });
+        return { kind: "saved" };
+      },
     },
     send: (command) => invoke("player", { command }),
     transport: () => invoke<TransportSnapshot>("transport"),

@@ -8,4 +8,4 @@ url: string | null, sha256: string | null,
 /**
  * Bytes.
  */
-size: bigint | null, };
+size: number | null, };

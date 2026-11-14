@@ -5,6 +5,7 @@ import type { ProjectLyrics } from "./ProjectLyrics";
 import type { SongSource } from "./SongSource";
 import type { Take } from "./Take";
 import type { Track } from "./Track";
+import type { Transcription } from "./Transcription";
 import type { TuneSettings } from "./TuneSettings";
 
 export type Project = { version: number, song: SongSource, sample_rate: number, frames: number, 
@@ -28,4 +29,8 @@ tune: TuneSettings,
 /**
  * Pitch-editor edit lists, at most one per source (see [`crate::edit`]).
  */
-pitch_edits: Array<PitchEdit>, };
+pitch_edits: Array<PitchEdit>, 
+/**
+ * MIDI layers, at most one per track (see [`crate::midi`]).
+ */
+transcriptions: Array<Transcription>, };

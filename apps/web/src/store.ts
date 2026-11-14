@@ -15,12 +15,13 @@ const EXT = ".grain";
 
 export type Opfs = { kind: "available"; dir: FileSystemDirectoryHandle } | { kind: "unavailable"; reason: string };
 
-export async function openOpfs(): Promise<Opfs> {
-  const reason = "This browser can't store projects (Origin Private File System unavailable).";
+/** The OPFS directory `name` (`what`: what it stores, for the reason when unavailable). */
+export async function openOpfs(name = DIR, what = "projects"): Promise<Opfs> {
+  const reason = `This browser can't store ${what} (Origin Private File System unavailable).`;
   try {
     if (!navigator.storage?.getDirectory || !("createWritable" in FileSystemFileHandle.prototype)) return { kind: "unavailable", reason };
     const root = await navigator.storage.getDirectory();
-    return { kind: "available", dir: await root.getDirectoryHandle(DIR, { create: true }) };
+    return { kind: "available", dir: await root.getDirectoryHandle(name, { create: true }) };
   } catch {
     return { kind: "unavailable", reason };
   }

@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 engine-core.workspace = true
 engine-native.workspace = true
+engine-ml.workspace = true
 ingest = { workspace = true, optional = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

@@ -27,6 +27,7 @@ pub struct ModelFile {
     pub url: Option<String>,
     pub sha256: Option<String>,
     /// Bytes.
+    #[ts(type = "number | null")]
     pub size: Option<u64>,
 }
 
@@ -126,7 +127,9 @@ pub fn model(id: &str) -> Option<ModelInfo> {
 pub enum ModelState {
     NotDownloaded,
     Downloading {
+        #[ts(type = "number")]
         received: u64,
+        #[ts(type = "number")]
         total: u64,
     },
     /// Downloaded; checking the files' checksums.
@@ -138,13 +141,17 @@ pub enum ModelState {
 }
 
 /// What happens to a model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export)]
 pub enum ModelEvent {
     /// A download starts (`total` bytes).
     Start {
+        #[ts(type = "number")]
         total: u64,
     },
     Progress {
+        #[ts(type = "number")]
         received: u64,
     },
     /// Every file is in; verification starts.

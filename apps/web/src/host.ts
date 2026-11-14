@@ -1,5 +1,5 @@
 // Web engine host: engine-wasm on the main thread, the player in an AudioWorklet,
-// HTDemucs through onnxruntime-web when the weights are served at /models.
+// models (HTDemucs, basic-pitch) through onnxruntime-web from the model store (./models).
 
 import type {
   EngineHost,
@@ -26,7 +26,8 @@ import type {
   EditUpdate,
   PitchEditView,
 } from "@workstation/engine-api";
-import init, { countIn, measureLatency, monitorStatus, projectSummary, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
+import init, { basicPitchSpec, countIn, measureLatency, monitorStatus, projectSummary, transcriptionMethod, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
+import { WebModels } from "./models";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
 import * as store from "./store";
 import wasmUrl from "engine-wasm/engine_wasm_bg.wasm?url";
@@ -136,7 +137,14 @@ export async function createWebHost(): Promise<EngineHost> {
   await ready;
 
   let session: Session = { kind: "empty" };
+  const models = new WebModels();
   let separation: Promise<Separation> | undefined;
+  let basicPitch: Promise<BasicPitch> | undefined;
+  /** Installed models changed: load them afresh when next needed. */
+  const modelsChanged = () => {
+    separation = undefined;
+    basicPitch = undefined;
+  };
 
   /** Makes `song` the loaded song: its tracks, then its takes, go to the player. */
   function load(song: WasmSong, id: string | null = null): Project {
@@ -475,7 +483,7 @@ export async function createWebHost(): Promise<EngineHost> {
     if (!file) return { kind: "cancelled" };
     onStage({ kind: "Decoding" });
     const [left, right] = await decode(context, file);
-    const sep = await (separation ??= loadSeparation());
+    const sep = await (separation ??= loadSeparation(models));
     switch (sep.kind) {
       case "unavailable":
         onStage({ kind: "Analyzing" });
@@ -562,6 +570,45 @@ export async function createWebHost(): Promise<EngineHost> {
         return playTake(song, song.pitchRender(source, settings) as TakeAdded);
       },
     },
+    models: {
+      location: models.location,
+      list: () => models.list(),
+      async download(id, acceptLicense, onState) {
+        const s = await models.download(id, acceptLicense, onState);
+        modelsChanged();
+        return s;
+      },
+      async delete(id) {
+        const s = await models.delete(id);
+        modelsChanged();
+        return s;
+      },
+    },
+    transcriber: {
+      async transcribe(source) {
+        const song = loadedSong();
+        await nextFrame(); // let the UI show it's working before the engine blocks
+        if (transcriptionMethod(source) === "DrumClassifier") return { kind: "Done", project: song.transcribeDrums(source) as Project };
+        const model = await (basicPitch ??= loadBasicPitch(models));
+        if (model.kind === "unavailable") {
+          basicPitch = undefined;
+          return { kind: "NeedsModel", model: model.model };
+        }
+        const [note, onset] = await model.run(song.basicPitchInput(source));
+        return { kind: "Done", project: song.basicPitchFinish(source, note, onset) as Project };
+      },
+      async exportMidi(source) {
+        const bytes = loadedSong().midiFile(source);
+        const name = source.kind === "Mix" ? "Mix.mid" : `${source.stem}.mid`;
+        const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "audio/midi" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        return { kind: "saved" };
+      },
+    },
     async send(command) {
       await context.resume();
       // Mix settings are part of the project; a save keeps them (as on desktop).
@@ -574,13 +621,13 @@ export async function createWebHost(): Promise<EngineHost> {
   };
 }
 
-/** HTDemucs through onnxruntime-web (WebGPU, falling back to WASM) if /models serves it. */
-async function loadSeparation(): Promise<Separation> {
-  const specResponse = await fetch(`/models/${MODEL}.json`);
-  if (!specResponse.ok) return { kind: "unavailable" };
-  const spec = await specResponse.text();
+/** HTDemucs through onnxruntime-web (WebGPU, falling back to WASM) if the model is installed. */
+async function loadSeparation(models: WebModels): Promise<Separation> {
+  const [specFile, onnx] = await Promise.all([models.file(`${MODEL}.json`), models.file(`${MODEL}.onnx`)]);
+  if (!specFile || !onnx) return { kind: "unavailable" };
+  const spec = await specFile.text();
   const ort = await import("onnxruntime-web/webgpu");
-  const session = await ort.InferenceSession.create(`/models/${MODEL}.onnx`, {
+  const session = await ort.InferenceSession.create(new Uint8Array(await onnx.arrayBuffer()), {
     executionProviders: ["webgpu", "wasm"],
   });
   const { segment_samples: s, freq_bins: f, frames: t } = JSON.parse(spec) as { segment_samples: number; freq_bins: number; frames: number };
@@ -593,6 +640,37 @@ async function loadSeparation(): Promise<Separation> {
         mag: new ort.Tensor("float32", mag, [1, 4, f, t]),
       });
       return [(await out.spec.getData()) as Float32Array, (await out.wav.getData()) as Float32Array];
+    },
+  };
+}
+
+type BasicPitch =
+  | { kind: "available"; run(windows: Float32Array): Promise<[Float32Array, Float32Array]> }
+  | { kind: "unavailable"; model: string };
+
+/** Windows per basic-pitch call (bounds memory on long songs). */
+const BASIC_PITCH_BATCH = 8;
+
+/** basic-pitch through onnxruntime-web (WASM: the model is small) if the model is installed. */
+async function loadBasicPitch(models: WebModels): Promise<BasicPitch> {
+  const spec = basicPitchSpec() as { model: string; file: string; input: string; note: string; onset: string; window: number };
+  const onnx = await models.file(spec.file);
+  if (!onnx) return { kind: "unavailable", model: spec.model };
+  const ort = await import("onnxruntime-web/webgpu");
+  const session = await ort.InferenceSession.create(new Uint8Array(await onnx.arrayBuffer()), { executionProviders: ["wasm"] });
+  return {
+    kind: "available",
+    async run(windows) {
+      const note: Float32Array[] = [];
+      const onset: Float32Array[] = [];
+      const step = BASIC_PITCH_BATCH * spec.window;
+      for (let a = 0; a < windows.length; a += step) {
+        const chunk = windows.subarray(a, Math.min(windows.length, a + step));
+        const out = await session.run({ [spec.input]: new ort.Tensor("float32", chunk, [chunk.length / spec.window, spec.window, 1]) });
+        note.push((await out[spec.note].getData()) as Float32Array);
+        onset.push((await out[spec.onset].getData()) as Float32Array);
+      }
+      return [concat(note), concat(onset)];
     },
   };
 }
