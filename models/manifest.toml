@@ -22,3 +22,43 @@ sha256 = "8bf891f10eb208f6fd945f427c8e348ddddef38069d47b8afb7d4aabc24bc15f"
 [[model.file]]
 name = "htdemucs_6s.json"
 url = "https://huggingface.co/HRSadeghi/demucs-onnx/resolve/main/htdemucs_6s.json"
+
+[[model]]
+id = "melband_roformer_vocals"
+task = "separation (vocals; first stage of the cascade, AGENTS.md §4.2)"
+distribution = "default"
+license = "MIT"
+license_note = "Model card licence: MIT (huggingface.co/KimberleyJSN/melbandroformer). Model code derives from lucidrains/BS-RoFormer (MIT)."
+source = "https://huggingface.co/KimberleyJSN/melbandroformer"
+sample_rate = 44100
+inputs = "spec [1,2050,801,2] f32 (STFT n_fft 2048 hop 441 hann, unnormalized; row 2f+c = bin f of channel c; re/im)"
+outputs = "mask [1,2050,801,2] f32 (complex mask, band-averaged)"
+
+[model.build]
+checkpoint = "MelBandRoformer.ckpt"
+checkpoint_url = "https://huggingface.co/KimberleyJSN/melbandroformer/resolve/main/MelBandRoformer.ckpt"
+checkpoint_sha256 = "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e"
+code = "https://github.com/KimberleyJensen/Mel-Band-Roformer-Vocal-Model"
+command = "python -I scripts/export_melband_roformer.py --repo <clone of code> --ckpt models/build/MelBandRoformer.ckpt --out models/weights/melband_roformer_vocals.onnx"
+
+[[model.file]]
+name = "melband_roformer_vocals.onnx"
+
+[[model.file]]
+name = "melband_roformer_vocals.json"
+
+[[model]]
+id = "rmvpe"
+task = "pitch (reference vocal and sung takes, AGENTS.md §4.4/§5)"
+distribution = "default"
+license = "MIT"
+license_note = "Model card licence: MIT (huggingface.co/lj1995/VoiceConversionWebUI); RVC project LICENSE: MIT."
+source = "https://huggingface.co/lj1995/VoiceConversionWebUI"
+sample_rate = 16000
+inputs = "input [1,128,T] f32 log-mel (n_fft 1024, hop 160, hann, 128 HTK mels 30-8000 Hz slaney-normalised, ln(max(x,1e-5))), T a multiple of 32"
+outputs = "output [1,T,360] f32 pitch salience (20-cent bins from 1997.38 cents)"
+
+[[model.file]]
+name = "rmvpe.onnx"
+url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.onnx"
+sha256 = "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd"

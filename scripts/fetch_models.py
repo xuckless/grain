@@ -4,6 +4,9 @@
 Usage: python3 scripts/fetch_models.py [--opt-in] [--check]
   --opt-in  also fetch models with distribution = "opt-in" (restricted licenses)
   --check   only validate the manifest (CI)
+
+A model with a `[model.build]` table is not hosted as ONNX: its checkpoint is downloaded into
+models/build/ and the export command it names is printed (it needs PyTorch, see the script).
 """
 import hashlib
 import sys
@@ -14,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "models" / "manifest.toml"
 WEIGHTS = ROOT / "models" / "weights"
+BUILD = ROOT / "models" / "build"
 KNOWN_LICENSES = {"MIT", "Apache-2.0", "BSD-3-Clause", "GPL-3.0", "CC-BY-4.0", "CC-BY-NC-4.0"}
 RESTRICTED = {"CC-BY-NC-4.0"}
 
@@ -28,6 +32,21 @@ def validate(models):
         if m["distribution"] not in ("default", "opt-in"):
             errors.append(f"{m['id']}: bad distribution {m['distribution']}")
     return errors
+
+
+def download(url, dest, digest):
+    """Downloads `url` to `dest` unless it is already there with the right checksum."""
+    if dest.exists() and (digest is None or sha256(dest) == digest):
+        print(f"ok   {dest.name}")
+        return
+    print(f"get  {dest.name}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    urllib.request.urlretrieve(url, tmp)
+    if digest is not None and sha256(tmp) != digest:
+        tmp.unlink()
+        sys.exit(f"checksum mismatch for {dest.name}")
+    tmp.rename(dest)
 
 
 def sha256(path):
@@ -51,18 +70,17 @@ def main():
         if m["distribution"] == "opt-in" and "--opt-in" not in sys.argv:
             print(f"skip {m['id']} (opt-in, license {m['license']})")
             continue
+        if "build" in m:
+            b = m["build"]
+            download(b["checkpoint_url"], BUILD / b["checkpoint"], b.get("checkpoint_sha256"))
+            missing = [f["name"] for f in m["file"] if not (WEIGHTS / f["name"]).exists()]
+            if missing:
+                print(f"todo {m['id']}: build {', '.join(missing)} with\n     {b['command']}")
+            else:
+                print(f"ok   {m['id']} (built)")
+            continue
         for f in m["file"]:
-            dest = WEIGHTS / f["name"]
-            if dest.exists() and ("sha256" not in f or sha256(dest) == f["sha256"]):
-                print(f"ok   {f['name']}")
-                continue
-            print(f"get  {f['name']}")
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            urllib.request.urlretrieve(f["url"], tmp)
-            if "sha256" in f and sha256(tmp) != f["sha256"]:
-                tmp.unlink()
-                sys.exit(f"checksum mismatch for {f['name']}")
-            tmp.rename(dest)
+            download(f["url"], WEIGHTS / f["name"], f.get("sha256"))
 
 
 if __name__ == "__main__":

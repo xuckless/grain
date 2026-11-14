@@ -12,6 +12,7 @@
 //! [`Separator`] is an explicit state machine so synchronous (ort) and asynchronous
 //! (onnxruntime-web) hosts drive it the same way.
 
+use crate::all_finite;
 use engine_core::audio::StereoAudio;
 use engine_core::project::Stem;
 use engine_core::stft::{reflect_pad, Complex, Spectrum, Stft};
@@ -92,6 +93,16 @@ impl ModelSpec {
     pub fn wav_len(&self) -> usize {
         self.sources.len() * self.mix_len()
     }
+
+    /// Hop between segment starts.
+    fn stride(&self) -> usize {
+        ((1.0 - OVERLAP) * self.segment_samples as f64) as usize
+    }
+
+    /// Segments needed for a song of `len` samples.
+    pub fn segment_count(&self, len: usize) -> usize {
+        len.max(1).div_ceil(self.stride())
+    }
 }
 
 /// One segment's model inputs, row-major, batch 1.
@@ -142,8 +153,9 @@ impl Separator {
         let norm = |x: &[f32]| x.iter().map(|v| (v - mean) / std).collect::<Vec<f32>>();
 
         let segment = spec.segment_samples;
-        let stride = ((1.0 - OVERLAP) * segment as f64) as usize;
-        let offsets: Vec<usize> = (0..mix.len().max(1)).step_by(stride).collect();
+        let offsets: Vec<usize> = (0..spec.segment_count(mix.len()))
+            .map(|i| i * spec.stride())
+            .collect();
         // Triangular cross-fade weights (demucs `apply_model`, transition_power = 1).
         let half = segment / 2;
         let weight: Vec<f32> = (1..=half)
@@ -211,7 +223,7 @@ impl Separator {
                 return Err(DemucsError::OutputShape { got, expected });
             }
         }
-        if !spec_out.iter().chain(wav_out).all(|v| v.is_finite()) {
+        if !(all_finite(spec_out) && all_finite(wav_out)) {
             return Err(DemucsError::NonFinite(index));
         }
         let offset = self.offsets[index];
