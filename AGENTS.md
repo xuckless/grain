@@ -141,6 +141,17 @@ docs/research/     # longer notes, benchmarks, model evaluations
 2. Decode with ffmpeg to **44.1 kHz stereo f32 WAV**, the working format for all models. Keep the original file and record its codec and bitrate in project metadata.
 3. Pull metadata (title, artist, duration, chapters) from yt-dlp's `--dump-json`. Lyrics lookup (F3) uses it.
 4. **Desktop only.** Desktop runs `yt-dlp` and `ffmpeg` as bundled sidecar binaries. The web build has no URL import (browsers cannot download from YouTube because of CORS and bot protection, and we do not host an ingest service). In the web build the URL field is hidden behind the `ingest` feature flag. yt-dlp breaks often, so it must update itself; pin a minimum version and offer "update extractor" in the UI.
+   - **As built (sidecars):** `apps/desktop/src-tauri/sidecars.toml` pins every bundled file per Rust target triple, as a GitHub release URL plus sha256. `scripts/fetch_sidecars.py` (sharing `fetch_models.py`'s checksummed downloader) puts them in `apps/desktop/src-tauri/binaries/` (git-ignored) with Tauri's `<name>-<triple>` names. They are bundled only by `tauri build --config src-tauri/tauri.bundle.conf.json` (`externalBin` plus the ffmpeg licence as a resource), so plain and CI builds need none.
+
+     | Tool | Source | Version | Licence | Checksum |
+     |---|---|---|---|---|
+     | yt-dlp | github.com/yt-dlp/yt-dlp releases (`yt-dlp_macos` universal, `yt-dlp.exe`, `yt-dlp_linux`, `yt-dlp_linux_aarch64`) | 2026.10.26 | Unlicense | the release's SHA2-256SUMS |
+     | ffmpeg, ffprobe | github.com/eugeneware/ffmpeg-static release b6.1.1 (macOS arm64/x64, Windows x64, Linux x64/arm64) | b6.1.1 (its macOS binaries report FFmpeg 6.0) | FFmpeg LGPL-2.1+, static builds include GPL parts; fine for GPL-3.0 | GitHub's release-asset sha256 digests |
+
+     FFmpeg publishes no binaries. BtbN/FFmpeg-Builds (linked from ffmpeg.org) has no macOS build and rotates its daily releases, so pinned URLs would break; ffmpeg-static is the one GitHub release that covers every target under a stable tag.
+   - **Lookup** (`ingest::resolve`, an explicit `Origin`): the updated copy in app data (`bin/yt-dlp`) → the bundled sidecar next to the executable → `PATH` plus the Homebrew directories → `Missing` (Home shows why). Bundled ffmpeg/ffprobe are passed as an absolute `--ffmpeg-location` directory (never a bare name); otherwise yt-dlp finds them on `PATH`.
+   - **Update extractor** (Home, under the link field; shows the yt-dlp version and origin): runs yt-dlp's own `-U`, which fetches the latest GitHub release and checks it against that release's SHA2-256SUMS. A bundled yt-dlp is copied to app data first and the copy is updated (the bundle is read-only and signed); a failed or no-op update deletes the copy, so the bundled one stays in use. A system yt-dlp is left to its package manager. UI states: Checking → Ready → Updating → Updated | UpToDate | Failed. (The planned Checking/Downloading/Verifying split happens inside `yt-dlp -U`, so the UI shows one Updating state.)
+   - **Known gap:** recent yt-dlp wants a JavaScript runtime (deno) for YouTube; without one it warns that some formats may be missing. Downloads still work today (verified with only the bundled tools on `PATH`). Deno is not bundled (~100 MB more); a Homebrew deno is picked up from `PATH`.
 5. Local file import (mp3/m4a/wav/flac/ogg) is always supported and works without any network.
 
 > ⚖️ Downloading from YouTube is against YouTube's Terms of Service, and the audio is usually copyrighted. That is why ingest runs only on the user's machine, for their personal use. Keep it isolated in the `ingest` crate (a Cargo feature) so builds can leave it out entirely.
@@ -360,7 +371,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M0** engine skeleton | Cargo workspace, YIN, mixer, decode, CLI with prototype parity, wasm32 build | ✅ done |
 | **M1** F1 + timeline + F2 | Import (file + YouTube), HTDemucs, tempo/key, reference notes, timeline, offline scoring | ✅ mostly done (leftovers below) |
 | **UI** Grain design pass | Home → Session, blended title bar, view tabs, shared particle module, desktop save/open, recents | 🔄 in progress |
-| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | 🔄 all done except bundled sidecars (planned below) |
+| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | ✅ done |
 | **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ✅ done (desktop, opt-in "Best vocals"; web is Fast-only) |
 | **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | ✅ done (UltraStar-style word timing; ML alignment later) |
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | planned |
@@ -385,8 +396,9 @@ Keep this table current: update the Status column whenever a milestone moves.
      - Loopback latency calibration (`engine-core::cue`: exponential chirp, FFT cross-correlation, sub-sample peak): stored per input/output device pair (desktop `latency.json` in app data; web `localStorage`), ± nudge by hand. Synthetic delayed chirps are recovered within 1 ms (0–287 ms, with noise and an echo).
      - A/B audition: clicking a note in the Score graph solos the reference vocal for that note, then the take (Audition state machine), and restores the mix.
      - Web persistence: OPFS behind an explicit Available/Unavailable state, Recent list, `.grain` export and import (§12).
+   - **Done since (sidecars):** yt-dlp, ffmpeg and ffprobe bundled from pinned GitHub releases, lookup order and "Update extractor" (§4.1).
    - **Still open in M1:**
-     - Bundled sidecars. `yt-dlp`/`ffmpeg` are still found on `PATH` (plus the package-manager bin directories). Plan: a `scripts/fetch_sidecars.py` that downloads pinned, checksummed builds per target triple into `apps/desktop/src-tauri/binaries/` (yt-dlp's standalone release; ffmpeg from a static GPL build such as the BtbN or evermeet builds, recording which in this file), `bundle.externalBin` for both, and `ingest::Tools` resolving app-data copy → bundled sidecar → `PATH`. "Update extractor" runs `yt-dlp -U` on an app-data copy (the bundle is read-only and signed). Not done yet: it adds ~100 MB of third-party binaries per platform to the build, and the download source and verification are the user's call.
+     - Deno (yt-dlp's JavaScript runtime for YouTube) is not bundled; see §4.1.
      - Take pre-processing from §5.1 (high-pass, loudness, bleed isolation) is not applied; the UI asks for headphones instead.
      - Calibration can only be checked by ear on real hardware: the automated tests use synthetic captures, and a headless browser cannot loop its output back into its input.
      - The RoFormer cascade is slow on CPU (~7 min for a 4 min song, about 8 GB peak), so it is an opt-in "Best vocals" import: a quality option for songs with real accompaniment. CoreML and int8 did not help (see §4.2).

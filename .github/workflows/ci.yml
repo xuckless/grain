@@ -32,6 +32,7 @@ jobs:
           cargo test -q -p engine-core export_bindings
           git diff --exit-code packages/engine-api/src/generated
       - run: python3 scripts/fetch_models.py --check
+      - run: python3 scripts/fetch_sidecars.py --check
 
   web:
     runs-on: ubuntu-latest

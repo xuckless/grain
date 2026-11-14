@@ -12,7 +12,7 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 | `crates/engine-ml` | HTDemucs host processing (STFT outside the graph, chunking, overlap-add) |
 | `crates/engine-native` | Desktop host: decode, resample, cpal playback, ONNX Runtime, stem cache |
 | `crates/engine-wasm` | Web bindings (main thread + AudioWorklet) |
-| `crates/ingest` | YouTube audio through a local `yt-dlp` + `ffmpeg` (desktop only) |
+| `crates/ingest` | YouTube audio through `yt-dlp` + `ffmpeg`: bundled sidecars, else `PATH` (desktop only) |
 | `crates/cli` | `music` CLI: `compare` (port of `prototype/main.py`), `import`, `score` |
 | `packages/engine-api` | TypeScript types generated from Rust, plus the host contract |
 | `packages/ui` | Shared Svelte 5 UI in the Grain design system: `theme.ts` (colours), `motion.ts` (all timing), `grain.ts` (every dot/particle drawing) |
@@ -20,7 +20,7 @@ See [AGENTS.md](AGENTS.md) for the product spec and engineering rules.
 
 ## Setup
 
-You need Rust (with the `wasm32-unknown-unknown` target), `wasm-pack`, Node 22 and pnpm. YouTube import also needs `yt-dlp` and `ffmpeg` on `PATH`.
+You need Rust (with the `wasm32-unknown-unknown` target), `wasm-pack`, Node 22 and pnpm. YouTube import in dev builds uses `yt-dlp` and `ffmpeg` from `PATH`; release builds can bundle them (below).
 
 ```bash
 python3 scripts/fetch_models.py   # weights → models/weights/ (optional; without them songs stay one mix track, pitch uses YIN)
@@ -43,6 +43,18 @@ cargo run --release -p music-cli -- score song.mp3 my-take.m4a --models models/w
 cargo run --release -p music-cli -- pitch vocals.wav --models models/weights   # YIN vs RMVPE
 cargo run --release -p music-cli -- compare mine.wav artist.wav
 ```
+
+## Desktop release with bundled yt-dlp and ffmpeg
+
+```bash
+python3 scripts/fetch_sidecars.py      # pinned GitHub releases → apps/desktop/src-tauri/binaries/, sha256-checked
+pnpm --filter desktop tauri build --bundles app --config src-tauri/tauri.bundle.conf.json
+```
+
+`sidecars.toml` (next to `tauri.conf.json`) pins the URLs and checksums per target; pass
+`--target <rust-triple>` to fetch for another platform. A plain `pnpm build:desktop` needs no
+sidecars and finds the tools on `PATH`. In the app, Home shows which yt-dlp is in use and an
+**Update extractor** button (yt-dlp's own `-U`, applied to a copy in the app's data folder).
 
 ## Recording a take
 
