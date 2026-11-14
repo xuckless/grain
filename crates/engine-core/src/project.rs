@@ -5,6 +5,7 @@ use crate::edit::PitchEdit;
 use crate::key::{self, KeyCandidate};
 use crate::lyrics::ProjectLyrics;
 use crate::melody::{self, Note};
+use crate::midi::Transcription;
 use crate::onset;
 use crate::peaks::{peaks, SAMPLES_PER_PEAK};
 use crate::pitch::{self, PitchTrack};
@@ -171,6 +172,9 @@ pub struct Project {
     /// Pitch-editor edit lists, at most one per source (see [`crate::edit`]).
     #[serde(default)]
     pub pitch_edits: Vec<PitchEdit>,
+    /// MIDI layers, at most one per track (see [`crate::midi`]).
+    #[serde(default)]
+    pub transcriptions: Vec<Transcription>,
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
@@ -271,6 +275,7 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
         takes: Vec::new(),
         lyrics: ProjectLyrics::NotFetched,
         pitch_edits: Vec::new(),
+        transcriptions: Vec::new(),
     }
 }
 

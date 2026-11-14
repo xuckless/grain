@@ -29,6 +29,9 @@ def validate(models):
             errors.append(f"{m['id']}: unknown license {m['license']}")
         if m["license"] in RESTRICTED and m["distribution"] != "opt-in":
             errors.append(f"{m['id']}: {m['license']} must be distribution = \"opt-in\"")
+        for f in m["file"]:
+            if "url" in f and "sha256" not in f:
+                errors.append(f"{m['id']}: {f['name']} has a url but no sha256")
         if m["distribution"] not in ("default", "opt-in"):
             errors.append(f"{m['id']}: bad distribution {m['distribution']}")
     return errors
@@ -72,12 +75,15 @@ def main():
             continue
         if "build" in m:
             b = m["build"]
-            download(b["checkpoint_url"], BUILD / b["checkpoint"], b.get("checkpoint_sha256"))
             missing = [f["name"] for f in m["file"] if not (WEIGHTS / f["name"]).exists()]
             if missing:
+                download(b["checkpoint_url"], BUILD / b["checkpoint"], b.get("checkpoint_sha256"))
                 print(f"todo {m['id']}: build {', '.join(missing)} with\n     {b['command']}")
             else:
                 print(f"ok   {m['id']} (built)")
+            continue
+        if "manual" in m:
+            print(f"todo {m['id']}: {m['manual']}")
             continue
         for f in m["file"]:
             download(f["url"], WEIGHTS / f["name"], f.get("sha256"))

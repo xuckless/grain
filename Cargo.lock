@@ -1003,7 +1003,10 @@ dependencies = [
  "engine-core",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
+ "toml 0.8.2",
+ "ts-rs",
 ]
 
 [[package]]
@@ -1022,6 +1025,7 @@ dependencies = [
  "sha2",
  "symphonia",
  "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]

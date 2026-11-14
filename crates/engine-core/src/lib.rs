@@ -6,11 +6,13 @@
 pub mod align;
 pub mod audio;
 pub mod cue;
+pub mod drums;
 pub mod edit;
 pub mod key;
 pub mod live;
 pub mod lyrics;
 pub mod melody;
+pub mod midi;
 pub mod note;
 pub mod onset;
 pub mod peaks;

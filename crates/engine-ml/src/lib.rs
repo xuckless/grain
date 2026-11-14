@@ -1,7 +1,9 @@
 //! Host-side model processing. Inference runs wherever the host runs it (ort natively,
 //! onnxruntime-web in the browser); this crate prepares inputs and assembles outputs.
 
+pub mod basic_pitch;
 pub mod demucs;
+pub mod models;
 pub mod rmvpe;
 pub mod roformer;
 

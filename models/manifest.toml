@@ -2,6 +2,11 @@
 #
 # distribution = "default"  → fetched by default, usable in every build
 # distribution = "opt-in"   → non-commercial or otherwise restricted; fetched only with --opt-in
+#                              (the app's model manager asks the user to accept the licence first)
+#
+# A file with a `url` is downloadable (by this script and the app's model manager) and is verified
+# against `sha256`; `size` is its length in bytes. A model with a `[model.build]` table is exported
+# locally from a checkpoint; `manual` explains how to get a model that can't be fetched.
 
 [[model]]
 id = "htdemucs_6s"
@@ -18,10 +23,13 @@ outputs = "spec [1,6,4,2048,336] f32; wav [1,6,2,343980] f32"
 name = "htdemucs_6s.onnx"
 url = "https://huggingface.co/HRSadeghi/demucs-onnx/resolve/main/htdemucs_6s.onnx"
 sha256 = "8bf891f10eb208f6fd945f427c8e348ddddef38069d47b8afb7d4aabc24bc15f"
+size = 110396023
 
 [[model.file]]
 name = "htdemucs_6s.json"
 url = "https://huggingface.co/HRSadeghi/demucs-onnx/resolve/main/htdemucs_6s.json"
+sha256 = "c770b3a2c1583b555f6da293c753547bab5e52d3995432ea50ec72bab510bcb0"
+size = 333
 
 [[model]]
 id = "melband_roformer_vocals"
@@ -43,9 +51,11 @@ command = "python -I scripts/export_melband_roformer.py --repo <clone of code> -
 
 [[model.file]]
 name = "melband_roformer_vocals.onnx"
+size = 929273003
 
 [[model.file]]
 name = "melband_roformer_vocals.json"
+size = 271
 
 [[model]]
 id = "rmvpe"
@@ -62,3 +72,33 @@ outputs = "output [1,T,360] f32 pitch salience (20-cent bins from 1997.38 cents)
 name = "rmvpe.onnx"
 url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.onnx"
 sha256 = "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd"
+size = 361688443
+
+[[model]]
+id = "basic_pitch"
+task = "audio to MIDI (pitched stems, AGENTS.md §4.3)"
+distribution = "default"
+license = "Apache-2.0"
+license_note = "spotify/basic-pitch LICENSE: Apache-2.0 (Copyright 2022 Spotify AB); the weights ship in that repository. Pinned to commit fa5997a."
+source = "https://github.com/spotify/basic-pitch"
+sample_rate = 22050
+inputs = "serving_default_input_2:0 [N,43844,1] f32 mono audio windows (2 s minus one 256-sample hop)"
+outputs = "StatefulPartitionedCall:1 note [N,172,88]; :2 onset [N,172,88]; :0 contour [N,172,264] (86 fps, 88 keys from A0)"
+
+[[model.file]]
+name = "basic_pitch.onnx"
+url = "https://raw.githubusercontent.com/spotify/basic-pitch/fa5997af0a8210982619003269994a1be25eddf3/basic_pitch/saved_models/icassp_2022/nmp.onnx"
+sha256 = "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec"
+size = 230444
+
+[[model]]
+id = "muscriptor_large"
+task = "audio to MIDI (multi-instrument; not wired up yet)"
+distribution = "opt-in"
+license = "CC-BY-NC-4.0"
+license_note = "Model card licence: CC-BY-NC-4.0 (huggingface.co/MuScriptor/muscriptor-large). Non-commercial use only."
+source = "https://huggingface.co/MuScriptor/muscriptor-large"
+manual = "Gated on Hugging Face (sign in and accept its terms there) and published as PyTorch weights only, so it can't be downloaded here yet."
+
+[[model.file]]
+name = "muscriptor_large.safetensors"
