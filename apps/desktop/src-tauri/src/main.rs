@@ -52,6 +52,8 @@ enum Mic {
 
 /// Longest wait for the calibration chirp to finish playing.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest wait for the audio callback to pick up a cue.
+const CUE_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(20);
 
 /// The separation model, loaded on first import.
@@ -417,16 +419,22 @@ fn start_recording(engine: State<Engine>) -> Result<(), String> {
         anyhow::ensure!(matches!(l.mic, Mic::Closed), "the microphone is busy");
         let capture = Capture::start()?;
         let rate = l.playback.sample_rate();
-        let from = match l.playback.transport() {
-            Transport::Playing { frame } | Transport::Paused { frame } => frame,
-            _ => 0,
-        };
         let count_in = cue::count_in(l.project.analysis.tempo.bpm, rate);
         let PlayerCommand::CountIn { beats, beat_frames } = count_in else {
             unreachable!("cue::count_in builds a count-in")
         };
         l.playback.clear_cues();
         l.playback.send(count_in)?;
+        // The count-in holds the song position it started from (a playing song moves on
+        // between a transport read and the callback applying the command).
+        let started = Instant::now();
+        let from = loop {
+            match l.playback.transport() {
+                Transport::CountIn { frame, .. } => break frame,
+                _ if started.elapsed() > CUE_TIMEOUT => anyhow::bail!("the count-in didn't start"),
+                _ => std::thread::sleep(Duration::from_millis(2)),
+            }
+        };
         l.mic = Mic::Recording {
             capture,
             from_seconds: f64::from(from) / f64::from(rate),

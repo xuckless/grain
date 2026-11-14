@@ -1,7 +1,7 @@
 // Every app-level UI state is declared here (AGENTS.md ground rules 1–2). Component-local
 // states (menus, sliders, toasts) are declared as unions in their components.
 
-import type { ImportStage, Project, ScoreReport } from "@workstation/engine-api";
+import type { ImportStage, Project, ScoreReport, TransportSnapshot } from "@workstation/engine-api";
 
 /** Import progress: `Starting` until the host reports its first engine stage. */
 export type ImportProgress = { kind: "Starting" } | ImportStage;
@@ -9,7 +9,8 @@ export type ImportProgress = { kind: "Starting" } | ImportStage;
 export type ScoreState =
   | { kind: "none" }
   | { kind: "scoring" }
-  | { kind: "scored"; report: ScoreReport }
+  /** `take`: the take shown (from `project.takes`). */
+  | { kind: "scored"; take: number; report: ScoreReport }
   | { kind: "failed"; message: string };
 
 /** Whether the loaded song's mix differs from its saved project. */
@@ -35,6 +36,21 @@ export type Session = { project: Project; score: ScoreState; save: SaveState; vi
 
 export function newSession(project: Project): Session {
   return { project, score: { kind: "none" }, save: { kind: "clean" }, view: "Mix" };
+}
+
+/** Song position (seconds) of the playhead. A count-in holds its start position; the
+ * calibration chirp plays outside the song, at 0. */
+export function transportSeconds(s: TransportSnapshot): number {
+  const t = s.transport;
+  switch (t.kind) {
+    case "Stopped":
+    case "Probing":
+      return 0;
+    case "Playing":
+    case "Paused":
+    case "CountIn":
+      return t.frame / s.sample_rate;
+  }
 }
 
 /** What the Home screen is doing. */

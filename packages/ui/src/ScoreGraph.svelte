@@ -6,9 +6,15 @@
 
   /**
    * Where the take was sharp, flat, early or late: reference notes as dotted bars coloured by how
-   * they were sung, the singer's pitch as grains, and a cents strip below. Click to play from a note.
+   * they were sung, the singer's pitch as grains, and a cents strip below. Click a note for an A/B
+   * audition (the original, then the take); click between notes to play from there.
    */
-  let { project, report, onSeek }: { project: Project; report: ScoreReport; onSeek: (seconds: number) => void } = $props();
+  let {
+    project,
+    report,
+    onNote,
+    onSeek,
+  }: { project: Project; report: ScoreReport; onNote: (start: number, end: number) => void; onSeek: (seconds: number) => void } = $props();
 
   const ROLL = 280;
   const STRIP = 72;
@@ -84,19 +90,20 @@
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const t = ((event.clientX - rect.left) / rect.width) * duration;
     const note = report.notes.find((n) => n.note.start <= t && t <= n.note.end);
-    onSeek(note ? note.note.start : t);
+    if (note) onNote(note.note.start, note.note.end);
+    else onSeek(t);
   }
 </script>
 
 <div class="graph" bind:clientWidth={width}>
-  <button class="canvas-button" onclick={click} aria-label="Pitch graph: click a note to play from it">
+  <button class="canvas-button" onclick={click} aria-label="Pitch graph: click a note to hear the original, then your take">
     <canvas bind:this={canvas} use:reveal={report} style:height="{height}px"></canvas>
   </button>
   <div class="legend">
     <span><i style:background={feedback.hit}></i>Hit</span>
     <span><i style:background={feedback.near}></i>Near</span>
     <span><i style:background={feedback.miss}></i>Miss</span>
-    <span class="muted">Strip: cents sharp (up) or flat (down), ±{STRIP_RANGE}¢. Click a note to play from it.</span>
+    <span class="muted">Strip: cents sharp (up) or flat (down), ±{STRIP_RANGE}¢. Click a note to hear the original, then your take.</span>
   </div>
 </div>
 

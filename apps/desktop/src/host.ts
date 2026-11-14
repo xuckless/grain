@@ -8,11 +8,13 @@ import type {
   EngineHost,
   ImportOutcome,
   ImportStage,
+  Latency,
   Project,
   ProjectSummary,
   ScoreReport,
   SeparationOffer,
   StageListener,
+  TakeAdded,
   TransportSnapshot,
   WindowChrome,
 } from "@workstation/engine-api";
@@ -74,7 +76,18 @@ export async function createDesktopHost(): Promise<EngineHost> {
     async scoreTake(settings) {
       const path = await pickAudio();
       if (!path) return { kind: "cancelled" };
-      return { kind: "scored", report: await invoke<ScoreReport>("score_take", { path, settings }) };
+      return { kind: "scored", added: await invoke<TakeAdded>("score_take", { path, settings }) };
+    },
+    scoreRecorded: (take, settings) => invoke<ScoreReport>("score_recorded", { take, settings }),
+    microphone: {
+      kind: "available",
+      start: () => invoke("start_recording"),
+      level: () => invoke<number>("capture_level"),
+      finish: (settings) => invoke<TakeAdded>("finish_recording", { settings }),
+      cancel: () => invoke("cancel_recording"),
+      latency: () => invoke<Latency>("latency"),
+      setLatency: (ms) => invoke<Latency>("set_latency", { ms }),
+      measureLatency: () => invoke<Latency>("measure_latency"),
     },
     send: (command) => invoke("player", { command }),
     transport: () => invoke<TransportSnapshot>("transport"),

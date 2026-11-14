@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EngineHost, ImportOutcome, ImportStage, MixParams, PlayerCommand, ScoreSettings, SeparationQuality, TransportSnapshot } from "@workstation/engine-api";
+  import type { EngineHost, ImportOutcome, ImportStage, MixParams, PlayerCommand, SeparationQuality, TransportSnapshot } from "@workstation/engine-api";
   import Grain from "./Grain.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import SessionScreen from "./SessionScreen.svelte";
@@ -112,18 +112,6 @@
     void send({ kind: "SetMix", track, params });
   }
 
-  async function score(settings: ScoreSettings) {
-    if (app.kind !== "session") return;
-    const session = app.session;
-    session.score = { kind: "scoring" };
-    try {
-      const outcome = await host.scoreTake(settings);
-      session.score = outcome.kind === "scored" ? { kind: "scored", report: outcome.report } : { kind: "none" };
-    } catch (e) {
-      session.score = { kind: "failed", message: errorMessage(e) };
-    }
-  }
-
   function setView(view: ViewId) {
     if (app.kind === "session") app.session.view = view;
   }
@@ -175,7 +163,6 @@
           onSave={save}
           onCommand={send}
           onMix={setMix}
-          onScore={score}
           onView={setView}
         />
       {/if}

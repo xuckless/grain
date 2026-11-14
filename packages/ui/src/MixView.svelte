@@ -3,7 +3,7 @@
   import DotSlider from "./DotSlider.svelte";
   import { columnLevels, dot, dotBar, drawDotWave, fit, WAVE_STEP_PX } from "./grain";
   import { detailDelay, enter, reveal, rubberBand, springBack } from "./motion";
-  import { formatDb, formatPan } from "./state";
+  import { formatDb, formatPan, transportSeconds } from "./state";
   import { colour, displayRank, stemHue, trackHue } from "./theme";
 
   /**
@@ -50,8 +50,7 @@
   const anySolo = $derived(project.tracks.some((t) => t.mix.mode === "Soloed"));
   const playhead = $derived.by(() => {
     if (scrub.kind !== "idle") return scrub.seconds;
-    const t = snapshot.transport;
-    return t.kind === "Stopped" ? 0 : t.frame / snapshot.sample_rate;
+    return transportSeconds(snapshot);
   });
   const headX = $derived((playhead / duration) * width + (scrub.kind === "idle" ? 0 : scrub.overshootPx));
   /** Tracks in display order; `index` stays the engine's track index for mix commands. */

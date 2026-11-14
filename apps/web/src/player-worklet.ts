@@ -1,11 +1,13 @@
 // AudioWorklet running engine-core's Player through engine-wasm (AGENTS.md §9).
 import "./worklet-globals";
 import { initSync, PlayerBuilder, type WasmPlayer } from "engine-wasm";
+import { ringViews, writeBlock, type Ring } from "./capture-ring";
 import type { FromWorklet, ToWorklet } from "./worklet-protocol";
 
 declare class AudioWorkletProcessor {
   readonly port: MessagePort;
 }
+declare const sampleRate: number;
 declare function registerProcessor(name: string, ctor: new () => AudioWorkletProcessor): void;
 
 /** Post the transport every this many render quanta (~23 ms at 128 frames / 44.1 kHz). */
@@ -18,8 +20,12 @@ type WorkletState =
   | { kind: "idle"; memory: WebAssembly.Memory }
   | { kind: "playing"; output: Output };
 
+/** Whether the microphone input is being written to a capture ring. */
+type CaptureState = { kind: "off" } | { kind: "on"; ring: Ring };
+
 class PlayerProcessor extends AudioWorkletProcessor {
   private state: WorkletState = { kind: "uninitialized" };
+  private capture: CaptureState = { kind: "off" };
   private blocks = 0;
 
   constructor() {
@@ -45,16 +51,40 @@ class PlayerProcessor extends AudioWorkletProcessor {
         if (this.state.kind === "playing") this.state.output.player.free();
         const builder = new PlayerBuilder();
         for (const t of message.tracks) builder.pushTrack(t.left, t.right, t.mix);
-        const player = builder.build();
+        const player = builder.build(sampleRate);
         this.state = { kind: "playing", output: this.views(player, memory) };
         this.post({ kind: "transport", transport: player.transport() });
         return;
       }
+      case "addTrack": {
+        if (this.state.kind !== "playing") return this.post({ kind: "rejected", message: "no song loaded" });
+        try {
+          this.state.output.player.addTrack(message.track.left, message.track.right, message.track.mix);
+        } catch (e) {
+          this.post({ kind: "rejected", message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+      case "capture": {
+        if (this.state.kind !== "playing") return this.post({ kind: "rejected", message: "no song loaded" });
+        try {
+          this.state.output.player.apply(message.command);
+        } catch (e) {
+          return this.post({ kind: "rejected", message: e instanceof Error ? e.message : String(e) });
+        }
+        this.capture = { kind: "on", ring: ringViews(message.ring) };
+        this.post({ kind: "cueStarted", transport: this.state.output.player.transport() });
+        return;
+      }
+      case "endCapture":
+        this.capture = { kind: "off" };
+        return;
       case "unload": {
         if (this.state.kind !== "playing") return;
         const memory = this.state.output.memory;
         this.state.output.player.free();
         this.state = { kind: "idle", memory };
+        this.capture = { kind: "off" };
         this.post({ kind: "transport", transport: { kind: "Stopped" } });
         return;
       }
@@ -83,10 +113,12 @@ class PlayerProcessor extends AudioWorkletProcessor {
     };
   }
 
-  process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+  process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     if (this.state.kind !== "playing") return true;
     let out = this.state.output;
     const [left, right] = outputs[0];
+    // The microphone block of this quantum lines up with the output block rendered below.
+    if (this.capture.kind === "on") writeBlock(this.capture.ring, inputs[0]?.[0], left.length);
     out.player.render(left.length);
     // Wasm memory may have grown (and detached old views) since the last block.
     if (out.memory.buffer !== out.buffer) {

@@ -2,14 +2,17 @@
 // Data types are generated from Rust by ts-rs (`pnpm types`); only the host contract is written here.
 
 import type { ImportStage } from "./generated/ImportStage";
+import type { Latency } from "./generated/Latency";
 import type { PlayerCommand } from "./generated/PlayerCommand";
 import type { Project } from "./generated/Project";
 import type { ProjectSummary } from "./generated/ProjectSummary";
 import type { ScoreReport } from "./generated/ScoreReport";
 import type { ScoreSettings } from "./generated/ScoreSettings";
 import type { SeparationQuality } from "./generated/SeparationQuality";
+import type { TakeAdded } from "./generated/TakeAdded";
 import type { TransportSnapshot } from "./generated/TransportSnapshot";
 
+export type { Accompaniment } from "./generated/Accompaniment";
 export type { Analysis } from "./generated/Analysis";
 export type { Difficulty } from "./generated/Difficulty";
 export type { FrameComparison } from "./generated/FrameComparison";
@@ -17,6 +20,8 @@ export type { ImportStage } from "./generated/ImportStage";
 export type { SeparationQuality } from "./generated/SeparationQuality";
 export type { Key } from "./generated/Key";
 export type { KeyCandidate } from "./generated/KeyCandidate";
+export type { Latency } from "./generated/Latency";
+export type { LatencySource } from "./generated/LatencySource";
 export type { MixParams } from "./generated/MixParams";
 export type { Mode } from "./generated/Mode";
 export type { Note } from "./generated/Note";
@@ -33,6 +38,9 @@ export type { ScoreReport } from "./generated/ScoreReport";
 export type { Scores } from "./generated/Scores";
 export type { ScoreSettings } from "./generated/ScoreSettings";
 export type { SongSource } from "./generated/SongSource";
+export type { Take } from "./generated/Take";
+export type { TakeAdded } from "./generated/TakeAdded";
+export type { TakeSource } from "./generated/TakeSource";
 export type { Stem } from "./generated/Stem";
 export type { Tempo } from "./generated/Tempo";
 export type { Track } from "./generated/Track";
@@ -44,7 +52,7 @@ export type { Vibrato } from "./generated/Vibrato";
 
 export type ImportOutcome = { kind: "imported"; project: Project } | { kind: "cancelled" };
 
-export type ScoreOutcome = { kind: "scored"; report: ScoreReport } | { kind: "cancelled" };
+export type ScoreOutcome = { kind: "scored"; added: TakeAdded } | { kind: "cancelled" };
 
 export type StageListener = (stage: ImportStage) => void;
 
@@ -76,6 +84,29 @@ export type ProjectStore =
     }
   | { kind: "unavailable"; reason: string };
 
+/** The microphone, for recording takes over the song and measuring round-trip latency
+ * (AGENTS.md §9). The UI owns the recording and calibration state machines; hosts give it
+ * these primitives. */
+export type Microphone =
+  | {
+      kind: "available";
+      /** Opens the microphone and starts the one-bar count-in from the current position. The
+       * song plays on after it; the transport shows `CountIn`, then `Playing`. */
+      start(): Promise<void>;
+      /** Peak input level of the latest block, 0–1. */
+      level(): Promise<number>;
+      /** Stops, removes the round-trip latency, adds the take to the song and scores it. */
+      finish(settings: ScoreSettings): Promise<TakeAdded>;
+      /** Abandons the take. */
+      cancel(): Promise<void>;
+      /** Latency removed from takes on the current device pair. */
+      latency(): Promise<Latency>;
+      setLatency(ms: number): Promise<Latency>;
+      /** Plays the loopback chirp and stores the measured latency. */
+      measureLatency(): Promise<Latency>;
+    }
+  | { kind: "unavailable"; reason: string };
+
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
 export interface EngineHost {
   readonly chrome: WindowChrome;
@@ -86,8 +117,11 @@ export interface EngineHost {
   close(): Promise<void>;
   /** Picks a song file, imports it and makes it the loaded song. */
   importFile(quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome>;
-  /** Picks a sung take and scores it against the loaded song. */
+  readonly microphone: Microphone;
+  /** Picks a sung take file, adds it to the loaded song and scores it. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
+  /** Re-scores take `id` of the loaded song (difficulty or octave changed, or picked again). */
+  scoreRecorded(id: number, settings: ScoreSettings): Promise<ScoreReport>;
   send(command: PlayerCommand): Promise<void>;
   transport(): Promise<TransportSnapshot>;
 }

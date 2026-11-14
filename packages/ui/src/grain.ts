@@ -28,6 +28,15 @@ export function dotBar(c: Ctx, x0: number, x1: number, y: number, col: string, r
 }
 
 /** Sizes the canvas backing store to `w`×`h` CSS px (device pixel ratio capped at 2). */
+/** A horizontal input meter: `level` (0–1 peak) shown on a dB scale from −48 dB, lit dots
+ * over a track of dim ones. */
+export function dotMeter(c: Ctx, w: number, h: number, level: number, lit: string, track: string): void {
+  const db = level > 0 ? 20 * Math.log10(level) : -Infinity;
+  const fill = Math.max(0, Math.min(1, (db + 48) / 48));
+  const step = 6;
+  for (let x = 3; x <= w - 3; x += step) dot(c, x, h / 2, 1.6, x / w <= fill ? lit : track);
+}
+
 export function fit(canvas: HTMLCanvasElement, w: number, h: number): Ctx | null {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const bw = Math.max(1, Math.round(w * dpr)), bh = Math.max(1, Math.round(h * dpr));

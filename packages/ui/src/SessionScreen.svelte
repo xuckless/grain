@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EngineHost, MixParams, PlayerCommand, ScoreSettings, TransportSnapshot } from "@workstation/engine-api";
+  import type { EngineHost, MixParams, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
   import Grain from "./Grain.svelte";
   import Icon from "./Icon.svelte";
   import MixView from "./MixView.svelte";
@@ -9,7 +9,7 @@
   import { services } from "./context";
   import { Orb } from "./grain";
   import { enter, iconSwap, popover, pulse, receiveShared, sendShared } from "./motion";
-  import { formatTime, songTitle, type Session, type ViewId } from "./state";
+  import { formatTime, songTitle, transportSeconds, type Session, type ViewId } from "./state";
 
   let {
     host,
@@ -20,7 +20,6 @@
     onSave,
     onCommand,
     onMix,
-    onScore,
     onView,
   }: {
     host: EngineHost;
@@ -31,7 +30,6 @@
     onSave: () => Promise<void>;
     onCommand: (c: PlayerCommand) => void;
     onMix: (track: number, params: MixParams) => void;
-    onScore: (settings: ScoreSettings) => void;
     onView: (id: ViewId) => void;
   } = $props();
 
@@ -47,7 +45,7 @@
   const project = $derived(session.project);
   const title = $derived(songTitle(project));
   const duration = $derived(project.frames / project.sample_rate);
-  const position = $derived(snapshot.transport.kind === "Stopped" ? 0 : snapshot.transport.frame / snapshot.sample_rate);
+  const position = $derived(transportSeconds(snapshot));
   const playing = $derived(snapshot.transport.kind === "Playing");
   const key = $derived(project.analysis.keys[0]);
   const canSave = $derived(host.projects.kind === "available");
@@ -152,7 +150,7 @@
       {#key session.view}
         <div class="layer" transition:enter>
           {#if session.view === "Score"}
-            <ScoreView {project} score={session.score} sampleRate={snapshot.sample_rate} {onScore} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
+            <ScoreView {host} {session} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else}
             <MixView {project} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} {onMix} />
           {/if}
