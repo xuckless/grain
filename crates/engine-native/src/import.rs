@@ -22,6 +22,8 @@ pub struct Imported {
     pub cache_key: String,
     pub project: Project,
     pub audio: SongAudio,
+    /// Timeline audio of each saved take (a re-import of a song with takes reopens them).
+    pub takes: Vec<Vec<f32>>,
 }
 
 pub fn import_song(
@@ -40,11 +42,17 @@ pub fn import_song(
         Separation::Disabled => UNSEPARATED.to_string(),
     };
     let cache_key = StemCache::key(path, &model_id)?;
-    if let Lookup::Hit { project, audio } = cache.lookup(&cache_key)? {
+    if let Lookup::Hit {
+        project,
+        audio,
+        takes,
+    } = cache.lookup(&cache_key)?
+    {
         return Ok(Imported {
             cache_key,
             project: *project,
             audio,
+            takes,
         });
     }
     progress(ImportStage::Decoding);
@@ -76,5 +84,6 @@ pub fn import_song(
         cache_key,
         project,
         audio,
+        takes: Vec::new(),
     })
 }

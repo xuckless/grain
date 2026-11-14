@@ -3,9 +3,11 @@
 //! - the AudioWorklet: [`WasmPlayer`] (real-time mixing; no allocation per block).
 
 use engine_core::audio::StereoAudio;
+use engine_core::cue;
 use engine_core::player::{Player, PlayerCommand, PlayerTrack};
 use engine_core::project::{self, Project, SongAudio, SongSource, TrackedPitch};
 use engine_core::score::ScoreSettings;
+use engine_core::take::{self, TakeAdded, TakeSource};
 use engine_ml::demucs::{ModelSpec, Separator, SeparatorState};
 use wasm_bindgen::prelude::*;
 
@@ -33,11 +35,17 @@ fn stereo(left: Vec<f32>, right: Vec<f32>, sample_rate: u32) -> Result<StereoAud
     })
 }
 
-/// An imported song: its audio plus the analyzed project.
+fn js_err(e: impl std::fmt::Display) -> JsError {
+    JsError::new(&e.to_string())
+}
+
+/// An imported song: its audio, the analyzed project, and the timeline audio of each take
+/// (kept in memory; the web has no project storage yet).
 #[wasm_bindgen]
 pub struct WasmSong {
     project: Project,
     audio: SongAudio,
+    takes: Vec<Vec<f32>>,
 }
 
 impl WasmSong {
@@ -53,7 +61,25 @@ impl WasmSong {
                 ),
             ),
             audio,
+            takes: Vec::new(),
         }
+    }
+
+    /// Adds a take (timeline audio) and returns the updated project with the take's score.
+    fn add(
+        &mut self,
+        source: TakeSource,
+        timeline: Vec<f32>,
+        pitch: TrackedPitch,
+        settings: ScoreSettings,
+    ) -> Result<JsValue, JsError> {
+        let id = take::add_take(&mut self.project, source, &timeline, pitch);
+        self.takes.push(timeline);
+        to_js(&TakeAdded {
+            report: take::score_take(&self.project, id, settings).map_err(js_err)?,
+            project: self.project.clone(),
+            take: id,
+        })
     }
 }
 
@@ -88,21 +114,90 @@ impl WasmSong {
         Ok(out)
     }
 
-    /// Scores a take (same sample rate as the song) and returns a `ScoreReport`.
-    #[wasm_bindgen(js_name = scoreTake)]
-    pub fn score_take(
-        &self,
+    /// Adds a take file (same sample rate as the song), lined up by pitch, and scores it.
+    /// Returns a `TakeAdded`.
+    #[wasm_bindgen(js_name = addFileTake)]
+    pub fn add_file_take(
+        &mut self,
+        name: String,
         left: Vec<f32>,
         right: Vec<f32>,
         settings: JsValue,
     ) -> Result<JsValue, JsError> {
         let settings: ScoreSettings = from_js(settings)?;
-        let take = stereo(left, right, self.project.sample_rate)?;
-        let take = TrackedPitch::yin(&take.to_mono(), self.project.sample_rate);
-        let report = project::score_take(&self.project, &take, settings)
-            .map_err(|e| JsError::new(&e.to_string()))?;
-        to_js(&report)
+        let rate = self.project.sample_rate;
+        let audio = stereo(left, right, rate)?.to_mono();
+        let raw = TrackedPitch::yin(&audio, rate);
+        let (timeline, placed) =
+            take::timeline_from_file(&self.project, &audio, &raw.track).map_err(js_err)?;
+        let pitch = TrackedPitch {
+            tracker: raw.tracker,
+            track: placed,
+        };
+        self.add(TakeSource::Imported { name }, timeline, pitch, settings)
     }
+
+    /// Adds a microphone capture as a take. `song_zero_seconds`: capture time at which song
+    /// frame 0 would have been heard (see `take::timeline_from_capture`). Returns a `TakeAdded`.
+    #[wasm_bindgen(js_name = addRecordedTake)]
+    pub fn add_recorded_take(
+        &mut self,
+        capture: Vec<f32>,
+        capture_rate: u32,
+        song_zero_seconds: f64,
+        latency_ms: f32,
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let settings: ScoreSettings = from_js(settings)?;
+        let timeline =
+            take::timeline_from_capture(&self.project, &capture, capture_rate, song_zero_seconds)
+                .map_err(js_err)?;
+        let pitch = TrackedPitch::yin(&timeline, self.project.sample_rate);
+        self.add(
+            TakeSource::Recorded { latency_ms },
+            timeline,
+            pitch,
+            settings,
+        )
+    }
+
+    /// Re-scores take `id`; returns a `ScoreReport`.
+    #[wasm_bindgen(js_name = scoreTake)]
+    pub fn score_take(&self, id: u32, settings: JsValue) -> Result<JsValue, JsError> {
+        let settings: ScoreSettings = from_js(settings)?;
+        to_js(&take::score_take(&self.project, id, settings).map_err(js_err)?)
+    }
+
+    /// Timeline audio of take `id` (for the player).
+    #[wasm_bindgen(js_name = takeAudio)]
+    pub fn take_audio(&self, id: u32) -> Result<js_sys::Float32Array, JsError> {
+        let i = self
+            .project
+            .takes
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or_else(|| JsError::new("no such take"))?;
+        Ok(js_sys::Float32Array::from(self.takes[i].as_slice()))
+    }
+}
+
+/// The count-in `PlayerCommand` for a song at `bpm` played at `sample_rate`.
+#[wasm_bindgen(js_name = countIn)]
+pub fn count_in(bpm: f64, sample_rate: u32) -> Result<JsValue, JsError> {
+    to_js(&cue::count_in(bpm, sample_rate))
+}
+
+/// Round-trip latency from a calibration capture: `[ms, confidence]`, or an error saying why
+/// the chirp wasn't usable.
+#[wasm_bindgen(js_name = measureLatency)]
+pub fn measure_latency(
+    capture: Vec<f32>,
+    capture_rate: u32,
+    cue_at_seconds: f64,
+) -> Result<Vec<f32>, JsError> {
+    let (ms, confidence) =
+        cue::measure_latency(&capture, capture_rate, cue_at_seconds).map_err(js_err)?;
+    Ok(vec![ms, confidence])
 }
 
 /// HTDemucs host processing driven from JS, which runs the model with onnxruntime-web.
@@ -204,9 +299,10 @@ impl PlayerBuilder {
         Ok(())
     }
 
-    pub fn build(self) -> WasmPlayer {
+    /// `sample_rate`: the AudioContext's rate (cues are synthesized at it).
+    pub fn build(self, sample_rate: u32) -> WasmPlayer {
         WasmPlayer {
-            player: Player::new(self.tracks),
+            player: Player::new(self.tracks, sample_rate),
             left: vec![0.0; MAX_BLOCK],
             right: vec![0.0; MAX_BLOCK],
         }
@@ -230,6 +326,23 @@ impl WasmPlayer {
         self.player
             .apply(command)
             .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Adds a track (a take) without reallocating; errors when the reserve is used up.
+    #[wasm_bindgen(js_name = addTrack)]
+    pub fn add_track(
+        &mut self,
+        left: Vec<f32>,
+        right: Vec<f32>,
+        mix: JsValue,
+    ) -> Result<(), JsError> {
+        self.player
+            .add_track(PlayerTrack {
+                left: left.into(),
+                right: right.into(),
+                mix: from_js(mix)?,
+            })
+            .map_err(|_| JsError::new("too many takes in one session"))
     }
 
     /// Renders `frames` (≤ 1024) samples into the output buffers.

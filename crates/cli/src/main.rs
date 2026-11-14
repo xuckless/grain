@@ -5,9 +5,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use engine_core::note::{hz_to_midi, note_name};
 use engine_core::pitch::PitchFrame;
 use engine_core::pitch::{PitchRange, Yin};
-use engine_core::project::{
-    self, PitchTracker, SeparationQuality, SongAudio, SongSource, TrackedPitch,
-};
+use engine_core::project::{PitchTracker, SeparationQuality, SongAudio, SongSource, TrackedPitch};
 use engine_core::score::{Difficulty, NoteResult, OctaveMode, ScoreSettings};
 use engine_core::WORKING_SAMPLE_RATE;
 use engine_native::cache::StemCache;
@@ -140,13 +138,24 @@ fn main() -> Result<()> {
             difficulty,
             strict_octave,
         } => {
-            let imported = import(&song, &engine)?;
-            let take = decode::load(&take, WORKING_SAMPLE_RATE)?;
-            let take = pitch_trackers(&engine).track(
-                imported.project.analysis.pitch_tracker,
-                &take.to_mono(),
-                WORKING_SAMPLE_RATE,
-            )?;
+            let mut project = import(&song, &engine)?.project;
+            let audio = decode::load(&take, WORKING_SAMPLE_RATE)?.to_mono();
+            let mut trackers = pitch_trackers(&engine);
+            let tracker = project.analysis.pitch_tracker;
+            let raw = trackers.track(tracker, &audio, WORKING_SAMPLE_RATE)?;
+            let (timeline, placed) =
+                engine_core::take::timeline_from_file(&project, &audio, &raw.track)?;
+            let pitch = TrackedPitch {
+                tracker,
+                track: placed,
+            };
+            let name = take.display().to_string();
+            let id = engine_core::take::add_take(
+                &mut project,
+                engine_core::take::TakeSource::Imported { name },
+                &timeline,
+                pitch,
+            );
             let settings = ScoreSettings {
                 difficulty: match difficulty {
                     DifficultyArg::Easy => Difficulty::Easy,
@@ -159,7 +168,7 @@ fn main() -> Result<()> {
                     OctaveMode::Fold
                 },
             };
-            let report = project::score_take(&imported.project, &take, settings)?;
+            let report = engine_core::take::score_take(&project, id, settings)?;
             let s = report.scores;
             println!("offset     {:+.2} s", report.offset_seconds);
             println!("overall    {:.1}", s.overall);

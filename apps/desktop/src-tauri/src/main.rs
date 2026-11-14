@@ -2,32 +2,57 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
 use engine_core::player::{PlayerCommand, Transport, TransportSnapshot};
 use engine_core::project::{
-    self, ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource,
+    ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource, TrackedPitch,
 };
 use engine_core::score::{ScoreReport, ScoreSettings};
+use engine_core::take::{self, TakeAdded, TakeSource};
 use engine_core::WORKING_SAMPLE_RATE;
 use engine_native::cache::{Lookup, StemCache};
+use engine_native::capture::{self, Capture};
 use engine_native::decode;
 use engine_native::import::{import_song, Imported, Separation};
+use engine_native::latency::{self, LatencyStore};
 use engine_native::pitch::Pitch;
 use engine_native::playback::Playback;
 use engine_native::separate::Separators;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// The loaded song, if any.
 enum Session {
     Empty,
-    Loaded {
-        cache_key: String,
-        project: Box<Project>,
-        playback: Playback,
-    },
+    Loaded(Box<Loaded>),
 }
+
+struct Loaded {
+    cache_key: String,
+    project: Project,
+    playback: Playback,
+    mic: Mic,
+}
+
+/// What the microphone is doing.
+enum Mic {
+    Closed,
+    /// Recording a take. The count-in started at `from_seconds` on the song timeline.
+    Recording {
+        capture: Capture,
+        from_seconds: f64,
+        count_in_seconds: f64,
+    },
+    /// A latency calibration owns the microphone (its capture lives in that command).
+    Calibrating,
+}
+
+/// Longest wait for the calibration chirp to finish playing.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const POLL: Duration = Duration::from_millis(20);
 
 /// The separation model, loaded on first import.
 enum Model {
@@ -42,6 +67,7 @@ struct Engine {
     model: Mutex<Model>,
     pitch: Mutex<Pitch>,
     cache: StemCache,
+    latency: LatencyStore,
     model_dirs: Vec<PathBuf>,
     #[cfg(feature = "youtube")]
     downloads: PathBuf,
@@ -77,6 +103,7 @@ fn import(
         cache_key,
         project,
         audio,
+        takes,
     } = import_song(
         path,
         song,
@@ -88,7 +115,7 @@ fn import(
         },
     )?;
     drop(model);
-    start_session(&engine, cache_key, project, &audio)
+    start_session(&engine, cache_key, project, &audio, &takes)
 }
 
 /// Makes `project` the loaded song and starts its playback stream.
@@ -97,17 +124,71 @@ fn start_session(
     cache_key: String,
     project: Project,
     audio: &SongAudio,
+    takes: &[Vec<f32>],
 ) -> anyhow::Result<Project> {
     let mut session = engine.session.lock().expect("session lock");
     // Close the old stream before opening a new one.
     *session = Session::Empty;
-    let playback = Playback::start(&project, audio)?;
-    *session = Session::Loaded {
+    let playback = Playback::start(&project, audio, takes)?;
+    *session = Session::Loaded(Box::new(Loaded {
         cache_key,
-        project: Box::new(project.clone()),
+        project: project.clone(),
         playback,
-    };
+        mic: Mic::Closed,
+    }));
     Ok(project)
+}
+
+/// Runs `f` on the loaded song.
+fn with_loaded<T>(
+    engine: &Engine,
+    f: impl FnOnce(&mut Loaded) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    match &mut *engine.session.lock().expect("session lock") {
+        Session::Loaded(loaded) => f(loaded),
+        Session::Empty => anyhow::bail!("load a song first"),
+    }
+}
+
+/// Tracks timeline audio with the loaded song's reference tracker.
+fn track_timeline(
+    engine: &Engine,
+    project: &Project,
+    timeline: &[f32],
+) -> anyhow::Result<TrackedPitch> {
+    engine.pitch.lock().expect("pitch lock").track(
+        project.analysis.pitch_tracker,
+        timeline,
+        project.sample_rate,
+    )
+}
+
+/// Adds a take's timeline audio and pitch to the loaded song: project, cache, player.
+/// Returns its score.
+fn add_take(
+    engine: &Engine,
+    source: TakeSource,
+    timeline: &[f32],
+    pitch: TrackedPitch,
+    settings: ScoreSettings,
+) -> anyhow::Result<TakeAdded> {
+    with_loaded(engine, |l| {
+        let id = take::add_take(&mut l.project, source, timeline, pitch);
+        engine
+            .cache
+            .store_take(&l.cache_key, id, timeline, l.project.sample_rate)?;
+        let added = l.project.takes.last().expect("just added");
+        l.playback.add_take(added, timeline)?;
+        Ok(TakeAdded {
+            report: take::score_take(&l.project, id, settings)?,
+            project: l.project.clone(),
+            take: id,
+        })
+    })
+}
+
+fn device_pair(playback: &Playback) -> String {
+    latency::devices(&capture::default_input_name(), playback.device())
 }
 
 /// Saved projects (stem-cache entries), most recent first.
@@ -124,7 +205,11 @@ async fn open_project(app: AppHandle, id: String) -> Result<Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let engine = app.state::<Engine>();
         match engine.cache.lookup(&id)? {
-            Lookup::Hit { project, audio } => start_session(&engine, id, *project, &audio),
+            Lookup::Hit {
+                project,
+                audio,
+                takes,
+            } => start_session(&engine, id, *project, &audio, &takes),
             Lookup::Miss => anyhow::bail!("this project is no longer on disk"),
         }
     })
@@ -136,12 +221,10 @@ async fn open_project(app: AppHandle, id: String) -> Result<Project, String> {
 /// Writes the loaded song's mix settings to its project.
 #[tauri::command]
 fn save_project(engine: State<Engine>) -> Result<(), String> {
-    match &*engine.session.lock().map_err(fail)? {
-        Session::Loaded {
-            cache_key, project, ..
-        } => engine.cache.save_project(cache_key, project).map_err(fail),
-        Session::Empty => Err("no song loaded".into()),
-    }
+    with_loaded(&engine, |l| {
+        engine.cache.save_project(&l.cache_key, &l.project)
+    })
+    .map_err(fail)
 }
 
 /// Stops playback and unloads the song.
@@ -243,30 +326,34 @@ async fn import_url(_url: String, _quality: SeparationQuality) -> Result<Project
 
 #[tauri::command]
 fn player(engine: State<Engine>, command: PlayerCommand) -> Result<(), String> {
-    let mut session = engine.session.lock().map_err(fail)?;
-    let Session::Loaded {
-        project, playback, ..
-    } = &mut *session
-    else {
-        return Err("no song loaded".into());
-    };
-    playback.send(command).map_err(fail)?;
-    if let PlayerCommand::SetMix { track, params } = command {
-        // Mix settings are part of the project; `save_project` persists them.
-        if let Some(t) = project.tracks.get_mut(track as usize) {
-            t.mix = params;
+    with_loaded(&engine, |l| {
+        l.playback.send(command)?;
+        if let PlayerCommand::SetMix { track, params } = command {
+            // Mix settings are part of the project; `save_project` persists them. Players
+            // list the song's tracks first, then its takes.
+            let songs = l.project.tracks.len();
+            let i = track as usize;
+            if let Some(t) = l.project.tracks.get_mut(i) {
+                t.mix = params;
+            } else if let Some(t) = i
+                .checked_sub(songs)
+                .and_then(|j| l.project.takes.get_mut(j))
+            {
+                t.mix = params;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .map_err(fail)
 }
 
 #[tauri::command]
 fn transport(engine: State<Engine>) -> Result<TransportSnapshot, String> {
     let session = engine.session.lock().map_err(fail)?;
     match &*session {
-        Session::Loaded { playback, .. } => Ok(TransportSnapshot {
-            transport: playback.transport(),
-            sample_rate: playback.sample_rate(),
+        Session::Loaded(l) => Ok(TransportSnapshot {
+            transport: l.playback.transport(),
+            sample_rate: l.playback.sample_rate(),
         }),
         Session::Empty => Ok(TransportSnapshot {
             transport: Transport::Stopped,
@@ -275,33 +362,255 @@ fn transport(engine: State<Engine>) -> Result<TransportSnapshot, String> {
     }
 }
 
+/// Imports a sung take from a file: lined up with the song by pitch, added, scored.
 #[tauri::command]
 async fn score_take(
     app: AppHandle,
     path: String,
     settings: ScoreSettings,
-) -> Result<ScoreReport, String> {
+) -> Result<TakeAdded, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let engine = app.state::<Engine>();
-        let project = match &*engine.session.lock().map_err(fail)? {
-            Session::Loaded { project, .. } => project.clone(),
-            Session::Empty => return Err("load a song first".to_string()),
+        let project = with_loaded(&engine, |l| Ok(l.project.clone()))?;
+        let path = PathBuf::from(path);
+        let audio = decode::load(&path, project.sample_rate)?.to_mono();
+        let raw = track_timeline(&engine, &project, &audio)?;
+        let (timeline, placed) = take::timeline_from_file(&project, &audio, &raw.track)?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let pitch = TrackedPitch {
+            tracker: raw.tracker,
+            track: placed,
         };
-        let take = decode::load(Path::new(&path), project.sample_rate).map_err(fail)?;
-        let take = engine
-            .pitch
-            .lock()
-            .map_err(fail)?
-            .track(
-                project.analysis.pitch_tracker,
-                &take.to_mono(),
-                project.sample_rate,
-            )
-            .map_err(fail)?;
-        project::score_take(&project, &take, settings).map_err(fail)
+        add_take(
+            &engine,
+            TakeSource::Imported { name },
+            &timeline,
+            pitch,
+            settings,
+        )
     })
     .await
     .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Re-scores a saved take (from its stored pitch; no audio needed).
+#[tauri::command]
+fn score_recorded(
+    engine: State<Engine>,
+    take: u32,
+    settings: ScoreSettings,
+) -> Result<ScoreReport, String> {
+    with_loaded(&engine, |l| {
+        Ok(take::score_take(&l.project, take, settings)?)
+    })
+    .map_err(fail)
+}
+
+/// Opens the microphone and starts the count-in from the current position.
+#[tauri::command]
+fn start_recording(engine: State<Engine>) -> Result<(), String> {
+    with_loaded(&engine, |l| {
+        anyhow::ensure!(matches!(l.mic, Mic::Closed), "the microphone is busy");
+        let capture = Capture::start()?;
+        let rate = l.playback.sample_rate();
+        let from = match l.playback.transport() {
+            Transport::Playing { frame } | Transport::Paused { frame } => frame,
+            _ => 0,
+        };
+        let count_in = cue::count_in(l.project.analysis.tempo.bpm, rate);
+        let PlayerCommand::CountIn { beats, beat_frames } = count_in else {
+            unreachable!("cue::count_in builds a count-in")
+        };
+        l.playback.clear_cues();
+        l.playback.send(count_in)?;
+        l.mic = Mic::Recording {
+            capture,
+            from_seconds: f64::from(from) / f64::from(rate),
+            count_in_seconds: f64::from(beats * beat_frames) / f64::from(rate),
+        };
+        Ok(())
+    })
+    .map_err(fail)
+}
+
+/// Peak input level of the take being recorded, 0–1.
+#[tauri::command]
+fn capture_level(engine: State<Engine>) -> f32 {
+    with_loaded(&engine, |l| {
+        Ok(match &l.mic {
+            Mic::Recording { capture, .. } => capture.level(),
+            Mic::Closed | Mic::Calibrating => 0.0,
+        })
+    })
+    .unwrap_or(0.0)
+}
+
+/// Stops the take being recorded, lines it up with the song, adds and scores it.
+#[tauri::command]
+async fn finish_recording(app: AppHandle, settings: ScoreSettings) -> Result<TakeAdded, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let (capture, from_seconds, count_in_seconds, cue, latency, project) =
+            with_loaded(&engine, |l| {
+                let Mic::Recording {
+                    capture,
+                    from_seconds,
+                    count_in_seconds,
+                } = std::mem::replace(&mut l.mic, Mic::Closed)
+                else {
+                    anyhow::bail!("no take is being recorded");
+                };
+                if !matches!(l.playback.transport(), Transport::Stopped) {
+                    l.playback.send(PlayerCommand::Stop)?;
+                }
+                let cue = l
+                    .playback
+                    .take_cue()
+                    .ok_or_else(|| anyhow::anyhow!("the count-in never started"))?;
+                let latency = engine
+                    .latency
+                    .get(&latency::devices(capture.device(), l.playback.device()));
+                Ok((
+                    capture,
+                    from_seconds,
+                    count_in_seconds,
+                    cue,
+                    latency,
+                    l.project.clone(),
+                ))
+            })?;
+        let captured = capture.finish()?;
+        let song_zero = capture::seconds_between(cue, captured.first)
+            + count_in_seconds
+            + f64::from(latency.ms) / 1000.0
+            - from_seconds;
+        let timeline = take::timeline_from_capture(
+            &project,
+            &captured.samples,
+            captured.sample_rate,
+            song_zero,
+        )?;
+        let pitch = track_timeline(&engine, &project, &timeline)?;
+        add_take(
+            &engine,
+            TakeSource::Recorded {
+                latency_ms: latency.ms,
+            },
+            &timeline,
+            pitch,
+            settings,
+        )
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Abandons the take being recorded.
+#[tauri::command]
+fn cancel_recording(engine: State<Engine>) -> Result<(), String> {
+    with_loaded(&engine, |l| {
+        if let Mic::Recording { .. } = l.mic {
+            l.mic = Mic::Closed;
+            if !matches!(l.playback.transport(), Transport::Stopped) {
+                l.playback.send(PlayerCommand::Stop)?;
+            }
+        }
+        Ok(())
+    })
+    .map_err(fail)
+}
+
+/// The round-trip latency removed from takes on the current devices.
+#[tauri::command]
+fn latency(engine: State<Engine>) -> Result<Latency, String> {
+    with_loaded(&engine, |l| {
+        Ok(engine.latency.get(&device_pair(&l.playback)))
+    })
+    .map_err(fail)
+}
+
+/// Sets the latency by hand (the ± nudge).
+#[tauri::command]
+fn set_latency(engine: State<Engine>, ms: f32) -> Result<Latency, String> {
+    with_loaded(&engine, |l| {
+        let latency = Latency {
+            ms: ms.clamp(0.0, cue::MAX_LATENCY_MS),
+            source: LatencySource::Manual,
+            devices: device_pair(&l.playback),
+        };
+        engine.latency.set(&latency)?;
+        Ok(latency)
+    })
+    .map_err(fail)
+}
+
+/// Loopback calibration: plays the chirp, records it, and stores the measured delay.
+#[tauri::command]
+async fn measure_latency(app: AppHandle) -> Result<Latency, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let (capture, devices) = with_loaded(&engine, |l| {
+            anyhow::ensure!(matches!(l.mic, Mic::Closed), "the microphone is busy");
+            let capture = Capture::start()?;
+            match l.playback.transport() {
+                Transport::Playing { .. } => l.playback.send(PlayerCommand::Pause)?,
+                Transport::CountIn { .. } | Transport::Probing { .. } => {
+                    l.playback.send(PlayerCommand::Stop)?
+                }
+                Transport::Stopped | Transport::Paused { .. } => {}
+            }
+            l.playback.clear_cues();
+            l.playback.send(PlayerCommand::Probe)?;
+            l.mic = Mic::Calibrating;
+            let devices = latency::devices(capture.device(), l.playback.device());
+            Ok((capture, devices))
+        })?;
+        let measured = (|| {
+            let started = Instant::now();
+            // Wait for the chirp to start and finish, then keep listening for its echo.
+            loop {
+                std::thread::sleep(POLL);
+                let done = with_loaded(&engine, |l| {
+                    Ok(!matches!(l.playback.transport(), Transport::Probing { .. }))
+                })?;
+                if done && started.elapsed() > POLL * 3 {
+                    break;
+                }
+                anyhow::ensure!(started.elapsed() < PROBE_TIMEOUT, "the chirp didn't play");
+            }
+            std::thread::sleep(Duration::from_secs_f64(PROBE_TAIL_SECONDS));
+            let cue = with_loaded(&engine, |l| {
+                l.playback
+                    .take_cue()
+                    .ok_or_else(|| anyhow::anyhow!("the chirp didn't play"))
+            })?;
+            let captured = capture.finish()?;
+            let at = capture::seconds_between(cue, captured.first);
+            let (ms, confidence) =
+                cue::measure_latency(&captured.samples, captured.sample_rate, at)?;
+            let latency = Latency {
+                ms,
+                source: LatencySource::Measured { confidence },
+                devices,
+            };
+            engine.latency.set(&latency)?;
+            Ok(latency)
+        })();
+        // The microphone is free again whatever happened.
+        let _ = with_loaded(&engine, |l| {
+            l.mic = Mic::Closed;
+            Ok(())
+        });
+        measured
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
 }
 
 fn main() {
@@ -320,6 +629,7 @@ fn main() {
                 model: Mutex::new(Model::NotLoaded),
                 pitch: Mutex::new(Pitch::find(&model_dirs)),
                 cache: StemCache::new(data.join("stems")),
+                latency: LatencyStore::new(data.join("latency.json")),
                 model_dirs,
                 #[cfg(feature = "youtube")]
                 downloads: data.join("downloads"),
@@ -334,6 +644,14 @@ fn main() {
             player,
             transport,
             score_take,
+            score_recorded,
+            start_recording,
+            capture_level,
+            finish_recording,
+            cancel_recording,
+            latency,
+            set_latency,
+            measure_latency,
             list_projects,
             open_project,
             save_project,

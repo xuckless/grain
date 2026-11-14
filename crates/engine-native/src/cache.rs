@@ -1,9 +1,13 @@
-//! Stem cache: one directory per `sha256(source file) + model id`, holding the stems as WAV
-//! and the analyzed `project.json` (AGENTS.md §4.2). A cached song is also its saved project.
+//! Stem cache: one directory per `sha256(source file) + model id`, holding the stems as WAV,
+//! the takes as `take-<id>.wav` (mono, on the song timeline) and the analyzed `project.json`
+//! (AGENTS.md §4.2). A cached song is also its saved project.
 
 use crate::decode;
 use anyhow::{Context, Result};
-use engine_core::project::{Project, ProjectSummary, SongAudio, TrackSource};
+use engine_core::audio::StereoAudio;
+use engine_core::project::{
+    measure_accompaniment, Accompaniment, Project, ProjectSummary, SongAudio, TrackSource,
+};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +18,8 @@ pub enum Lookup {
     Hit {
         project: Box<Project>,
         audio: SongAudio,
+        /// Timeline audio of each of `project.takes`, in order.
+        takes: Vec<Vec<f32>>,
     },
     Miss,
 }
@@ -45,7 +51,7 @@ impl StemCache {
         if !manifest.exists() {
             return Ok(Lookup::Miss);
         }
-        let project: Project = serde_json::from_str(&std::fs::read_to_string(&manifest)?)?;
+        let mut project: Project = serde_json::from_str(&std::fs::read_to_string(&manifest)?)?;
         let load = |source: &TrackSource| decode::decode(&dir.join(file_name(source)));
         let audio = match project.tracks.as_slice() {
             [only] if only.source == TrackSource::Mix => SongAudio::Unseparated {
@@ -61,10 +67,35 @@ impl StemCache {
                     .collect::<Result<_>>()?,
             },
         };
+        // Projects saved before accompaniment was measured get it now, from their stems.
+        if project.analysis.accompaniment == Accompaniment::Unmeasured {
+            project.analysis.accompaniment = measure_accompaniment(&audio);
+        }
+        let takes = project
+            .takes
+            .iter()
+            .map(|t| Ok(decode::decode(&dir.join(take_file(t.id)))?.left))
+            .collect::<Result<_>>()?;
         Ok(Lookup::Hit {
             project: Box::new(project),
             audio,
+            takes,
         })
+    }
+
+    /// Writes a take's timeline audio (mono, project rate). The take is part of the saved
+    /// project once `save_project` writes a manifest that lists it.
+    pub fn store_take(&self, key: &str, id: u32, timeline: &[f32], sample_rate: u32) -> Result<()> {
+        let dir = self.dir(key);
+        std::fs::create_dir_all(&dir)?;
+        decode::write_wav(
+            &dir.join(take_file(id)),
+            &StereoAudio {
+                sample_rate,
+                left: timeline.to_vec(),
+                right: timeline.to_vec(),
+            },
+        )
     }
 
     /// Writes stems first and the manifest last, so a partial entry is never a hit.
@@ -119,6 +150,10 @@ impl StemCache {
         )?;
         Ok(())
     }
+}
+
+fn take_file(id: u32) -> String {
+    format!("take-{id}.wav")
 }
 
 fn file_name(source: &TrackSource) -> String {

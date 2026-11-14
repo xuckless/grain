@@ -3,4 +3,4 @@
 /**
  * Transport states. Positions are in frames at the player's sample rate.
  */
-export type Transport = { "kind": "Stopped" } | { "kind": "Playing", frame: number, } | { "kind": "Paused", frame: number, };
+export type Transport = { "kind": "Stopped" } | { "kind": "Playing", frame: number, } | { "kind": "Paused", frame: number, } | { "kind": "CountIn", frame: number, remaining: number, } | { "kind": "Probing", remaining: number, };

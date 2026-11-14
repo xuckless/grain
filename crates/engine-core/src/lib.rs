@@ -5,6 +5,7 @@
 
 pub mod align;
 pub mod audio;
+pub mod cue;
 pub mod key;
 pub mod melody;
 pub mod note;
@@ -16,6 +17,7 @@ pub mod project;
 pub mod resample;
 pub mod score;
 pub mod stft;
+pub mod take;
 pub mod tempo;
 
 /// Sample rate of every analysis and separation step (AGENTS.md §4.1).

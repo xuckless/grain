@@ -7,7 +7,7 @@ use crate::onset;
 use crate::peaks::{peaks, SAMPLES_PER_PEAK};
 use crate::pitch::{self, PitchTrack};
 use crate::player::{MixParams, PlayerTrack};
-use crate::score::{self, ScoreReport, ScoreSettings};
+use crate::take::Take;
 use crate::tempo::{self, Tempo};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -81,6 +81,44 @@ impl TrackedPitch {
     }
 }
 
+/// Below this level (dB relative to the mix) the non-vocal stems count as silent: the song is
+/// a cappella, so an instrumental backing would leave a singer with nothing to hear.
+pub const ACCOMPANIMENT_ABSENT_DB: f32 = -30.0;
+
+/// How much the song carries besides the vocal, measured once from the stems at import (or at
+/// load for projects saved before it existed). It decides the default recording backing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export)]
+pub enum Accompaniment {
+    /// Saved before this was measured; the host measures it when it loads the stems.
+    #[default]
+    Unmeasured,
+    /// No separation: the vocal can't be taken out of the mix.
+    NoStems,
+    /// The non-vocal stems carry real energy, `relative_db` below the mix.
+    Present { relative_db: f32 },
+    /// The non-vocal stems are near-silent (more than 30 dB below the mix).
+    Absent { relative_db: f32 },
+}
+
+/// Measures [`Accompaniment`] from a song's stems.
+pub fn measure_accompaniment(audio: &SongAudio) -> Accompaniment {
+    let SongAudio::Separated { .. } = audio else {
+        return Accompaniment::NoStems;
+    };
+    let db = |x: &[f32]| {
+        let energy: f64 = x.iter().map(|v| f64::from(v * v)).sum();
+        (10.0 * (energy / x.len().max(1) as f64 + 1e-12).log10()) as f32
+    };
+    let relative_db = db(&mono_sum(audio, |s| s != Stem::Vocals)) - db(&mono_sum(audio, |_| true));
+    if relative_db < ACCOMPANIMENT_ABSENT_DB {
+        Accompaniment::Absent { relative_db }
+    } else {
+        Accompaniment::Present { relative_db }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Analysis {
@@ -92,6 +130,8 @@ pub struct Analysis {
     pub pitch_tracker: PitchTracker,
     pub reference_pitch: PitchTrack,
     pub reference_notes: Vec<Note>,
+    #[serde(default)]
+    pub accompaniment: Accompaniment,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -115,6 +155,9 @@ pub struct Project {
     pub samples_per_peak: u32,
     pub tracks: Vec<Track>,
     pub analysis: Analysis,
+    /// Sung takes, newest last (see [`crate::take`]).
+    #[serde(default)]
+    pub takes: Vec<Take>,
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
@@ -210,6 +253,7 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
             })
             .collect(),
         analysis: analyze(audio, reference),
+        takes: Vec::new(),
     }
 }
 
@@ -229,6 +273,7 @@ fn analyze(audio: &SongAudio, reference: TrackedPitch) -> Analysis {
         pitch_tracker: reference.tracker,
         reference_pitch: reference.track,
         reference_notes,
+        accompaniment: measure_accompaniment(audio),
     }
 }
 
@@ -262,31 +307,6 @@ pub enum ScoreError {
         reference: PitchTracker,
         take: PitchTracker,
     },
-}
-
-/// Scores a sung take against the reference vocal (AGENTS.md §5). The host tracks the take with
-/// the project's [`Analysis::pitch_tracker`].
-pub fn score_take(
-    project: &Project,
-    take: &TrackedPitch,
-    settings: ScoreSettings,
-) -> Result<ScoreReport, ScoreError> {
-    let reference_tracker = project.analysis.pitch_tracker;
-    if take.tracker != reference_tracker {
-        return Err(ScoreError::TrackerMismatch {
-            reference: reference_tracker,
-            take: take.tracker,
-        });
-    }
-    let reference = &project.analysis.reference_pitch;
-    let offset = score::estimate_offset(reference, &take.track);
-    Ok(score::score(
-        reference,
-        &project.analysis.reference_notes,
-        &take.track,
-        offset,
-        settings,
-    ))
 }
 
 /// Audio of each project track, in project track order.

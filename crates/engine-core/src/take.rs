@@ -1,0 +1,326 @@
+//! Sung takes (AGENTS.md §5): recorded in the app or imported from a file, placed on the song's
+//! timeline so frame `i` of a take lines up with frame `i` of the song, and kept with their pitch
+//! contour so they can be re-scored without their audio.
+
+use crate::pitch::{PitchFrame, PitchTrack};
+use crate::player::{MixParams, PlayerTrack, TrackMode};
+use crate::project::{PitchTracker, Project, ScoreError, TrackedPitch};
+use crate::resample::{resample, ResampleError};
+use crate::score::{self, ScoreReport, ScoreSettings};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use ts_rs::TS;
+
+/// Where a take came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export)]
+pub enum TakeSource {
+    /// Sung over the song in the app; `latency_ms` of round-trip delay was removed.
+    Recorded { latency_ms: f32 },
+    /// An audio file, lined up with the song by its pitch contour.
+    Imported { name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Take {
+    pub id: u32,
+    pub name: String,
+    pub source: TakeSource,
+    /// Song time (seconds) where the take starts.
+    pub start_seconds: f64,
+    /// The take's pitch on the song timeline, from the project's reference tracker.
+    pub pitch_tracker: PitchTracker,
+    pub pitch: PitchTrack,
+    /// Takes are muted in normal playback; A/B auditions solo them.
+    pub mix: MixParams,
+}
+
+/// A take just added to the loaded song: the updated project, the take's id and its score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TakeAdded {
+    pub project: Project,
+    pub take: u32,
+    pub report: ScoreReport,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TakeError {
+    #[error(transparent)]
+    Resample(#[from] ResampleError),
+    #[error("the take is silent")]
+    Silent,
+    #[error("no take {0}")]
+    Unknown(u32),
+    #[error(transparent)]
+    Score(#[from] ScoreError),
+}
+
+/// Peak below which a take counts as silent (about −60 dBFS).
+const SILENT_PEAK: f32 = 0.001;
+
+/// A microphone capture moved onto the song timeline at the project's rate. `song_zero_seconds`
+/// is the capture time (seconds from its first sample) at which song frame 0 would have been
+/// heard there: count-in start + count-in length + round-trip latency − the song position the
+/// recording started from. Returns mono audio of exactly `project.frames` samples.
+pub fn timeline_from_capture(
+    project: &Project,
+    capture: &[f32],
+    capture_rate: u32,
+    song_zero_seconds: f64,
+) -> Result<Vec<f32>, TakeError> {
+    if capture.iter().all(|v| v.abs() < SILENT_PEAK) {
+        return Err(TakeError::Silent);
+    }
+    let audio = resample(&[capture], capture_rate, project.sample_rate)?.remove(0);
+    // Song frame i sits at capture sample `song_zero + i`.
+    let song_zero = (song_zero_seconds * f64::from(project.sample_rate)).round() as i64;
+    Ok(shifted(&audio, -song_zero, project.frames as usize))
+}
+
+/// A take file (mono, at the project rate) lined up with the song by its pitch contour
+/// (`pitch`, tracked with the project's tracker). Returns the timeline audio and pitch.
+pub fn timeline_from_file(
+    project: &Project,
+    audio: &[f32],
+    pitch: &PitchTrack,
+) -> Result<(Vec<f32>, PitchTrack), TakeError> {
+    if audio.iter().all(|v| v.abs() < SILENT_PEAK) {
+        return Err(TakeError::Silent);
+    }
+    // Take time minus song time for the same musical moment.
+    let offset = score::estimate_offset(&project.analysis.reference_pitch, pitch);
+    let samples = (offset * f64::from(project.sample_rate)).round() as i64;
+    let frames = (offset / pitch.hop_seconds).round() as i64;
+    let reference_frames = project.analysis.reference_pitch.frames.len();
+    let pitch = PitchTrack {
+        hop_seconds: pitch.hop_seconds,
+        frames: (0..reference_frames as i64)
+            .map(|i| {
+                usize::try_from(i + frames)
+                    .ok()
+                    .and_then(|j| pitch.frames.get(j).copied())
+                    .unwrap_or(PitchFrame::Unvoiced)
+            })
+            .collect(),
+    };
+    Ok((shifted(audio, -samples, project.frames as usize), pitch))
+}
+
+/// `out[i] = audio[i - shift]`, zero outside, `len` samples.
+fn shifted(audio: &[f32], shift: i64, len: usize) -> Vec<f32> {
+    (0..len as i64)
+        .map(|i| {
+            usize::try_from(i - shift)
+                .ok()
+                .and_then(|j| audio.get(j).copied())
+                .unwrap_or(0.0)
+        })
+        .collect()
+}
+
+/// Song time (seconds) of the first audible sample of timeline audio.
+fn first_sound(timeline: &[f32], sample_rate: u32) -> f64 {
+    let first = timeline
+        .iter()
+        .position(|v| v.abs() >= SILENT_PEAK)
+        .unwrap_or(0);
+    first as f64 / f64::from(sample_rate)
+}
+
+/// Adds a take (timeline audio already tracked with the project's tracker) and returns its id.
+pub fn add_take(
+    project: &mut Project,
+    source: TakeSource,
+    timeline: &[f32],
+    pitch: TrackedPitch,
+) -> u32 {
+    let id = project.takes.iter().map(|t| t.id + 1).max().unwrap_or(1);
+    project.takes.push(Take {
+        id,
+        name: format!("Take {id}"),
+        source,
+        start_seconds: first_sound(timeline, project.sample_rate),
+        pitch_tracker: pitch.tracker,
+        pitch: pitch.track,
+        mix: MixParams {
+            mode: TrackMode::Muted,
+            ..MixParams::default()
+        },
+    });
+    id
+}
+
+/// Scores take `id` against the reference. Takes are already on the song timeline, so there is
+/// no offset search; DTW still absorbs drift (AGENTS.md §5).
+pub fn score_take(
+    project: &Project,
+    id: u32,
+    settings: ScoreSettings,
+) -> Result<ScoreReport, TakeError> {
+    let take = project
+        .takes
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or(TakeError::Unknown(id))?;
+    if take.pitch_tracker != project.analysis.pitch_tracker {
+        return Err(ScoreError::TrackerMismatch {
+            reference: project.analysis.pitch_tracker,
+            take: take.pitch_tracker,
+        }
+        .into());
+    }
+    Ok(score::score(
+        &project.analysis.reference_pitch,
+        &project.analysis.reference_notes,
+        &take.pitch,
+        0.0,
+        settings,
+    ))
+}
+
+/// Player track index of take `id`: takes follow the song's tracks, in project order.
+pub fn player_index(project: &Project, id: u32) -> Option<u32> {
+    let i = project.takes.iter().position(|t| t.id == id)?;
+    Some((project.tracks.len() + i) as u32)
+}
+
+/// A player track for a take's timeline audio (mono, both channels share it).
+pub fn player_track(take: &Take, timeline: Arc<[f32]>) -> PlayerTrack {
+    PlayerTrack {
+        left: timeline.clone(),
+        right: timeline,
+        mix: take.mix,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::StereoAudio;
+    use crate::pitch::tests::harmonic;
+    use crate::project::{self, SongAudio, SongSource};
+    use crate::score::{Difficulty, OctaveMode};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    const SR: u32 = 16_000;
+
+    /// A sung melody: four 0.5 s notes, then silence.
+    fn melody(seconds: f32) -> Vec<f32> {
+        let mut out = Vec::new();
+        for hz in [220.0, 247.0, 262.0, 294.0] {
+            out.extend(harmonic(hz, 0.5, SR));
+        }
+        out.resize((seconds * SR as f32) as usize, 0.0);
+        out
+    }
+
+    fn song() -> Project {
+        let vocal = melody(4.0);
+        let audio = SongAudio::Unseparated {
+            mix: StereoAudio {
+                sample_rate: SR,
+                left: vocal.clone(),
+                right: vocal.clone(),
+            },
+        };
+        project::build(
+            SongSource::File {
+                name: "song".into(),
+            },
+            &audio,
+            TrackedPitch::yin(&vocal, SR),
+        )
+    }
+
+    fn settings() -> ScoreSettings {
+        ScoreSettings {
+            difficulty: Difficulty::Medium,
+            octave: OctaveMode::Fold,
+        }
+    }
+
+    #[test]
+    fn a_capture_with_known_latency_lands_on_the_song_timeline() {
+        let mut project = song();
+        // The capture holds 1 s of count-in silence, then 130 ms of round-trip latency, then
+        // the singer, exactly on the beat of the song.
+        let lead = 1.0 + 0.130;
+        let mut capture = vec![0.0; (lead * SR as f64) as usize];
+        capture.extend(melody(3.0));
+        let timeline = timeline_from_capture(&project, &capture, SR, lead).unwrap();
+        assert_eq!(timeline.len(), project.frames as usize);
+        let id = add_take(
+            &mut project,
+            TakeSource::Recorded { latency_ms: 130.0 },
+            &timeline,
+            TrackedPitch::yin(&timeline, SR),
+        );
+        let report = score_take(&project, id, settings()).unwrap();
+        assert!(report.scores.pitch > 95.0, "pitch {}", report.scores.pitch);
+        assert!(
+            report.timing_deviation.mean_abs_ms < 15.0,
+            "{:?}",
+            report.timing_deviation
+        );
+        assert!(project.takes[0].start_seconds < 0.05);
+
+        // Ignoring the latency leaves the take 130 ms late: compensation is what lines it up.
+        let late = timeline_from_capture(&project, &capture, SR, 1.0).unwrap();
+        let id = add_take(
+            &mut project,
+            TakeSource::Recorded { latency_ms: 0.0 },
+            &late,
+            TrackedPitch::yin(&late, SR),
+        );
+        let report = score_take(&project, id, settings()).unwrap();
+        assert!(
+            report.timing_deviation.mean_ms > 100.0,
+            "{:?}",
+            report.timing_deviation
+        );
+        assert_eq!(
+            player_index(&project, id),
+            Some(project.tracks.len() as u32 + 1)
+        );
+    }
+
+    #[test]
+    fn a_take_file_is_lined_up_by_pitch() {
+        let mut project = song();
+        let mut file = vec![0.0; (0.8 * SR as f32) as usize];
+        file.extend(melody(3.0));
+        let pitch = TrackedPitch::yin(&file, SR);
+        let (timeline, placed) = timeline_from_file(&project, &file, &pitch.track).unwrap();
+        let id = add_take(
+            &mut project,
+            TakeSource::Imported {
+                name: "take.wav".into(),
+            },
+            &timeline,
+            TrackedPitch {
+                tracker: pitch.tracker,
+                track: placed,
+            },
+        );
+        let report = score_take(&project, id, settings()).unwrap();
+        assert!(report.scores.pitch > 95.0, "pitch {}", report.scores.pitch);
+        assert!(timeline[..SR as usize / 10].iter().any(|v| v.abs() > 0.01));
+    }
+
+    #[test]
+    fn silence_and_unknown_takes_are_rejected() {
+        let project = song();
+        assert!(matches!(
+            timeline_from_capture(&project, &[0.0; 1000], SR, 0.0),
+            Err(TakeError::Silent)
+        ));
+        assert!(matches!(
+            score_take(&project, 7, settings()),
+            Err(TakeError::Unknown(7))
+        ));
+    }
+}
