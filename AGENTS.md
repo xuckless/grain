@@ -2,7 +2,7 @@
 
 Guidance for humans and coding agents working in this repository.
 
-> **Status:** planning. The only code today is `main.py`, a PyQt5 prototype that compares two recordings by running YIN pitch detection on 1-second frames. Treat it as a reference for what the product should do, not as the base to build on. Project-level decisions are recorded in [§0](#0-decisions-locked). Anything still marked **(proposed)** is a default that applies until the owner decides otherwise.
+> **Status:** M0 and most of M1 are built (see README.md for running it). Remaining M1 gaps are listed under §11. The original PyQt5 prototype is kept in `prototype/` as a reference. Project-level decisions are recorded in [§0](#0-decisions-locked). Anything still marked **(proposed)** is a default that applies until the owner decides otherwise.
 
 ---
 
@@ -325,6 +325,14 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
    - Svelte multitrack timeline: waveforms, mute, solo, gain, pan, transport, and a hidden reference-vocal MIDI track.
    - Record or import a take, then alignment, offline scoring and the score graph from §5.
    - Project save and load: files on desktop, OPFS plus archive export on the web.
+   - **Still open in M1:**
+     - Reference and take pitch use YIN, not RMVPE. Both sides use the same estimator, as §5 requires.
+     - Takes are aligned by a single offset, with no DTW.
+     - Takes can be imported but not recorded in the app.
+     - No web project persistence (OPFS/archive).
+     - No A/B take playback.
+     - `yt-dlp`/`ffmpeg` are found on `PATH` instead of being bundled as sidecars.
+     - No CI workflow yet.
 3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
 4. **M3, F4:** live PSOLA auto-tune, then the offline high-quality shifter.
 5. **M4, quality:** RoFormer vocal cascade, basic-pitch MIDI layers, and a model manager with opt-in NC downloads.
