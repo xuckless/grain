@@ -54,7 +54,9 @@
   } = $props();
 
   const { burst, toast } = services();
-  const mic = $derived(host.microphone);
+  // The host is fixed for the app's lifetime.
+  // svelte-ignore state_referenced_locally
+  const mic = host.microphone;
 
   let difficulty = $state<Difficulty>("Medium");
   let octave = $state<OctaveMode>("Fold");
@@ -289,7 +291,8 @@
 
   // ---- Takes ----------------------------------------------------------------------------------
 
-  const takes = $derived(project.takes.map((t) => ({ id: String(t.id), label: t.name })));
+  /** "" until a take is picked (a reopened song shows no score yet). */
+  const takes = $derived([...(score.kind === "scored" ? [] : [{ id: "", label: "Pick a take" }]), ...project.takes.map((t) => ({ id: String(t.id), label: t.name }))]);
   const shown = $derived(score.kind === "scored" ? String(score.take) : "");
 
   let overall = $state<HTMLElement | undefined>();
@@ -309,8 +312,8 @@
   <div class="controls">
     <Menu label="Difficulty" value={difficulty} options={difficulties} onPick={(d) => setSettings(() => (difficulty = d))} />
     <Toggle checked={octave === "Fold"} label="Octave folding" onToggle={(on) => setSettings(() => (octave = on ? "Fold" : "Strict"))} />
-    {#if takes.length > 0}
-      <Menu label="Take" value={shown} options={takes} onPick={(id) => !busy && void rescore(Number(id))} />
+    {#if project.takes.length > 0}
+      <Menu label="Take" value={shown} options={takes} onPick={(id) => id !== "" && !busy && void rescore(Number(id))} />
     {/if}
     <span class="spacer"></span>
     <button class="press raised big" onclick={importTake} disabled={busy || notes.length === 0}>Import take…</button>

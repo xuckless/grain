@@ -8,6 +8,8 @@ import type {
   Microphone,
   PlayerCommand,
   Project,
+  ProjectStore,
+  ProjectSummary,
   ScoreOutcome,
   ScoreReport,
   ScoreSettings,
@@ -17,8 +19,9 @@ import type {
   Transport,
   TransportSnapshot,
 } from "@workstation/engine-api";
-import init, { countIn, measureLatency, WasmSeparator, WasmSong } from "engine-wasm";
+import init, { countIn, measureLatency, projectSummary, WasmSeparator, WasmSong } from "engine-wasm";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
+import * as store from "./store";
 import wasmUrl from "engine-wasm/engine_wasm_bg.wasm?url";
 import workletUrl from "./player-worklet.ts?worker&url";
 import type { FromWorklet, ToWorklet, TrackData } from "./worklet-protocol";
@@ -31,7 +34,8 @@ type Separation =
   | { kind: "available"; spec: string; run: (mix: Float32Array, mag: Float32Array) => Promise<[Float32Array, Float32Array]> }
   | { kind: "unavailable" };
 
-type Session = { kind: "empty" } | { kind: "loaded"; song: WasmSong };
+/** `id`: the song's OPFS project, once saved or opened. */
+type Session = { kind: "empty" } | { kind: "loaded"; song: WasmSong; id: string | null };
 
 /** An open microphone feeding the player worklet's input. */
 type OpenMic = { stream: MediaStream; source: MediaStreamAudioSourceNode; ring: Ring; buffer: SharedArrayBuffer };
@@ -98,15 +102,22 @@ export async function createWebHost(): Promise<EngineHost> {
   let session: Session = { kind: "empty" };
   let separation: Promise<Separation> | undefined;
 
-  function load(song: WasmSong): Project {
+  /** Makes `song` the loaded song: its tracks, then its takes, go to the player. */
+  function load(song: WasmSong, id: string | null = null): Project {
     const project = song.project() as Project;
-    const tracks: TrackData[] = project.tracks.map((t, i) => {
-      const [left, right] = song.trackAudio(i) as [Float32Array, Float32Array];
-      return { left, right, mix: t.mix };
-    });
+    const tracks: TrackData[] = [
+      ...project.tracks.map((t, i) => {
+        const [left, right] = song.trackAudio(i) as [Float32Array, Float32Array];
+        return { left, right, mix: t.mix };
+      }),
+      ...project.takes.map((t) => {
+        const left = song.takeAudio(t.id);
+        return { left, right: new Float32Array(left), mix: t.mix };
+      }),
+    ];
     post({ kind: "load", tracks }, tracks.flatMap((t) => [t.left.buffer, t.right.buffer]));
     if (session.kind === "loaded") session.song.free();
-    session = { kind: "loaded", song };
+    session = { kind: "loaded", song, id };
     return project;
   }
 
@@ -189,6 +200,44 @@ export async function createWebHost(): Promise<EngineHost> {
     post({ kind: "addTrack", track: { left: audio, right, mix: take.mix } }, [audio.buffer, right.buffer]);
     return added;
   }
+
+  const opfs = await store.openOpfs();
+  const projects: ProjectStore =
+    opfs.kind === "unavailable"
+      ? opfs
+      : {
+          kind: "available",
+          list: () => store.list(opfs.dir, (project, id, savedMs) => projectSummary(project, id, savedMs) as ProjectSummary),
+          async open(id) {
+            return load(await store.load(opfs.dir, id), id);
+          },
+          async save() {
+            if (session.kind !== "loaded") throw new Error("Load a song first.");
+            session.id ??= crypto.randomUUID();
+            await store.save(opfs.dir, session.id, session.song);
+          },
+          archive: {
+            kind: "available",
+            async exportSong() {
+              const song = loadedSong();
+              const project = song.project() as Project;
+              const name = project.song.kind === "File" ? project.song.name.replace(/\.[^.]+$/, "") : "song";
+              const url = URL.createObjectURL(store.archive(song));
+              const a = Object.assign(document.createElement("a"), { href: url, download: `${name}.grain` });
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 60_000);
+            },
+            async importArchive() {
+              const file = await pickFile(".grain");
+              if (!file) return { kind: "cancelled" };
+              void context.resume();
+              const id = crypto.randomUUID();
+              const song = await store.unarchive(file);
+              await store.save(opfs.dir, id, song);
+              return { kind: "imported", project: load(song, id) };
+            },
+          },
+        };
 
   const microphone: Microphone =
     !crossOriginIsolated || !navigator.mediaDevices?.getUserMedia
@@ -319,7 +368,7 @@ export async function createWebHost(): Promise<EngineHost> {
 
   return {
     chrome: { kind: "plain" },
-    projects: { kind: "unavailable", reason: "Saving and recent songs need the desktop app for now." },
+    projects,
     async close() {
       if (microphone.kind === "available") await microphone.cancel();
       post({ kind: "unload" });
@@ -336,6 +385,8 @@ export async function createWebHost(): Promise<EngineHost> {
     microphone,
     async send(command) {
       await context.resume();
+      // Mix settings are part of the project; a save keeps them (as on desktop).
+      if (command.kind === "SetMix" && session.kind === "loaded") session.song.setMix(command.track, command.params);
       post({ kind: "command", command });
     },
     async transport() {

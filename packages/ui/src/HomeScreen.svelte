@@ -14,6 +14,7 @@
     onImportFile,
     onImportUrl,
     onOpen,
+    onImportArchive,
     onResume,
     onDismiss,
   }: {
@@ -23,6 +24,7 @@
     onImportFile: (quality: SeparationQuality) => void;
     onImportUrl: (url: string, quality: SeparationQuality) => void;
     onOpen: (id: string) => void;
+    onImportArchive: () => void;
     onResume: () => void;
     onDismiss: () => void;
   } = $props();
@@ -106,6 +108,9 @@
               {#if job.kind === "idle"}
                 <div class="actions">
                   <button class="press primary big" onclick={() => onImportFile(quality)}>Open song…</button>
+                  {#if host.projects.kind === "available" && host.projects.archive.kind === "available"}
+                    <button class="press raised big" onclick={onImportArchive}>Open project file…</button>
+                  {/if}
                   {#if host.urlImport.kind === "available"}
                     <form
                       class="link"

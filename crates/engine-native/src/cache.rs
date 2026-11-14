@@ -5,9 +5,7 @@
 use crate::decode;
 use anyhow::{Context, Result};
 use engine_core::audio::StereoAudio;
-use engine_core::project::{
-    measure_accompaniment, Accompaniment, Project, ProjectSummary, SongAudio, TrackSource,
-};
+use engine_core::project::{self, Project, ProjectSummary, SongAudio, TrackSource};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -52,25 +50,12 @@ impl StemCache {
             return Ok(Lookup::Miss);
         }
         let mut project: Project = serde_json::from_str(&std::fs::read_to_string(&manifest)?)?;
-        let load = |source: &TrackSource| decode::decode(&dir.join(file_name(source)));
-        let audio = match project.tracks.as_slice() {
-            [only] if only.source == TrackSource::Mix => SongAudio::Unseparated {
-                mix: load(&only.source)?,
-            },
-            tracks => SongAudio::Separated {
-                stems: tracks
-                    .iter()
-                    .map(|t| match t.source {
-                        TrackSource::Stem { stem } => Ok((stem, load(&t.source)?)),
-                        TrackSource::Mix => anyhow::bail!("mix track inside a separated project"),
-                    })
-                    .collect::<Result<_>>()?,
-            },
-        };
-        // Projects saved before accompaniment was measured get it now, from their stems.
-        if project.analysis.accompaniment == Accompaniment::Unmeasured {
-            project.analysis.accompaniment = measure_accompaniment(&audio);
-        }
+        let tracks = project
+            .tracks
+            .iter()
+            .map(|t| decode::decode(&dir.join(file_name(&t.source))))
+            .collect::<Result<_>>()?;
+        let audio = project::restore_audio(&mut project, tracks)?;
         let takes = project
             .takes
             .iter()

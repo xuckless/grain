@@ -115,6 +115,10 @@
       {#if key}<span class="mono muted">{key.label}</span>{/if}
     {/snippet}
     {#snippet right()}
+      {#if host.projects.kind === "available" && host.projects.archive.kind === "available"}
+        {@const archive = host.projects.archive}
+        <button class="press quiet save" title="Download this song, its stems and takes as one .grain file" onclick={() => archive.exportSong()}>Export</button>
+      {/if}
       <button
         class="press save"
         class:primary={session.save.kind !== "clean" && canSave}

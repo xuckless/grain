@@ -150,6 +150,7 @@
           onImportFile={(quality) => runImport((s) => host.importFile(quality, s))}
           onImportUrl={importUrl}
           onOpen={openProject}
+          onImportArchive={() => host.projects.kind === "available" && host.projects.archive.kind === "available" && runImport(host.projects.archive.importArchive)}
           onResume={() => app.kind === "home" && app.resume.kind === "available" && enterSession(app.resume.session)}
           onDismiss={() => app.kind === "home" && (app = { ...app, job: { kind: "idle" } })}
         />

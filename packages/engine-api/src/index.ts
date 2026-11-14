@@ -72,15 +72,27 @@ export type WindowChrome =
   | { kind: "overlay"; insetLeft: number; startDrag(): void; toggleMaximize(): void }
   | { kind: "plain" };
 
-/** Saved projects (desktop: the stem cache). */
+/** One-file project archives (web: export the loaded song, or open an exported one). */
+export type ProjectArchive =
+  | {
+      kind: "available";
+      /** Downloads the loaded song as a `.grain` file. */
+      exportSong(): Promise<void>;
+      /** Picks a `.grain` file, stores it and makes it the loaded song. */
+      importArchive(): Promise<ImportOutcome>;
+    }
+  | { kind: "unavailable" };
+
+/** Saved projects (desktop: the stem cache; web: OPFS). */
 export type ProjectStore =
   | {
       kind: "available";
       list(): Promise<ProjectSummary[]>;
       /** Opens a saved project and makes it the loaded song. */
       open(id: string): Promise<Project>;
-      /** Saves the loaded song's mix settings. */
+      /** Saves the loaded song: mix settings and takes. */
       save(): Promise<void>;
+      archive: ProjectArchive;
     }
   | { kind: "unavailable"; reason: string };
 

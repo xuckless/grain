@@ -58,6 +58,8 @@ export async function createDesktopHost(): Promise<EngineHost> {
       list: () => invoke<ProjectSummary[]>("list_projects"),
       open: (id) => invoke<Project>("open_project", { id }),
       save: () => invoke("save_project"),
+      // The stem cache is the desktop's project store; archives are a web feature for now.
+      archive: { kind: "unavailable" },
     },
     close: () => invoke("close_session"),
     urlImport:

@@ -5,7 +5,8 @@
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
 use engine_core::player::{PlayerCommand, Transport, TransportSnapshot};
 use engine_core::project::{
-    ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource, TrackedPitch,
+    self, ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource,
+    TrackedPitch,
 };
 use engine_core::score::{ScoreReport, ScoreSettings};
 use engine_core::take::{self, TakeAdded, TakeSource};
@@ -331,18 +332,8 @@ fn player(engine: State<Engine>, command: PlayerCommand) -> Result<(), String> {
     with_loaded(&engine, |l| {
         l.playback.send(command)?;
         if let PlayerCommand::SetMix { track, params } = command {
-            // Mix settings are part of the project; `save_project` persists them. Players
-            // list the song's tracks first, then its takes.
-            let songs = l.project.tracks.len();
-            let i = track as usize;
-            if let Some(t) = l.project.tracks.get_mut(i) {
-                t.mix = params;
-            } else if let Some(t) = i
-                .checked_sub(songs)
-                .and_then(|j| l.project.takes.get_mut(j))
-            {
-                t.mix = params;
-            }
+            // Mix settings are part of the project; `save_project` persists them.
+            project::set_mix(&mut l.project, track, params);
         }
         Ok(())
     })

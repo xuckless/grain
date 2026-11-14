@@ -39,8 +39,8 @@ fn js_err(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
 }
 
-/// An imported song: its audio, the analyzed project, and the timeline audio of each take
-/// (kept in memory; the web has no project storage yet).
+/// An imported or reopened song: its audio, the analyzed project, and the timeline audio of each
+/// take. The web host saves all three to OPFS (AGENTS.md §12).
 #[wasm_bindgen]
 pub struct WasmSong {
     project: Project,
@@ -114,6 +114,13 @@ impl WasmSong {
         Ok(out)
     }
 
+    /// Stores a player track's mix (song tracks, then takes) so a save keeps it.
+    #[wasm_bindgen(js_name = setMix)]
+    pub fn set_mix(&mut self, player_track: u32, params: JsValue) -> Result<(), JsError> {
+        project::set_mix(&mut self.project, player_track, from_js(params)?);
+        Ok(())
+    }
+
     /// Adds a take file (same sample rate as the song), lined up by pitch, and scores it.
     /// Returns a `TakeAdded`.
     #[wasm_bindgen(js_name = addFileTake)]
@@ -179,6 +186,59 @@ impl WasmSong {
             .ok_or_else(|| JsError::new("no such take"))?;
         Ok(js_sys::Float32Array::from(self.takes[i].as_slice()))
     }
+}
+
+/// Reopens a saved project one channel at a time (so JS never holds the whole song twice):
+/// push each project track's left and right channel, then each take's timeline audio, in
+/// project order, then `finish`.
+#[wasm_bindgen]
+pub struct SongRestorer {
+    project: Project,
+    tracks: Vec<StereoAudio>,
+    takes: Vec<Vec<f32>>,
+}
+
+#[wasm_bindgen]
+impl SongRestorer {
+    #[wasm_bindgen(constructor)]
+    pub fn new(project: JsValue) -> Result<SongRestorer, JsError> {
+        Ok(SongRestorer {
+            project: from_js(project)?,
+            tracks: Vec::new(),
+            takes: Vec::new(),
+        })
+    }
+
+    #[wasm_bindgen(js_name = pushTrack)]
+    pub fn push_track(&mut self, left: Vec<f32>, right: Vec<f32>) -> Result<(), JsError> {
+        self.tracks
+            .push(stereo(left, right, self.project.sample_rate)?);
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = pushTake)]
+    pub fn push_take(&mut self, audio: Vec<f32>) {
+        self.takes.push(audio);
+    }
+
+    pub fn finish(mut self) -> Result<WasmSong, JsError> {
+        if self.takes.len() != self.project.takes.len() {
+            return Err(JsError::new("the saved takes don't match the project"));
+        }
+        let audio = project::restore_audio(&mut self.project, self.tracks).map_err(js_err)?;
+        Ok(WasmSong {
+            project: self.project,
+            audio,
+            takes: self.takes,
+        })
+    }
+}
+
+/// A saved project's entry in the recent list.
+#[wasm_bindgen(js_name = projectSummary)]
+pub fn project_summary(project: JsValue, id: String, saved_ms: f64) -> Result<JsValue, JsError> {
+    let project: Project = from_js(project)?;
+    to_js(&project::ProjectSummary::new(id, &project, saved_ms))
 }
 
 /// The count-in `PlayerCommand` for a song at `bpm` played at `sample_rate`.

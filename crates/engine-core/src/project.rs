@@ -309,6 +309,60 @@ pub enum ScoreError {
     },
 }
 
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum RestoreError {
+    #[error("the project has {expected} tracks but {found} were stored")]
+    TrackCount { expected: usize, found: usize },
+    #[error("a mix track inside a separated project")]
+    MixInSeparated,
+}
+
+/// Rebuilds a saved project's song audio from its stored tracks (in project track order), and
+/// measures the accompaniment of projects saved before it existed.
+pub fn restore_audio(
+    project: &mut Project,
+    tracks: Vec<StereoAudio>,
+) -> Result<SongAudio, RestoreError> {
+    if tracks.len() != project.tracks.len() {
+        return Err(RestoreError::TrackCount {
+            expected: project.tracks.len(),
+            found: tracks.len(),
+        });
+    }
+    let audio = match project.tracks.as_slice() {
+        [only] if only.source == TrackSource::Mix => SongAudio::Unseparated {
+            mix: tracks.into_iter().next().expect("one track"),
+        },
+        _ => SongAudio::Separated {
+            stems: project
+                .tracks
+                .iter()
+                .zip(tracks)
+                .map(|(t, a)| match t.source {
+                    TrackSource::Stem { stem } => Ok((stem, a)),
+                    TrackSource::Mix => Err(RestoreError::MixInSeparated),
+                })
+                .collect::<Result<_, _>>()?,
+        },
+    };
+    if project.analysis.accompaniment == Accompaniment::Unmeasured {
+        project.analysis.accompaniment = measure_accompaniment(&audio);
+    }
+    Ok(audio)
+}
+
+/// Stores a player track's mix in the project. Player tracks are the song's tracks, then its
+/// takes (see [`crate::take::player_index`]); unknown indices are ignored.
+pub fn set_mix(project: &mut Project, player_track: u32, params: MixParams) {
+    let i = player_track as usize;
+    let songs = project.tracks.len();
+    if let Some(t) = project.tracks.get_mut(i) {
+        t.mix = params;
+    } else if let Some(t) = i.checked_sub(songs).and_then(|j| project.takes.get_mut(j)) {
+        t.mix = params;
+    }
+}
+
 /// Audio of each project track, in project track order.
 pub fn track_audio(audio: &SongAudio) -> Vec<&StereoAudio> {
     match audio {
@@ -329,4 +383,79 @@ pub fn player_tracks(project: &Project, audio: &SongAudio) -> Vec<PlayerTrack> {
             mix: t.mix,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    fn stereo(level: f32, frames: usize) -> StereoAudio {
+        let signal: Vec<f32> = (0..frames)
+            .map(|i| level * (i as f32 * 0.05).sin())
+            .collect();
+        StereoAudio {
+            sample_rate: 8000,
+            left: signal.clone(),
+            right: signal,
+        }
+    }
+
+    fn separated(other: f32) -> SongAudio {
+        SongAudio::Separated {
+            stems: vec![
+                (Stem::Vocals, stereo(0.5, 8000)),
+                (Stem::Other, stereo(other, 8000)),
+            ],
+        }
+    }
+
+    #[test]
+    fn accompaniment_is_absent_below_minus_30_db() {
+        assert!(matches!(
+            measure_accompaniment(&separated(0.3)),
+            Accompaniment::Present { .. }
+        ));
+        assert!(
+            matches!(measure_accompaniment(&separated(0.005)), Accompaniment::Absent { relative_db } if relative_db < -30.0)
+        );
+        let mix = SongAudio::Unseparated {
+            mix: stereo(0.5, 8000),
+        };
+        assert_eq!(measure_accompaniment(&mix), Accompaniment::NoStems);
+    }
+
+    #[test]
+    fn a_saved_project_restores_its_audio_and_mixes() {
+        let audio = separated(0.005);
+        let mut project = build(
+            SongSource::File { name: "s".into() },
+            &audio,
+            TrackedPitch::yin(&reference_signal(&audio), 8000),
+        );
+        project.analysis.accompaniment = Accompaniment::Unmeasured;
+        let tracks = track_audio(&audio).into_iter().cloned().collect();
+        let restored = restore_audio(&mut project, tracks).unwrap();
+        assert_eq!(track_audio(&restored).len(), 2);
+        assert!(matches!(
+            project.analysis.accompaniment,
+            Accompaniment::Absent { .. }
+        ));
+        assert!(matches!(
+            restore_audio(&mut project, vec![]),
+            Err(RestoreError::TrackCount {
+                expected: 2,
+                found: 0
+            })
+        ));
+
+        let muted = MixParams {
+            mode: crate::player::TrackMode::Muted,
+            ..MixParams::default()
+        };
+        set_mix(&mut project, 1, muted);
+        assert_eq!(project.tracks[1].mix, muted);
+        set_mix(&mut project, 9, MixParams::default()); // no such track: ignored
+    }
 }
