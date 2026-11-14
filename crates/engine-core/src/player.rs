@@ -4,6 +4,7 @@
 //! starts a recording and the calibration chirp ([`crate::cue`]). It also mixes in the
 //! singer's own voice when monitoring is on, dry or through live auto-tune ([`LiveTune`]).
 
+use crate::chain::{ChainSettings, VocalChain};
 use crate::cue;
 use crate::melody::Note;
 use crate::psola::LiveTune;
@@ -100,6 +101,10 @@ pub enum PlayerCommand {
     Tune {
         settings: TuneSettings,
     },
+    /// The live vocal chain on the monitored voice (after auto-tune), or none.
+    Chain {
+        settings: Option<ChainSettings>,
+    },
 }
 
 /// What the singer hears of their own voice, mixed over the song (headphones only: speakers
@@ -177,6 +182,10 @@ pub struct Player {
     tune: LiveTune,
     /// The tuned voice of the current block.
     voice: Vec<f32>,
+    /// The live vocal chain, when on ([`PlayerCommand::Chain`]), and its block buffer.
+    chain: VocalChain,
+    chain_on: bool,
+    chained: Vec<f32>,
     /// The reference melody (follow-melody auto-tune), sorted by start.
     reference: Vec<Note>,
 }
@@ -201,6 +210,9 @@ impl Player {
             monitor: MonitorMode::Off,
             tune: LiveTune::new(sample_rate, TuneSettings::default(), MONITOR_BLOCK),
             voice: vec![0.0; MONITOR_BLOCK],
+            chain: VocalChain::new(sample_rate),
+            chain_on: false,
+            chained: vec![0.0; MONITOR_BLOCK],
             reference,
         }
     }
@@ -280,6 +292,17 @@ impl Player {
             }
             (state, C::Tune { settings }) => {
                 self.tune.set_settings(settings);
+                state
+            }
+            (state, C::Chain { settings }) => {
+                if let Some(s) = settings {
+                    // Switching on starts from silence (no stale reverb tail).
+                    if !self.chain_on {
+                        self.chain.reset();
+                    }
+                    self.chain.set(s);
+                }
+                self.chain_on = settings.is_some();
                 state
             }
             (state, C::SetMix { track, params }) => {
@@ -375,10 +398,15 @@ impl Player {
             let k = (input.len() - done).min(MONITOR_BLOCK);
             let block = &input[done..done + k];
             self.tune.process(block, &mut self.voice[..k], melody);
-            let heard = match self.monitor {
+            let mut heard = match self.monitor {
                 MonitorMode::Tuned => &self.voice[..k],
                 MonitorMode::Dry | MonitorMode::Off => block,
             };
+            if self.chain_on {
+                self.chained[..k].copy_from_slice(heard);
+                self.chain.process(&mut self.chained[..k]);
+                heard = &self.chained[..k];
+            }
             for (i, v) in heard.iter().enumerate() {
                 left[done + i] += v;
                 right[done + i] += v;
@@ -578,6 +606,31 @@ mod tests {
             p.add_track(constant(0.0, 64)).unwrap();
         }
         assert!(p.add_track(constant(0.0, 64)).is_err());
+    }
+
+    #[test]
+    fn the_live_chain_shapes_the_monitored_voice() {
+        let sr = 44_100;
+        let mut p = Player::new(vec![constant(0.0, 100_000)], sr, Vec::new());
+        p.apply(PlayerCommand::Monitor {
+            mode: MonitorMode::Dry,
+        })
+        .unwrap();
+        let gain = ChainSettings {
+            output_db: -6.0206,
+            ..ChainSettings::OFF
+        };
+        p.apply(PlayerCommand::Chain {
+            settings: Some(gain),
+        })
+        .unwrap();
+        let voice = vec![0.5f32; 256];
+        let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+        p.render(&mut l, &mut r, &voice);
+        assert!(l.iter().chain(&r).all(|v| (*v - 0.25).abs() < 1e-4));
+        p.apply(PlayerCommand::Chain { settings: None }).unwrap();
+        p.render(&mut l, &mut r, &voice);
+        assert!(l.iter().all(|v| *v == 0.5), "off: dry again");
     }
 
     #[test]

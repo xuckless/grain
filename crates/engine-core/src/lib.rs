@@ -5,9 +5,12 @@
 
 pub mod align;
 pub mod audio;
+pub mod chain;
 pub mod cue;
 pub mod drums;
 pub mod edit;
+pub mod generate;
+pub mod harmony;
 pub mod key;
 pub mod live;
 pub mod lyrics;

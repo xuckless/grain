@@ -238,7 +238,7 @@ pub fn source_track(project: &Project, source: EditSource) -> Result<&PitchTrack
 }
 
 /// The song's key (snapping and segmentation), or C major when the analysis found none.
-fn song_key(project: &Project) -> Key {
+pub fn song_key(project: &Project) -> Key {
     project.analysis.keys.first().map_or(
         Key {
             tonic: 0,

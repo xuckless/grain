@@ -35,12 +35,17 @@ pub struct Key {
 }
 
 impl Key {
+    /// The scale's seven degrees, semitones above the tonic.
+    pub fn degrees(&self) -> [u8; 7] {
+        match self.mode {
+            Mode::Major => MAJOR_SCALE,
+            Mode::Minor => MINOR_SCALE,
+        }
+    }
+
     pub fn contains(&self, pitch_class: u8) -> bool {
-        let scale = match self.mode {
-            Mode::Major => &MAJOR_SCALE,
-            Mode::Minor => &MINOR_SCALE,
-        };
-        scale.contains(&((pitch_class + 12 - self.tonic) % 12))
+        self.degrees()
+            .contains(&((pitch_class + 12 - self.tonic) % 12))
     }
 }
 

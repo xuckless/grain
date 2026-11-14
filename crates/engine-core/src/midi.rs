@@ -82,19 +82,24 @@ const DRUM_CHANNEL: u8 = 9;
 
 /// A type-0 Standard MIDI File of `t` at `bpm` (drums on the GM drum channel).
 pub fn smf(t: &Transcription, bpm: f64) -> Vec<u8> {
+    let channel = match t.method {
+        TranscriptionMethod::DrumClassifier => DRUM_CHANNEL,
+        TranscriptionMethod::BasicPitch => 0,
+    };
+    smf_notes(&t.notes, channel, bpm)
+}
+
+/// A type-0 Standard MIDI File of `notes` on `channel` (zero-based) at `bpm`.
+pub fn smf_notes(notes: &[MidiNote], channel: u8, bpm: f64) -> Vec<u8> {
     let bpm = if bpm.is_finite() && bpm > 0.0 {
         bpm
     } else {
         120.0
     };
-    let channel = match t.method {
-        TranscriptionMethod::DrumClassifier => DRUM_CHANNEL,
-        TranscriptionMethod::BasicPitch => 0,
-    };
     let ticks = |s: f64| (s.max(0.0) * bpm / 60.0 * f64::from(PPQ)).round() as u32;
     // (tick, order, bytes): note-offs sort before note-ons at the same tick.
-    let mut events: Vec<(u32, u8, [u8; 3])> = Vec::with_capacity(t.notes.len() * 2);
-    for n in &t.notes {
+    let mut events: Vec<(u32, u8, [u8; 3])> = Vec::with_capacity(notes.len() * 2);
+    for n in notes {
         let (on, off) = (ticks(n.start), ticks(n.end).max(ticks(n.start) + 1));
         let key = n.pitch.min(127);
         events.push((on, 1, [0x90 | channel, key, n.velocity.clamp(1, 127)]));
