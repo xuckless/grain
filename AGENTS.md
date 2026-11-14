@@ -180,7 +180,7 @@ docs/research/     # longer notes, benchmarks, model evaluations
 1. **Pre-process the user's take.** High-pass at 70 Hz and normalize loudness. If the take was recorded over speakers, the backing track bleeds into the mic; run a vocal-isolation pass on the take, or warn the user.
 2. **Pitch track** with the same estimator as the reference (RMVPE), 10 ms hop. Never compare outputs from different estimators.
 3. **Alignment:**
-   - Recorded in the app against the backing track: the offset is known from the round-trip latency measurement (§9), so align directly.
+   - Recorded in the app against the backing track: the offset is known from the round-trip latency measurement (§9), so align directly. (Implemented: takes are stored on the song timeline, so scoring uses offset 0 plus the DTW below.)
    - Imported take: cross-correlate onset envelopes for a coarse offset. Then run **DTW** on chroma or f0 features with a tight Sakoe-Chiba band to absorb tempo drift. Report timing deviation separately; do not let DTW hide it.
 4. **Per-frame metrics** (voiced frames in both tracks only):
    - Pitch error in cents: `1200·log2(f_user/f_ref)`. Optionally fold octaves (`mod 1200` into ±600) so a man singing a female part an octave down is not penalized. This is a user setting, on by default.
@@ -309,7 +309,8 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
 - **No allocation, locks, syscalls, logging or panics.** Preallocate everything. Use `rtrb` or SPSC rings for audio data and lock-free triple buffers for parameters and UI snapshots.
 - **No ML inference** on the audio thread. Inference runs on a worker thread, and results come back through rings.
 - Block sizes vary. AudioWorklet's render quantum is 128 frames; do not assume more. Desktop targets 128–256 frames.
-- **Latency calibration:** measure round-trip latency with a loopback chirp test when the user first records, and store it per device. Recordings are compensated automatically.
+- **Latency calibration:** measure round-trip latency with a loopback chirp test (the Score view's Calibrate), and store it per input/output device pair. Recordings are compensated automatically.
+- **Known exception (web):** the worklet's message handler copies a song's tracks, or a new take, into wasm memory when it arrives (`load`, `addTrack`). That allocates on the audio thread between render quanta, not inside `process()`. Desktop hands takes to the callback pre-built through a ring and keeps the audio alive on the control side.
 - Use `f32` everywhere in DSP. Keep the internal sample rate the same as the device rate; resample files on load with `rubato`, never in the callback.
 - **Web:** `SharedArrayBuffer` needs cross-origin isolation, so the web host must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
 
@@ -343,7 +344,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M0** engine skeleton | Cargo workspace, YIN, mixer, decode, CLI with prototype parity, wasm32 build | ✅ done |
 | **M1** F1 + timeline + F2 | Import (file + YouTube), HTDemucs, tempo/key, reference notes, timeline, offline scoring | ✅ mostly done (leftovers below) |
 | **UI** Grain design pass | Home → Session, blended title bar, view tabs, shared particle module, desktop save/open, recents | 🔄 in progress |
-| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | 🔄 DTW, RMVPE (desktop), CI file done; rest open (below) |
+| **M1 leftovers** | In-app recording, DTW alignment, RMVPE, A/B playback, web persistence, bundled sidecars, CI | 🔄 all done except bundled sidecars (planned below) |
 | **M4a** (moved up) | RoFormer vocal cascade (GPL-compatible checkpoint) for non-pop music | ✅ done (desktop, opt-in "Best vocals"; web is Fast-only) |
 | **M2** F3 live karaoke | LRCLIB lyrics, word alignment, live pitch lane, latency calibration | planned |
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | planned |
@@ -361,11 +362,17 @@ Keep this table current: update the Status column whenever a milestone moves.
    - Record or import a take, then alignment, offline scoring and the score graph from §5.
    - Project save and load: files on desktop, OPFS plus archive export on the web.
    - **Done since:** RMVPE pitch on desktop and CLI (`Analysis.pitch_tracker` keeps reference and take on one tracker; web stays on YIN, since the model is 361 MB). Banded DTW after the coarse offset, with timing deviation reported apart from pitch. A CI workflow file.
+   - **Done since (recording):**
+     - In-app takes on desktop (cpal input → `rtrb` ring → writer thread) and web (raw `getUserMedia` into the player worklet's input → `SharedArrayBuffer` ring), with the backing playing. The UI's Recording state machine (`packages/ui/src/takes.ts`): Idle → CountIn (one bar at the song's tempo, clicked by the player) → Recording → Stopping → Scored | Failed. Live input meter, Breath while listening, headphones hint.
+     - Alignment: the player reports when the count-in starts (desktop: cpal output timestamp vs the first input timestamp; web: the same render quantum), plus the count-in length and the stored latency. Takes live on the song timeline (`engine-core::take`), so scoring skips the coarse offset and keeps DTW. Takes are saved with the project (desktop: `take-<id>.wav` in the cache entry; web: in the `.grain` file) and re-scored from their stored pitch; imported take files become takes too.
+     - Backing choice: Instrumental / Instrumental + guide vocal / Full mix, defaulting from `Analysis.accompaniment` (non-vocal stems vs mix, measured once at import or load; below −30 dB means a cappella → guide vocal, with the reason shown).
+     - Loopback latency calibration (`engine-core::cue`: exponential chirp, FFT cross-correlation, sub-sample peak): stored per input/output device pair (desktop `latency.json` in app data; web `localStorage`), ± nudge by hand. Synthetic delayed chirps are recovered within 1 ms (0–287 ms, with noise and an echo).
+     - A/B audition: clicking a note in the Score graph solos the reference vocal for that note, then the take (Audition state machine), and restores the mix.
+     - Web persistence: OPFS behind an explicit Available/Unavailable state, Recent list, `.grain` export and import (§12).
    - **Still open in M1:**
-     - Takes can be imported but not recorded in the app (cpal / getUserMedia + AudioWorklet, Recording state machine, loopback latency calibration per device).
-     - No A/B take playback (click a note in the Score graph to hear reference vs take).
-     - No web project persistence (OPFS/archive).
-     - `yt-dlp`/`ffmpeg` are found on `PATH` instead of being bundled as sidecars.
+     - Bundled sidecars. `yt-dlp`/`ffmpeg` are still found on `PATH` (plus the package-manager bin directories). Plan: a `scripts/fetch_sidecars.py` that downloads pinned, checksummed builds per target triple into `apps/desktop/src-tauri/binaries/` (yt-dlp's standalone release; ffmpeg from a static GPL build such as the BtbN or evermeet builds, recording which in this file), `bundle.externalBin` for both, and `ingest::Tools` resolving app-data copy → bundled sidecar → `PATH`. "Update extractor" runs `yt-dlp -U` on an app-data copy (the bundle is read-only and signed). Not done yet: it adds ~100 MB of third-party binaries per platform to the build, and the download source and verification are the user's call.
+     - Take pre-processing from §5.1 (high-pass, loudness, bleed isolation) is not applied; the UI asks for headphones instead.
+     - Calibration can only be checked by ear on real hardware: the automated tests use synthetic captures, and a headless browser cannot loop its output back into its input.
      - The RoFormer cascade is slow on CPU (~7 min for a 4 min song, about 8 GB peak), so it is an opt-in "Best vocals" import: a quality option for songs with real accompaniment. CoreML and int8 did not help (see §4.2).
      - Test-song note: `samples/eill-finale.mp3` ("Finale" by eill) is a cappella, a solo vocal with doubling and reverb and no backing music. Both HTDemucs and the cascade put nearly everything into Vocals, which is correct for this song; it is not a model limit.
 3. **M2, F3:** LRCLIB lyrics, word alignment, live pitch lane, latency calibration.
@@ -377,5 +384,5 @@ Keep this table current: update the Status column whenever a milestone moves.
 
 ## 12. Open decisions
 
-- [ ] Project archive format: MessagePack plus FLAC stems in a zip, or a SQLite bundle?
+- [x] Project archive format (web): one `.grain` file per project, which is also the OPFS record. 8-byte magic `GRAINv1\n`, u32 LE header length, a JSON header `{ "project": Project }`, then 16-bit little-endian PCM channels of `project.frames` samples in project order (each track's left then right channel, then each take). No dependencies, readable one channel at a time; FLAC compression can come later as `GRAINv2`. Desktop keeps the stem cache (WAV + `project.json`).
 - [ ] Minimum hardware for the web build (WebGPU required, or a WASM-only slow path)?

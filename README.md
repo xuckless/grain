@@ -44,6 +44,26 @@ cargo run --release -p music-cli -- pitch vocals.wav --models models/weights   #
 cargo run --release -p music-cli -- compare mine.wav artist.wav
 ```
 
+## Recording a take
+
+Open a song, go to **Score** and press **Record a take**. You hear a one-bar count-in at the song's
+tempo, then the song plays from the playhead while the microphone records; press **Stop**, or let
+the song end. The take is lined up with the song, scored, and kept with the project (pick earlier
+takes in the **Take** menu; click a note in the graph to hear the original, then your take).
+
+- **Backing:** *Instrumental* (the song without its vocal stem), *Instrumental + guide vocal* (the
+  original vocal quietly) or *Full mix*. The default is Instrumental, except for songs whose
+  non-vocal stems are more than 30 dB below the mix (a cappella), which default to the guide vocal.
+- **Headphones** keep the backing out of your take.
+- **Latency:** press **Calibrate** once per microphone and output. Unplug your headphones, or hold
+  them against the microphone, so it can hear a short chirp. The measured round-trip delay is
+  stored per device pair and removed from every take; nudge it with − / + if takes still sound
+  early or late. Uncalibrated, desktop assumes 0 ms beyond what the drivers report, and the web uses
+  the browser's output-latency estimate.
+- **Web:** projects are stored in the browser (OPFS) and listed under Recent; **Export** downloads
+  a `.grain` file (stems and takes as 16-bit PCM plus the project), and **Open project file…**
+  reopens one. Recording needs the cross-origin isolation headers the dev and preview servers send.
+
 ## Checks
 
 ```bash
@@ -51,6 +71,7 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p engine-core --target wasm32-unknown-unknown   # engine-core DSP tests under Node
 pnpm types && pnpm wasm && pnpm check && pnpm build:web
+pnpm --filter @workstation/ui test                   # recording, calibration and A/B state machines
 python3 scripts/fetch_models.py --check
 cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights)
 ```
