@@ -5,18 +5,17 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Locations of the sidecar binaries.
+/// Location of the yt-dlp binary. yt-dlp finds ffmpeg/ffprobe itself on [`search_path`]
+/// (`--ffmpeg-location` takes a filesystem path, so a bare `ffmpeg` there breaks extraction).
 pub struct Tools {
     pub yt_dlp: PathBuf,
-    pub ffmpeg: PathBuf,
 }
 
 impl Tools {
-    /// Both binaries looked up on [`search_path`].
+    /// yt-dlp looked up on [`search_path`].
     pub fn from_path() -> Self {
         Self {
             yt_dlp: "yt-dlp".into(),
-            ffmpeg: "ffmpeg".into(),
         }
     }
 }
@@ -93,7 +92,7 @@ pub fn normalize_url(url: &str) -> Result<String, IngestError> {
 }
 
 /// yt-dlp arguments: best audio only, no playlist, extracted to 44.1 kHz stereo WAV.
-fn arguments(url: &str, out_dir: &Path, ffmpeg: &Path) -> Vec<String> {
+fn arguments(url: &str, out_dir: &Path) -> Vec<String> {
     vec![
         "--no-playlist".into(),
         "--no-progress".into(),
@@ -104,8 +103,6 @@ fn arguments(url: &str, out_dir: &Path, ffmpeg: &Path) -> Vec<String> {
         "wav".into(),
         "--postprocessor-args".into(),
         "ffmpeg:-ar 44100 -ac 2".into(),
-        "--ffmpeg-location".into(),
-        ffmpeg.display().to_string(),
         "-o".into(),
         out_dir.join("%(id)s.%(ext)s").display().to_string(),
         "--print".into(),
@@ -120,7 +117,7 @@ pub fn download(tools: &Tools, url: &str, out_dir: &Path) -> Result<Downloaded, 
     let url = normalize_url(url)?;
     let output = Command::new(&tools.yt_dlp)
         .env("PATH", search_path())
-        .args(arguments(&url, out_dir, &tools.ffmpeg))
+        .args(arguments(&url, out_dir))
         .output()
         .map_err(|source| IngestError::Spawn {
             tool: tools.yt_dlp.display().to_string(),
@@ -171,8 +168,9 @@ mod tests {
 
     #[test]
     fn arguments_request_audio_only_wav() {
-        let args = arguments("u", Path::new("/tmp/x"), Path::new("/opt/ffmpeg"));
+        let args = arguments("u", Path::new("/tmp/x"));
         let joined = args.join(" ");
+        assert!(!joined.contains("--ffmpeg-location"));
         assert!(joined.contains("-f bestaudio -x --audio-format wav"));
         assert!(joined.contains("ffmpeg:-ar 44100 -ac 2"));
         assert!(joined.ends_with(" u"));
@@ -182,7 +180,6 @@ mod tests {
     fn missing_binary_is_reported() {
         let tools = Tools {
             yt_dlp: "/nonexistent/yt-dlp".into(),
-            ffmpeg: "ffmpeg".into(),
         };
         let err = download(&tools, "https://youtu.be/dQw4w9WgXcQ", Path::new("/tmp")).unwrap_err();
         assert!(matches!(err, IngestError::Spawn { .. }));
