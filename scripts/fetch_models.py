@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "models" / "manifest.toml"
 WEIGHTS = ROOT / "models" / "weights"
 BUILD = ROOT / "models" / "build"
-KNOWN_LICENSES = {"MIT", "Apache-2.0", "BSD-3-Clause", "GPL-3.0", "CC-BY-4.0", "CC-BY-NC-4.0"}
+KNOWN_LICENSES = {"MIT", "Apache-2.0", "MIT OR Apache-2.0", "BSD-3-Clause", "GPL-3.0", "CC-BY-4.0", "CC-BY-NC-4.0"}
 RESTRICTED = {"CC-BY-NC-4.0"}
 
 
