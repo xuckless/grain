@@ -1,28 +1,71 @@
 <script lang="ts">
-  import type { MixParams, Project, Track, TrackMode, TransportSnapshot } from "@workstation/engine-api";
+  import type { MixParams, Project, Track, TrackMode, TrackSource, Transcriber, TransportSnapshot } from "@workstation/engine-api";
   import DotSlider from "./DotSlider.svelte";
   import { columnLevels, dot, dotBar, drawDotWave, fit, WAVE_STEP_PX } from "./grain";
   import { detailDelay, enter, reveal, rubberBand, springBack } from "./motion";
-  import { formatDb, formatPan, transportSeconds } from "./state";
+  import { laneRows, layerOf, type MidiJob } from "./models";
+  import { errorMessage, formatDb, formatPan, transportSeconds } from "./state";
   import { colour, displayRank, stemHue, trackHue } from "./theme";
 
   /**
    * The Mix view (design: Components → Tracks): one row per stem with mute, solo, gain and pan,
    * a dot waveform in the stem's hue, and a grey copy that wipes over it when the track is
    * inaudible (rule 17). Scrubbing any lane moves the playhead directly (rule 14) and rubber-bands
-   * past either end (rule 19).
+   * past either end (rule 19). "MIDI" transcribes a track (basic-pitch, or the drum classifier)
+   * into a MIDI lane under it, exportable as a .mid file (AGENTS.md §4.3).
    */
   let {
     project,
     snapshot,
+    transcriber,
     onSeek,
     onMix,
+    onProject,
+    onModels,
   }: {
     project: Project;
     snapshot: TransportSnapshot;
+    transcriber: Transcriber;
     onSeek: (frame: number) => void;
     onMix: (track: number, params: MixParams) => void;
+    /** The engine returned an updated project (a new MIDI layer). */
+    onProject: (project: Project) => void;
+    /** Opens the model manager. */
+    onModels: () => void;
   } = $props();
+
+  const MIDI_H = 40;
+  /** Transcription jobs by track name. */
+  let jobs = $state<Record<string, MidiJob>>({});
+  const jobOf = (t: Track): MidiJob => jobs[t.name] ?? { kind: "idle" };
+  const midiCanvas: (HTMLCanvasElement | undefined)[] = $state([]);
+
+  async function transcribe(t: Track) {
+    if (jobOf(t).kind === "transcribing") return;
+    jobs[t.name] = { kind: "transcribing" };
+    try {
+      const out = await transcriber.transcribe($state.snapshot(t.source) as TrackSource);
+      switch (out.kind) {
+        case "Done":
+          jobs[t.name] = { kind: "idle" };
+          onProject(out.project);
+          break;
+        case "NeedsModel":
+          jobs[t.name] = { kind: "needsModel", model: out.model };
+          break;
+      }
+    } catch (e) {
+      jobs[t.name] = { kind: "failed", message: errorMessage(e) };
+    }
+  }
+
+  async function exportMidi(t: Track) {
+    try {
+      await transcriber.exportMidi($state.snapshot(t.source) as TrackSource);
+    } catch (e) {
+      jobs[t.name] = { kind: "failed", message: errorMessage(e) };
+    }
+  }
 
   const LANE_H = 52;
   const RULER_H = 28;
@@ -106,6 +149,22 @@
       }
       if (c) drawPlayhead(c, LANE_H);
     }
+
+    project.tracks.forEach((t, i) => {
+      const canvas = midiCanvas[i];
+      const layer = layerOf(project, t.source);
+      if (!canvas || !layer) return;
+      const c = fit(canvas, width, MIDI_H);
+      if (!c) return;
+      const row = laneRows(layer);
+      const hue = trackHue(t.source);
+      for (const n of layer.notes) {
+        const y = 4 + row(n) * (MIDI_H - 8);
+        const x0 = x(n.start);
+        dotBar(c, x0, Math.max(x0, x(n.end)), y, hue, 0.6 + (n.velocity / 127) * 0.6, 1, 3);
+      }
+      drawPlayhead(c, MIDI_H);
+    });
 
     project.tracks.forEach((t, i) => {
       const head = playing ? headX : null;
@@ -246,6 +305,11 @@
           onChange={(v) => onMix(i, { ...t.mix, pan: v })}
         />
         <span class="mono muted pan">{formatPan(t.mix.pan)}</span>
+        {#if !layerOf(project, t.source)}
+          <button class="press quiet midi" disabled={jobOf(t).kind === "transcribing"} title="Transcribe {t.name} to MIDI" onclick={() => transcribe(t)}>
+            {jobOf(t).kind === "transcribing" ? "Transcribing" : "MIDI"}
+          </button>
+        {/if}
       </div>
       <div class="lane-box">
         {#snippet trackLane()}
@@ -256,6 +320,35 @@
       </div>
       <div class="readout mono muted">{formatDb(t.mix.gain)}</div>
     </div>
+    {@const job = jobOf(t)}
+    {@const layer = layerOf(project, t.source)}
+    {#if layer}
+      <div class="row midi-row" in:enter>
+        <div class="controls">
+          <span class="name muted small">{t.name} MIDI</span>
+          <span class="muted small">{layer.notes.length} notes · {layer.method === "DrumClassifier" ? "kick, snare, hat" : "basic-pitch"}</span>
+          <span class="spacer"></span>
+          <button class="press quiet" disabled={job.kind === "transcribing"} onclick={() => transcribe(t)}>{job.kind === "transcribing" ? "Transcribing" : "Redo"}</button>
+          <button class="press quiet" onclick={() => exportMidi(t)}>Export .mid</button>
+        </div>
+        <div class="lane-box">
+          {#snippet midiLane()}<canvas bind:this={midiCanvas[i]} use:reveal={layer} style:height="{MIDI_H}px"></canvas>{/snippet}
+          {@render lane(midiLane, MIDI_H, `${t.name} MIDI lane, playhead`)}
+        </div>
+        <div class="readout"></div>
+      </div>
+    {/if}
+    {#if job.kind === "needsModel"}
+      <div class="row notice" in:enter>
+        <span class="muted small">Transcribing {t.name} needs the {job.model} model.</span>
+        <button class="press" onclick={onModels}>Open Models</button>
+        <button class="press quiet" onclick={() => transcribe(t)}>Try again</button>
+      </div>
+    {:else if job.kind === "failed"}
+      <div class="row notice" in:enter>
+        <span class="muted small">Couldn't transcribe {t.name}: {job.message}</span>
+      </div>
+    {/if}
   {/each}
 </div>
 
@@ -278,7 +371,7 @@
     border-radius: 12px;
   }
   .controls {
-    width: 560px;
+    width: 640px;
     flex: none;
     display: flex;
     align-items: center;
@@ -286,6 +379,29 @@
   }
   .ruler .controls {
     height: 1px;
+  }
+  .midi-row {
+    height: 48px;
+    margin-top: -6px;
+  }
+  .midi-row .controls {
+    gap: 12px;
+    padding-left: 22px;
+    box-sizing: border-box;
+  }
+  .notice {
+    gap: 12px;
+    padding-left: 46px;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .small {
+    font-size: 13px;
+    line-height: 18px;
+  }
+  .midi {
+    flex: none;
   }
   .name {
     width: 136px;

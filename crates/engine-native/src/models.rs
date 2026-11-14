@@ -58,6 +58,7 @@ impl ModelStore {
             .into_iter()
             .map(|info| ModelEntry {
                 state: self.state(&info),
+                removable: info.files.iter().any(|f| self.dir.join(&f.name).exists()),
                 info,
             })
             .collect()

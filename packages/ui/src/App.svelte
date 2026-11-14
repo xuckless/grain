@@ -2,6 +2,7 @@
   import type { EngineHost, ImportOutcome, ImportStage, MixParams, PlayerCommand, SeparationQuality, TransportSnapshot } from "@workstation/engine-api";
   import Grain from "./Grain.svelte";
   import HomeScreen from "./HomeScreen.svelte";
+  import ModelsPanel from "./ModelsPanel.svelte";
   import SessionScreen from "./SessionScreen.svelte";
   import Toasts, { type Toast } from "./Toasts.svelte";
   import { provideServices, type ToastTone } from "./context";
@@ -17,6 +18,9 @@
   let app = $state<AppState>({ kind: "home", job: { kind: "idle" }, resume: { kind: "none" } });
   let snapshot = $state<TransportSnapshot>({ transport: { kind: "Stopped" }, sample_rate: 44100 });
   let toast = $state<Toast | null>(null);
+  /** The model manager, shown over either screen. */
+  let modelsPanel = $state<{ kind: "closed" } | { kind: "open" }>({ kind: "closed" });
+  const openModels = () => (modelsPanel = { kind: "open" });
   let toastIds = 0;
 
   const burst = new Burst();
@@ -153,6 +157,7 @@
           onImportArchive={() => host.projects.kind === "available" && host.projects.archive.kind === "available" && runImport(host.projects.archive.importArchive)}
           onResume={() => app.kind === "home" && app.resume.kind === "available" && enterSession(app.resume.session)}
           onDismiss={() => app.kind === "home" && (app = { ...app, job: { kind: "idle" } })}
+          onModels={openModels}
         />
       {:else}
         <SessionScreen
@@ -165,6 +170,7 @@
           onCommand={send}
           onMix={setMix}
           onView={setView}
+          onModels={openModels}
         />
       {/if}
     </div>
@@ -173,6 +179,9 @@
 
 <div class="overlay" aria-hidden="true"><Grain behaviour={burst} style="width: 100%; height: 100%" /></div>
 <Toasts {toast} />
+{#if modelsPanel.kind === "open"}
+  <ModelsPanel {host} onClose={() => (modelsPanel = { kind: "closed" })} />
+{/if}
 
 <style>
   :global(html),

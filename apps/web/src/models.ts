@@ -58,7 +58,7 @@ export class WebModels {
   }
 
   async list(): Promise<ModelEntry[]> {
-    return Promise.all(this.manifest().map(async (info) => ({ info, state: await this.state(info) })));
+    return Promise.all(this.manifest().map(async (info) => ({ info, state: await this.state(info), removable: await this.stored(info.id) })));
   }
 
   async download(id: string, acceptLicense: boolean, onState: (s: ModelState) => void): Promise<ModelState> {

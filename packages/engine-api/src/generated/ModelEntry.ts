@@ -5,4 +5,9 @@ import type { ModelState } from "./ModelState";
 /**
  * One model with its state, as the manager lists it.
  */
-export type ModelEntry = { info: ModelInfo, state: ModelState, };
+export type ModelEntry = { info: ModelInfo, state: ModelState, 
+/**
+ * Whether the files are the app's own downloads (so it may delete them), as opposed to
+ * weights installed elsewhere (a development checkout).
+ */
+removable: boolean, };

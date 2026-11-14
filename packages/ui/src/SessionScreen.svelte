@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EngineHost, MixParams, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
+  import type { EngineHost, MixParams, PlayerCommand, Project, TransportSnapshot } from "@workstation/engine-api";
   import AutoTuneView from "./AutoTuneView.svelte";
   import PitchView from "./PitchView.svelte";
   import Grain from "./Grain.svelte";
@@ -24,6 +24,7 @@
     onCommand,
     onMix,
     onView,
+    onModels,
   }: {
     host: EngineHost;
     session: Session;
@@ -34,6 +35,7 @@
     onCommand: (c: PlayerCommand) => void;
     onMix: (track: number, params: MixParams) => void;
     onView: (id: ViewId) => void;
+    onModels: () => void;
   } = $props();
 
   const { burst } = services();
@@ -49,6 +51,12 @@
   const title = $derived(songTitle(project));
   const duration = $derived(project.frames / project.sample_rate);
   const position = $derived(transportSeconds(snapshot));
+
+  /** The engine changed the project (a MIDI layer was added): show it; it's unsaved. */
+  function adopt(next: Project) {
+    session.project = next;
+    if (session.save.kind === "clean") session.save = { kind: "dirty" };
+  }
   const playing = $derived(snapshot.transport.kind === "Playing");
   const key = $derived(project.analysis.keys[0]);
   const canSave = $derived(host.projects.kind === "available");
@@ -118,6 +126,7 @@
       {#if key}<span class="mono muted">{key.label}</span>{/if}
     {/snippet}
     {#snippet right()}
+      <button class="press quiet save" title="Download and manage the AI models" onclick={onModels}>Models</button>
       {#if host.projects.kind === "available" && host.projects.archive.kind === "available"}
         {@const archive = host.projects.archive}
         <button class="press quiet save" title="Download this song, its stems and takes as one .grain file" onclick={() => archive.exportSong()}>Export</button>
@@ -165,7 +174,7 @@
           {:else if session.view === "Score"}
             <ScoreView {host} {session} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} />
           {:else}
-            <MixView {project} {snapshot} onSeek={(frame) => onCommand({ kind: "Seek", frame })} {onMix} />
+            <MixView {project} {snapshot} transcriber={host.transcriber} onSeek={(frame) => onCommand({ kind: "Seek", frame })} {onMix} onProject={adopt} {onModels} />
           {/if}
         </div>
       {/key}

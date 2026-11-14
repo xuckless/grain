@@ -152,6 +152,8 @@
   async function renderTake() {
     if (source === null || render.kind === "rendering") return;
     render = { kind: "rendering" };
+    // Keep editing this source: the new take would otherwise become the default.
+    session.pitchSource = source;
     try {
       const added = await editor.render(source, $state.snapshot(session.settings));
       applyTake(session, added);

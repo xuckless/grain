@@ -94,3 +94,12 @@ test("scale masks", () => {
   assert.ok(!inScale(cMajor, 61));
   assert.ok(inScale(cMajor, 71));
 });
+
+test("the default source prefers original takes, then the vocal stem, never an edited copy first", async () => {
+  const { defaultSource } = await import("./pitch.ts");
+  const take = (id: number, source: object) => ({ id, source }) as never;
+  const project = (takes: never[], notes = 1) => ({ takes, analysis: { reference_notes: new Array(notes) } }) as never;
+  assert.deepEqual(defaultSource(project([take(1, { kind: "Recorded" }), take(2, { kind: "Edited", from: { kind: "Take", id: 1 } })])), { kind: "Take", id: 1 });
+  assert.deepEqual(defaultSource(project([take(2, { kind: "Edited", from: { kind: "VocalStem" } })])), { kind: "VocalStem" });
+  assert.equal(defaultSource(project([], 0)), null);
+});

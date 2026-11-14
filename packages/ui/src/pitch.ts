@@ -215,12 +215,14 @@ export function sourceFromId(id: string): EditSource {
   return id === "vocal" ? { kind: "VocalStem" } : { kind: "Take", id: Number(id.slice("take:".length)) };
 }
 
-/** The source opened first: the newest take that isn't an edited copy, else the vocal stem. */
+/** The source opened first: the newest take that isn't an edited copy, else the vocal stem,
+ * else the newest edited take. */
 export function defaultSource(project: Project): EditSource | null {
-  const originals = project.takes.filter((t) => t.source.kind !== "Edited");
-  const take = originals.at(-1) ?? project.takes.at(-1);
-  if (take) return { kind: "Take", id: take.id };
-  return project.analysis.reference_notes.length > 0 ? { kind: "VocalStem" } : null;
+  const original = project.takes.filter((t) => t.source.kind !== "Edited").at(-1);
+  if (original) return { kind: "Take", id: original.id };
+  if (project.analysis.reference_notes.length > 0) return { kind: "VocalStem" };
+  const any = project.takes.at(-1);
+  return any ? { kind: "Take", id: any.id } : null;
 }
 
 /** The newest rendered (edited) take of `source`, if any. */

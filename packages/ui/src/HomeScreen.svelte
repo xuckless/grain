@@ -18,6 +18,7 @@
     onImportArchive,
     onResume,
     onDismiss,
+    onModels,
   }: {
     host: EngineHost;
     job: HomeJob;
@@ -28,6 +29,7 @@
     onImportArchive: () => void;
     onResume: () => void;
     onDismiss: () => void;
+    onModels: () => void;
   } = $props();
 
   type Recent =
@@ -86,6 +88,7 @@
       <span class="wordmark pixel">grain</span>
     {/snippet}
     {#snippet right()}
+      <button class="press quiet" title="Download and manage the AI models" onclick={onModels}>Models</button>
       {#if resume.kind === "available"}
         {@const title = songTitle(resume.session.project)}
         <button class="press raised continue" onclick={onResume}>

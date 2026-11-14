@@ -189,6 +189,9 @@ pub fn next(state: &ModelState, event: ModelEvent) -> Option<ModelState> {
 pub struct ModelEntry {
     pub info: ModelInfo,
     pub state: ModelState,
+    /// Whether the files are the app's own downloads (so it may delete them), as opposed to
+    /// weights installed elsewhere (a development checkout).
+    pub removable: bool,
 }
 
 /// Hosts model downloads may come from (AGENTS.md §10: model hosts only).
