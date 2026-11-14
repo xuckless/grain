@@ -3,20 +3,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use engine_core::player::{PlayerCommand, Transport, TransportSnapshot};
-use engine_core::project::{self, ImportStage, Project, ProjectSummary, SongAudio, SongSource};
+use engine_core::project::{
+    self, ImportStage, Project, ProjectSummary, SeparationQuality, SongAudio, SongSource,
+};
 use engine_core::score::{ScoreReport, ScoreSettings};
 use engine_core::WORKING_SAMPLE_RATE;
 use engine_native::cache::{Lookup, StemCache};
 use engine_native::decode;
 use engine_native::import::{import_song, Imported, Separation};
+use engine_native::pitch::Pitch;
 use engine_native::playback::Playback;
-use engine_native::separate::Demucs;
+use engine_native::separate::Separators;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
-
-const MODEL_FILE: &str = "htdemucs_6s.onnx";
 
 /// The loaded song, if any.
 enum Session {
@@ -31,7 +32,7 @@ enum Session {
 /// The separation model, loaded on first import.
 enum Model {
     NotLoaded,
-    Loaded(Demucs),
+    Loaded(Box<Separators>),
     /// No weights found; songs import as a single mix track.
     Missing,
 }
@@ -39,6 +40,7 @@ enum Model {
 struct Engine {
     session: Mutex<Session>,
     model: Mutex<Model>,
+    pitch: Mutex<Pitch>,
     cache: StemCache,
     model_dirs: Vec<PathBuf>,
     #[cfg(feature = "youtube")]
@@ -50,22 +52,25 @@ fn fail(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-fn import(app: &AppHandle, path: &Path, song: SongSource) -> anyhow::Result<Project> {
+fn import(
+    app: &AppHandle,
+    path: &Path,
+    song: SongSource,
+    quality: SeparationQuality,
+) -> anyhow::Result<Project> {
     let engine = app.state::<Engine>();
     let mut model = engine.model.lock().expect("model lock");
     if let Model::NotLoaded = *model {
-        *model = match engine
-            .model_dirs
-            .iter()
-            .map(|d| d.join(MODEL_FILE))
-            .find(|p| p.exists())
-        {
-            Some(path) => Model::Loaded(Demucs::load(&path)?),
+        *model = match Separators::find(&engine.model_dirs)? {
+            Some(m) => Model::Loaded(Box::new(m)),
             None => Model::Missing,
         };
     }
     let separation = match &mut *model {
-        Model::Loaded(m) => Separation::Model(m),
+        Model::Loaded(separators) => Separation::Model {
+            separators,
+            quality,
+        },
         Model::Missing | Model::NotLoaded => Separation::Disabled,
     };
     let Imported {
@@ -76,6 +81,7 @@ fn import(app: &AppHandle, path: &Path, song: SongSource) -> anyhow::Result<Proj
         path,
         song,
         separation,
+        &mut engine.pitch.lock().expect("pitch lock"),
         &engine.cache,
         |stage: ImportStage| {
             let _ = app.emit("import-stage", stage);
@@ -146,14 +152,18 @@ fn close_session(engine: State<Engine>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn import_file(app: AppHandle, path: String) -> Result<Project, String> {
+async fn import_file(
+    app: AppHandle,
+    path: String,
+    quality: SeparationQuality,
+) -> Result<Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(path);
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        import(&app, &path, SongSource::File { name })
+        import(&app, &path, SongSource::File { name }, quality)
     })
     .await
     .map_err(fail)?
@@ -169,6 +179,27 @@ enum UrlImport {
     Unavailable,
 }
 
+/// Which separations the UI may offer (AGENTS.md §4.2).
+#[derive(Serialize)]
+#[serde(tag = "kind")]
+enum SeparationOffer {
+    #[serde(rename = "choice")]
+    Choice,
+    #[serde(rename = "fastOnly")]
+    FastOnly { reason: String },
+}
+
+#[tauri::command]
+fn separation_offer(engine: State<Engine>) -> SeparationOffer {
+    if Separators::offers(&engine.model_dirs, SeparationQuality::BestVocals) {
+        SeparationOffer::Choice
+    } else {
+        SeparationOffer::FastOnly {
+            reason: "The vocal model isn't installed (scripts/fetch_models.py).".into(),
+        }
+    }
+}
+
 #[tauri::command]
 fn url_import() -> UrlImport {
     if cfg!(feature = "youtube") {
@@ -180,7 +211,11 @@ fn url_import() -> UrlImport {
 
 #[cfg(feature = "youtube")]
 #[tauri::command]
-async fn import_url(app: AppHandle, url: String) -> Result<Project, String> {
+async fn import_url(
+    app: AppHandle,
+    url: String,
+    quality: SeparationQuality,
+) -> Result<Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let downloads = app.state::<Engine>().downloads.clone();
         std::fs::create_dir_all(&downloads)?;
@@ -192,6 +227,7 @@ async fn import_url(app: AppHandle, url: String) -> Result<Project, String> {
                 url: d.url,
                 title: d.title,
             },
+            quality,
         )
     })
     .await
@@ -201,7 +237,7 @@ async fn import_url(app: AppHandle, url: String) -> Result<Project, String> {
 
 #[cfg(not(feature = "youtube"))]
 #[tauri::command]
-async fn import_url(_url: String) -> Result<Project, String> {
+async fn import_url(_url: String, _quality: SeparationQuality) -> Result<Project, String> {
     Err("this build has no YouTube import".into())
 }
 
@@ -246,12 +282,23 @@ async fn score_take(
     settings: ScoreSettings,
 ) -> Result<ScoreReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let project = match &*app.state::<Engine>().session.lock().map_err(fail)? {
+        let engine = app.state::<Engine>();
+        let project = match &*engine.session.lock().map_err(fail)? {
             Session::Loaded { project, .. } => project.clone(),
             Session::Empty => return Err("load a song first".to_string()),
         };
         let take = decode::load(Path::new(&path), project.sample_rate).map_err(fail)?;
-        Ok(project::score_take(&project, &take, settings))
+        let take = engine
+            .pitch
+            .lock()
+            .map_err(fail)?
+            .track(
+                project.analysis.pitch_tracker,
+                &take.to_mono(),
+                project.sample_rate,
+            )
+            .map_err(fail)?;
+        project::score_take(&project, &take, settings).map_err(fail)
     })
     .await
     .map_err(fail)?
@@ -271,6 +318,7 @@ fn main() {
             app.manage(Engine {
                 session: Mutex::new(Session::Empty),
                 model: Mutex::new(Model::NotLoaded),
+                pitch: Mutex::new(Pitch::find(&model_dirs)),
                 cache: StemCache::new(data.join("stems")),
                 model_dirs,
                 #[cfg(feature = "youtube")]
@@ -280,6 +328,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             import_file,
+            separation_offer,
             url_import,
             import_url,
             player,

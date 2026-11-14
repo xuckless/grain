@@ -1,7 +1,7 @@
 // Web engine host: engine-wasm on the main thread, the player in an AudioWorklet,
 // HTDemucs through onnxruntime-web when the weights are served at /models.
 
-import type { EngineHost, ImportOutcome, Project, ScoreOutcome, StageListener, TransportSnapshot } from "@workstation/engine-api";
+import type { EngineHost, ImportOutcome, SeparationQuality, Project, ScoreOutcome, StageListener, TransportSnapshot } from "@workstation/engine-api";
 import init, { WasmSeparator, WasmSong } from "engine-wasm";
 import wasmUrl from "engine-wasm/engine_wasm_bg.wasm?url";
 import workletUrl from "./player-worklet.ts?worker&url";
@@ -62,7 +62,8 @@ export async function createWebHost(): Promise<EngineHost> {
     return project;
   }
 
-  async function importFile(onStage: StageListener): Promise<ImportOutcome> {
+  // The cascade's vocal model is ~930 MB and peaks near 8 GB of memory: desktop only.
+  async function importFile(_quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome> {
     // Open the picker synchronously: browsers (Safari especially) drop the click's user
     // activation across an await, which silently blocks the file dialog.
     const picked = pickFile("audio/*");
@@ -111,6 +112,7 @@ export async function createWebHost(): Promise<EngineHost> {
       session = { kind: "empty" };
     },
     urlImport: { kind: "unavailable" },
+    separation: { kind: "fastOnly", reason: "Best vocals needs the desktop app (a 930 MB model and about 8 GB of memory)." },
     importFile,
     scoreTake,
     async send(command) {

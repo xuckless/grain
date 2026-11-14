@@ -7,12 +7,14 @@ import type { Project } from "./generated/Project";
 import type { ProjectSummary } from "./generated/ProjectSummary";
 import type { ScoreReport } from "./generated/ScoreReport";
 import type { ScoreSettings } from "./generated/ScoreSettings";
+import type { SeparationQuality } from "./generated/SeparationQuality";
 import type { TransportSnapshot } from "./generated/TransportSnapshot";
 
 export type { Analysis } from "./generated/Analysis";
 export type { Difficulty } from "./generated/Difficulty";
 export type { FrameComparison } from "./generated/FrameComparison";
 export type { ImportStage } from "./generated/ImportStage";
+export type { SeparationQuality } from "./generated/SeparationQuality";
 export type { Key } from "./generated/Key";
 export type { KeyCandidate } from "./generated/KeyCandidate";
 export type { MixParams } from "./generated/MixParams";
@@ -48,8 +50,12 @@ export type StageListener = (stage: ImportStage) => void;
 
 /** YouTube import exists only on desktop (AGENTS.md §0). */
 export type UrlImport =
-  | { kind: "available"; importUrl(url: string, onStage: StageListener): Promise<ImportOutcome> }
+  | { kind: "available"; importUrl(url: string, quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome> }
   | { kind: "unavailable" };
+
+/** Which separations the UI may offer (AGENTS.md §4.2): the choice of `Fast` or `BestVocals`,
+ * or `Fast` only, with the reason shown next to the disabled option. */
+export type SeparationOffer = { kind: "choice" } | { kind: "fastOnly"; reason: string };
 
 /** How the UI meets the window frame. `overlay`: the OS window buttons sit over the top-left
  * of the page (macOS desktop), so the top bar insets its content and acts as the drag area:
@@ -74,11 +80,12 @@ export type ProjectStore =
 export interface EngineHost {
   readonly chrome: WindowChrome;
   readonly urlImport: UrlImport;
+  readonly separation: SeparationOffer;
   readonly projects: ProjectStore;
   /** Stops playback and unloads the song. */
   close(): Promise<void>;
   /** Picks a song file, imports it and makes it the loaded song. */
-  importFile(onStage: StageListener): Promise<ImportOutcome>;
+  importFile(quality: SeparationQuality, onStage: StageListener): Promise<ImportOutcome>;
   /** Picks a sung take and scores it against the loaded song. */
   scoreTake(settings: ScoreSettings): Promise<ScoreOutcome>;
   send(command: PlayerCommand): Promise<void>;

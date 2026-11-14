@@ -11,6 +11,7 @@ import type {
   Project,
   ProjectSummary,
   ScoreReport,
+  SeparationOffer,
   StageListener,
   TransportSnapshot,
   WindowChrome,
@@ -47,6 +48,7 @@ async function withStages(onStage: StageListener, run: () => Promise<Project>): 
 
 export async function createDesktopHost(): Promise<EngineHost> {
   const urlImport = await invoke<{ kind: "available" } | { kind: "unavailable" }>("url_import");
+  const separation = await invoke<SeparationOffer>("separation_offer");
   return {
     chrome,
     projects: {
@@ -58,12 +60,16 @@ export async function createDesktopHost(): Promise<EngineHost> {
     close: () => invoke("close_session"),
     urlImport:
       urlImport.kind === "available"
-        ? { kind: "available", importUrl: (url, onStage) => withStages(onStage, () => invoke<Project>("import_url", { url })) }
+        ? {
+            kind: "available",
+            importUrl: (url, quality, onStage) => withStages(onStage, () => invoke<Project>("import_url", { url, quality })),
+          }
         : { kind: "unavailable" },
-    async importFile(onStage) {
+    separation,
+    async importFile(quality, onStage) {
       const path = await pickAudio();
       if (!path) return { kind: "cancelled" };
-      return withStages(onStage, () => invoke<Project>("import_file", { path }));
+      return withStages(onStage, () => invoke<Project>("import_file", { path, quality }));
     },
     async scoreTake(settings) {
       const path = await pickAudio();

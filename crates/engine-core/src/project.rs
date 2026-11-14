@@ -53,6 +53,34 @@ pub enum ReferenceSource {
     FullMix,
 }
 
+/// The pitch tracker behind a project's reference melody. Takes are always tracked with the
+/// same one, so reference and take are comparable (AGENTS.md §5). `Yin`: built in, used where the
+/// RMVPE model is unavailable (web, or no weights) and by projects saved before RMVPE.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum PitchTracker {
+    #[default]
+    Yin,
+    Rmvpe,
+}
+
+/// A pitch contour and the tracker that produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackedPitch {
+    pub tracker: PitchTracker,
+    pub track: PitchTrack,
+}
+
+impl TrackedPitch {
+    /// The built-in tracker ([`pitch::track`]).
+    pub fn yin(signal: &[f32], sample_rate: u32) -> Self {
+        Self {
+            tracker: PitchTracker::Yin,
+            track: pitch::track(signal, sample_rate),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Analysis {
@@ -60,6 +88,8 @@ pub struct Analysis {
     /// Best three keys, best first.
     pub keys: Vec<KeyCandidate>,
     pub reference_source: ReferenceSource,
+    #[serde(default)]
+    pub pitch_tracker: PitchTracker,
     pub reference_pitch: PitchTrack,
     pub reference_notes: Vec<Note>,
 }
@@ -85,6 +115,16 @@ pub struct Project {
     pub samples_per_peak: u32,
     pub tracks: Vec<Track>,
     pub analysis: Analysis,
+}
+
+/// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
+/// RoFormer vocal cascade, several times slower but it keeps orchestral and choral material out
+/// of the vocal stem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum SeparationQuality {
+    Fast,
+    BestVocals,
 }
 
 /// Progress of one import, reported as it advances.
@@ -134,7 +174,13 @@ pub enum SongAudio {
     Separated { stems: Vec<(Stem, StereoAudio)> },
 }
 
-pub fn build(song: SongSource, audio: &SongAudio) -> Project {
+/// Mono signal the reference melody is tracked on: the vocal stem, or the mix when unseparated.
+pub fn reference_signal(audio: &SongAudio) -> Vec<f32> {
+    mono_sum(audio, |s| s == Stem::Vocals)
+}
+
+/// Builds a song's project. `reference` is [`reference_signal`] tracked by the host's tracker.
+pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Project {
     let sources: Vec<TrackSource> = match audio {
         SongAudio::Unseparated { .. } => vec![TrackSource::Mix],
         SongAudio::Separated { stems } => stems
@@ -163,17 +209,16 @@ pub fn build(song: SongSource, audio: &SongAudio) -> Project {
                 peaks: peaks(&a.to_mono()),
             })
             .collect(),
-        analysis: analyze(audio),
+        analysis: analyze(audio, reference),
     }
 }
 
-fn analyze(audio: &SongAudio) -> Analysis {
+fn analyze(audio: &SongAudio, reference: TrackedPitch) -> Analysis {
     let sr = sample_rate(audio);
     let mix = mono_sum(audio, |_| true);
     let tempo = tempo::estimate(&onset::envelope(&mix, sr));
     let keys = key::estimate(&mono_sum(audio, |s| s != Stem::Vocals), sr);
-    let reference_pitch = pitch::track(&mono_sum(audio, |s| s == Stem::Vocals), sr);
-    let reference_notes = melody::segment(&reference_pitch, keys[0].key);
+    let reference_notes = melody::segment(&reference.track, keys[0].key);
     Analysis {
         tempo,
         keys,
@@ -181,7 +226,8 @@ fn analyze(audio: &SongAudio) -> Analysis {
             SongAudio::Unseparated { .. } => ReferenceSource::FullMix,
             SongAudio::Separated { .. } => ReferenceSource::VocalStem,
         },
-        reference_pitch,
+        pitch_tracker: reference.tracker,
+        reference_pitch: reference.track,
         reference_notes,
     }
 }
@@ -209,22 +255,38 @@ fn mono_sum(audio: &SongAudio, include: impl Fn(Stem) -> bool) -> Vec<f32> {
     }
 }
 
-/// Scores a sung take (same sample rate as the song) against the reference vocal (AGENTS.md §5).
-pub fn score_take(project: &Project, take: &StereoAudio, settings: ScoreSettings) -> ScoreReport {
-    assert_eq!(
-        take.sample_rate, project.sample_rate,
-        "resample the take to the song rate first"
-    );
-    let take_pitch = pitch::track(&take.to_mono(), take.sample_rate);
+#[derive(Debug, thiserror::Error)]
+pub enum ScoreError {
+    #[error("the take was tracked with {take:?} but the song's reference with {reference:?}")]
+    TrackerMismatch {
+        reference: PitchTracker,
+        take: PitchTracker,
+    },
+}
+
+/// Scores a sung take against the reference vocal (AGENTS.md §5). The host tracks the take with
+/// the project's [`Analysis::pitch_tracker`].
+pub fn score_take(
+    project: &Project,
+    take: &TrackedPitch,
+    settings: ScoreSettings,
+) -> Result<ScoreReport, ScoreError> {
+    let reference_tracker = project.analysis.pitch_tracker;
+    if take.tracker != reference_tracker {
+        return Err(ScoreError::TrackerMismatch {
+            reference: reference_tracker,
+            take: take.tracker,
+        });
+    }
     let reference = &project.analysis.reference_pitch;
-    let offset = score::estimate_offset(reference, &take_pitch);
-    score::score(
+    let offset = score::estimate_offset(reference, &take.track);
+    Ok(score::score(
         reference,
         &project.analysis.reference_notes,
-        &take_pitch,
+        &take.track,
         offset,
         settings,
-    )
+    ))
 }
 
 /// Audio of each project track, in project track order.

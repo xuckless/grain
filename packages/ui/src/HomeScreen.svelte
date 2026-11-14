@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { EngineHost, ProjectSummary } from "@workstation/engine-api";
+  import type { EngineHost, ProjectSummary, SeparationQuality } from "@workstation/engine-api";
+  import Toggle from "./Toggle.svelte";
   import Grain from "./Grain.svelte";
   import TopBar from "./TopBar.svelte";
   import { DotProgress, Gather, Orb, Terrain } from "./grain";
@@ -19,8 +20,8 @@
     host: EngineHost;
     job: HomeJob;
     resume: Resume;
-    onImportFile: () => void;
-    onImportUrl: (url: string) => void;
+    onImportFile: (quality: SeparationQuality) => void;
+    onImportUrl: (url: string, quality: SeparationQuality) => void;
     onOpen: (id: string) => void;
     onResume: () => void;
     onDismiss: () => void;
@@ -33,6 +34,7 @@
     | { kind: "unavailable"; reason: string };
   let recent = $state<Recent>({ kind: "loading" });
   let url = $state("");
+  let quality = $state<SeparationQuality>("Fast");
 
   const logo = new Orb(2.4);
   const hero = new Orb(7);
@@ -103,19 +105,30 @@
             <div class="layer" transition:enter>
               {#if job.kind === "idle"}
                 <div class="actions">
-                  <button class="press primary big" onclick={onImportFile}>Open song…</button>
+                  <button class="press primary big" onclick={() => onImportFile(quality)}>Open song…</button>
                   {#if host.urlImport.kind === "available"}
                     <form
                       class="link"
                       onsubmit={(e) => {
                         e.preventDefault();
-                        if (url.trim() !== "") onImportUrl(url.trim());
+                        if (url.trim() !== "") onImportUrl(url.trim(), quality);
                       }}
                     >
                       <label class="sr" for="song-link">Song link</label>
                       <input id="song-link" class="field" type="url" placeholder="Paste a YouTube link" bind:value={url} />
                       <button class="press raised big" type="submit" disabled={url.trim() === ""}>Import</button>
                     </form>
+                  {/if}
+                </div>
+                <div class="quality">
+                  {#if host.separation.kind === "choice"}
+                    <Toggle
+                      checked={quality === "BestVocals"}
+                      label="Best vocals: slower, keeps orchestras and choirs out of the vocal stem"
+                      onToggle={(on) => (quality = on ? "BestVocals" : "Fast")}
+                    />
+                  {:else}
+                    <span class="muted small">{host.separation.reason}</span>
                   {/if}
                 </div>
               {:else if job.kind === "failed"}
@@ -261,6 +274,9 @@
     gap: 12px;
     flex-wrap: wrap;
     align-items: center;
+  }
+  .quality {
+    margin-top: 16px;
   }
   .link {
     display: flex;

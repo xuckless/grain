@@ -2,6 +2,7 @@
 import type { KeyCandidate } from "./KeyCandidate";
 import type { Note } from "./Note";
 import type { PitchTrack } from "./PitchTrack";
+import type { PitchTracker } from "./PitchTracker";
 import type { ReferenceSource } from "./ReferenceSource";
 import type { Tempo } from "./Tempo";
 
@@ -9,4 +10,4 @@ export type Analysis = { tempo: Tempo,
 /**
  * Best three keys, best first.
  */
-keys: Array<KeyCandidate>, reference_source: ReferenceSource, reference_pitch: PitchTrack, reference_notes: Array<Note>, };
+keys: Array<KeyCandidate>, reference_source: ReferenceSource, pitch_tracker: PitchTracker, reference_pitch: PitchTrack, reference_notes: Array<Note>, };

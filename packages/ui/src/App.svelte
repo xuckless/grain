@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EngineHost, ImportOutcome, ImportStage, MixParams, PlayerCommand, ScoreSettings, TransportSnapshot } from "@workstation/engine-api";
+  import type { EngineHost, ImportOutcome, ImportStage, MixParams, PlayerCommand, ScoreSettings, SeparationQuality, TransportSnapshot } from "@workstation/engine-api";
   import Grain from "./Grain.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import SessionScreen from "./SessionScreen.svelte";
@@ -56,9 +56,9 @@
     }
   }
 
-  function importUrl(url: string) {
+  function importUrl(url: string, quality: SeparationQuality) {
     const urlImport = host.urlImport;
-    if (urlImport.kind === "available") void runImport((s) => urlImport.importUrl(url, s));
+    if (urlImport.kind === "available") void runImport((s) => urlImport.importUrl(url, quality, s));
   }
 
   async function openProject(id: string) {
@@ -159,7 +159,7 @@
           {host}
           job={app.job}
           resume={app.resume}
-          onImportFile={() => runImport((s) => host.importFile(s))}
+          onImportFile={(quality) => runImport((s) => host.importFile(quality, s))}
           onImportUrl={importUrl}
           onOpen={openProject}
           onResume={() => app.kind === "home" && app.resume.kind === "available" && enterSession(app.resume.session)}
@@ -282,6 +282,10 @@
   }
   :global(.field:focus) {
     background: var(--c-raised);
+  }
+  :global(.small) {
+    font-size: 13px;
+    line-height: 18px;
   }
   :global(.muted) {
     color: var(--c-muted);

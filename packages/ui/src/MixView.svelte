@@ -363,8 +363,4 @@
     flex: none;
     text-align: right;
   }
-  .small {
-    font-size: 13px;
-    line-height: 18px;
-  }
 </style>

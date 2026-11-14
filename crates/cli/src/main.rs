@@ -3,14 +3,18 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use engine_core::note::{hz_to_midi, note_name};
+use engine_core::pitch::PitchFrame;
 use engine_core::pitch::{PitchRange, Yin};
-use engine_core::project::{self, SongAudio, SongSource};
+use engine_core::project::{
+    self, PitchTracker, SeparationQuality, SongAudio, SongSource, TrackedPitch,
+};
 use engine_core::score::{Difficulty, NoteResult, OctaveMode, ScoreSettings};
 use engine_core::WORKING_SAMPLE_RATE;
 use engine_native::cache::StemCache;
 use engine_native::decode;
 use engine_native::import::{import_song, Imported, Separation};
-use engine_native::separate::Demucs;
+use engine_native::pitch::Pitch;
+use engine_native::separate::Separators;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -24,11 +28,18 @@ struct Cli {
 enum Command {
     /// Port of prototype/main.py: per-second YIN pitch of two recordings.
     Compare { mine: PathBuf, artist: PathBuf },
-    /// Import a song: decode, separate (with --model), analyze, cache.
+    /// Import a song: decode, separate (with --models), analyze, cache.
     Import {
         song: PathBuf,
         #[command(flatten)]
         engine: EngineArgs,
+    },
+    /// Pitch of a (vocal) recording with YIN and RMVPE side by side: agreement and coverage.
+    Pitch {
+        recording: PathBuf,
+        /// Directory holding rmvpe.onnx.
+        #[arg(long)]
+        models: PathBuf,
     },
     /// Score a sung take against a song's reference vocal.
     Score {
@@ -46,11 +57,21 @@ enum Command {
 
 #[derive(clap::Args)]
 struct EngineArgs {
-    /// HTDemucs ONNX graph (its .json sidecar must sit next to it). Omit to skip separation.
+    /// Directory holding the separation weights (models/weights layout: htdemucs_6s, plus
+    /// melband_roformer_vocals for the vocal cascade). Omit to skip separation.
     #[arg(long)]
-    model: Option<PathBuf>,
+    models: Option<PathBuf>,
     #[arg(long, default_value = "stem-cache")]
     cache: PathBuf,
+    /// Separation to run when --models is given.
+    #[arg(long, value_enum, default_value = "fast")]
+    quality: QualityArg,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum QualityArg {
+    Fast,
+    BestVocals,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -86,8 +107,9 @@ fn main() -> Result<()> {
                 println!("key        {} (r = {:.2})", k.label, k.correlation);
             }
             println!(
-                "reference  {:?}, {} notes",
+                "reference  {:?} ({:?}), {} notes",
                 a.reference_source,
+                a.pitch_tracker,
                 a.reference_notes.len()
             );
             if let SongAudio::Separated { stems } = &imported.audio {
@@ -120,6 +142,11 @@ fn main() -> Result<()> {
         } => {
             let imported = import(&song, &engine)?;
             let take = decode::load(&take, WORKING_SAMPLE_RATE)?;
+            let take = pitch_trackers(&engine).track(
+                imported.project.analysis.pitch_tracker,
+                &take.to_mono(),
+                WORKING_SAMPLE_RATE,
+            )?;
             let settings = ScoreSettings {
                 difficulty: match difficulty {
                     DifficultyArg::Easy => Difficulty::Easy,
@@ -132,7 +159,7 @@ fn main() -> Result<()> {
                     OctaveMode::Fold
                 },
             };
-            let report = project::score_take(&imported.project, &take, settings);
+            let report = project::score_take(&imported.project, &take, settings)?;
             let s = report.scores;
             println!("offset     {:+.2} s", report.offset_seconds);
             println!("overall    {:.1}", s.overall);
@@ -151,13 +178,72 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Command::Pitch { recording, models } => {
+            let audio = decode::load(&recording, WORKING_SAMPLE_RATE)?.to_mono();
+            let yin = TrackedPitch::yin(&audio, WORKING_SAMPLE_RATE).track;
+            let started = std::time::Instant::now();
+            let rmvpe = Pitch::find(std::slice::from_ref(&models))
+                .track(PitchTracker::Rmvpe, &audio, WORKING_SAMPLE_RATE)?
+                .track;
+            let secs = started.elapsed().as_secs_f64();
+            let voiced = |t: &[PitchFrame]| {
+                t.iter()
+                    .filter(|f| matches!(f, PitchFrame::Voiced { .. }))
+                    .count()
+            };
+            let (mut both, mut within) = (0usize, 0usize);
+            for (a, b) in yin.frames.iter().zip(&rmvpe.frames) {
+                if let (PitchFrame::Voiced { midi: y }, PitchFrame::Voiced { midi: r }) = (a, b) {
+                    both += 1;
+                    if (100.0 * (y - r)).abs() <= 50.0 {
+                        within += 1;
+                    }
+                }
+            }
+            println!(
+                "frames     {} (YIN) / {} (RMVPE), 10 ms",
+                yin.frames.len(),
+                rmvpe.frames.len()
+            );
+            println!(
+                "voiced     YIN {} / RMVPE {}",
+                voiced(&yin.frames),
+                voiced(&rmvpe.frames)
+            );
+            println!(
+                "agreement  {within} of {both} frames voiced in both within 50 cents ({:.1}%)",
+                100.0 * within as f64 / both.max(1) as f64
+            );
+            println!("rmvpe      {secs:.1} s");
+            Ok(())
+        }
+    }
+}
+
+/// RMVPE when --models holds it, YIN otherwise.
+fn pitch_trackers(engine: &EngineArgs) -> Pitch {
+    match &engine.models {
+        Some(dir) => Pitch::find(std::slice::from_ref(dir)),
+        None => Pitch::YinOnly,
     }
 }
 
 fn import(song: &Path, engine: &EngineArgs) -> Result<Imported> {
-    let mut model = engine.model.as_deref().map(Demucs::load).transpose()?;
+    let mut model = match &engine.models {
+        Some(dir) => Some(
+            Separators::find(std::slice::from_ref(dir))?
+                .ok_or_else(|| anyhow::anyhow!("no separation weights in {}", dir.display()))?,
+        ),
+        None => None,
+    };
     let separation = match model.as_mut() {
-        Some(m) => Separation::Model(m),
+        Some(separators) => Separation::Model {
+            separators,
+            quality: match engine.quality {
+                QualityArg::Fast => SeparationQuality::Fast,
+                QualityArg::BestVocals => SeparationQuality::BestVocals,
+            },
+        },
         None => Separation::Disabled,
     };
     let name = song
@@ -168,6 +254,7 @@ fn import(song: &Path, engine: &EngineArgs) -> Result<Imported> {
         song,
         SongSource::File { name },
         separation,
+        &mut pitch_trackers(engine),
         &StemCache::new(engine.cache.clone()),
         |stage| eprintln!("{stage:?}"),
     )

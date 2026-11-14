@@ -4,7 +4,7 @@
 
 use engine_core::audio::StereoAudio;
 use engine_core::player::{Player, PlayerCommand, PlayerTrack};
-use engine_core::project::{self, Project, SongAudio, SongSource};
+use engine_core::project::{self, Project, SongAudio, SongSource, TrackedPitch};
 use engine_core::score::ScoreSettings;
 use engine_ml::demucs::{ModelSpec, Separator, SeparatorState};
 use wasm_bindgen::prelude::*;
@@ -43,7 +43,15 @@ pub struct WasmSong {
 impl WasmSong {
     fn new(name: String, audio: SongAudio) -> WasmSong {
         WasmSong {
-            project: project::build(SongSource::File { name }, &audio),
+            // RMVPE (361 MB) is desktop-only; the web tracks pitch with YIN (AGENTS.md §5).
+            project: project::build(
+                SongSource::File { name },
+                &audio,
+                TrackedPitch::yin(
+                    &project::reference_signal(&audio),
+                    project::track_audio(&audio)[0].sample_rate,
+                ),
+            ),
             audio,
         }
     }
@@ -90,7 +98,10 @@ impl WasmSong {
     ) -> Result<JsValue, JsError> {
         let settings: ScoreSettings = from_js(settings)?;
         let take = stereo(left, right, self.project.sample_rate)?;
-        to_js(&project::score_take(&self.project, &take, settings))
+        let take = TrackedPitch::yin(&take.to_mono(), self.project.sample_rate);
+        let report = project::score_take(&self.project, &take, settings)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        to_js(&report)
     }
 }
 
