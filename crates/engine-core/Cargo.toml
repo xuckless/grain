@@ -1,0 +1,12 @@
+[package]
+name = "engine-core"
+description = "Platform-independent DSP, analysis, scoring, mixer and project model. Must build for wasm32-unknown-unknown."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+realfft = "3"
+serde = { version = "1", features = ["derive"] }
+ts-rs = "10"
+thiserror = "2"

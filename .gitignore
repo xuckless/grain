@@ -207,3 +207,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# --- workstation ---
+/target/
+node_modules/
+models/weights/
+.claude/
+apps/desktop/src-tauri/gen/
+crates/engine-wasm/pkg/
