@@ -6,15 +6,11 @@ import type { EngineHost, PlayerCommand, Project, ScoreSettings, TakeAdded } fro
 import { errorMessage, type Session } from "./state";
 import { backingCommands, backingRestoreCommands, defaultBacking, type Backing } from "./takes";
 
-/** Sends commands in order. The engine rejects illegal ones; the transport poll shows the truth. */
+/** Sends commands in order. All are handed to the host at once (hosts keep the order), so two
+ * lists sent one after the other never interleave. The engine rejects illegal ones; the pushed
+ * transport shows the truth. */
 export async function runCommands(host: EngineHost, commands: PlayerCommand[]): Promise<void> {
-  for (const command of commands) {
-    try {
-      await host.send(command);
-    } catch (e) {
-      console.warn(errorMessage(e));
-    }
-  }
+  await Promise.all(commands.map((c) => host.send(c).catch((e: unknown) => console.warn(errorMessage(e)))));
 }
 
 function microphone(host: EngineHost) {
@@ -55,9 +51,9 @@ export async function cancelTake(host: EngineHost, project: Project): Promise<vo
   await runCommands(host, backingRestoreCommands(project));
 }
 
-/** A take was added: it becomes the shown, scored take and the song has unsaved changes. */
+/** A take was added (and saved by the host): it becomes the shown, scored take. */
 export function applyTake(session: Session, added: TakeAdded): void {
-  session.adopt(added.project);
+  session.saved(added.project);
   session.score = { kind: "scored", take: added.take, report: added.report };
 }
 

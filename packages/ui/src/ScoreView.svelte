@@ -10,21 +10,10 @@
   import { celebrate, detailDelay, dur, enter } from "./motion";
   import { applyTake, armTake, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
   import { errorMessage, type Session } from "./state";
-  import {
-    auditionCommands,
-    auditionEndCommands,
-    auditionNext,
-    beatsLeft,
-    isCapturing,
-    noteSpan,
-    observeAudition,
-    observeRecording,
-    recordingNext,
-    type Audition,
-    type AuditionEvent,
-    type Recording,
-    type RecordingEvent,
-  } from "./takes";
+  import { beatsLeft, isCapturing, observeRecording, recordingNext, type Recording, type RecordingEvent } from "./takes";
+  import Takes from "./Takes.svelte";
+  import { listener } from "./context";
+  import { noteSpan, sungTakes } from "./listen";
   import { colour, stemHue } from "./theme";
   import { pitchFeedback } from "./feedback";
   import { noteAt } from "./karaoke";
@@ -183,32 +172,19 @@
 
   let calibrating = $state(false);
 
-  // ---- A/B audition ---------------------------------------------------------------------------
+  // ---- A/B audition (the app's listen machine: the original's note, then the take's) ---------
 
-  let audition = $state<Audition>({ kind: "idle" });
-
-  async function auditionEvent(e: AuditionEvent) {
-    const previous = audition;
-    const next = auditionNext(audition, e);
-    if (!next) return;
-    audition = next;
-    if (next.kind === "idle") await run(auditionEndCommands(project, previous));
-    else if (next.kind !== previous.kind || e.kind === "start") await run(auditionCommands(project, next, snapshot.sample_rate));
-  }
-
+  const listen = listener();
+  /** Recording or calibrating takes the player: whatever is being heard stops first. */
   async function stopAudition() {
-    await auditionEvent({ kind: "cancel" });
+    listen({ kind: "stop" });
   }
-
-  $effect(() => {
-    const e = observeAudition(audition, snapshot.transport, snapshot.sample_rate);
-    if (e) void auditionEvent(e);
-  });
+  const auditioning = $derived(session.listening.kind !== "idle" && session.listening.span !== null ? session.listening.item.kind : null);
 
   // ---- Takes ----------------------------------------------------------------------------------
 
   /** "" until a take is picked (a reopened song shows no score yet). */
-  const takes = $derived([...(score.kind === "scored" ? [] : [{ id: "", label: "Pick a take" }]), ...project.takes.map((t) => ({ id: String(t.id), label: t.name }))]);
+  const takes = $derived([...(score.kind === "scored" ? [] : [{ id: "", label: "Pick a take" }]), ...sungTakes(project).map((t) => ({ id: String(t.id), label: t.name }))]);
   const shown = $derived(score.kind === "scored" ? String(score.take) : "");
 
   let overall = $state<HTMLElement | undefined>();
@@ -227,7 +203,7 @@
 <section class="score">
   <div class="controls">
     <SettingsControls {session} onChange={settingsChanged} />
-    {#if project.takes.length > 0}
+    {#if takes.length > (score.kind === "scored" ? 0 : 1)}
       <Menu label="Take" value={shown} options={takes} onPick={(id) => id !== "" && !busy && void rescore(Number(id))} />
     {/if}
     <span class="spacer"></span>
@@ -320,16 +296,20 @@
           <ScoreGraph
             {project}
             report={score.report}
-            onNote={(start, end) => void auditionEvent({ kind: "start", span: noteSpan(start, end), take: score.take })}
+            onNote={(start, end) => listen({ kind: "play", items: [{ kind: "VocalStem" }, { kind: "Take", id: score.take }], mode: "Solo", span: noteSpan(start, end) })}
             onSeek={(seconds) => onSeek(Math.floor(seconds * snapshot.sample_rate))}
           />
-          {#if audition.kind !== "idle"}
-            <p class="muted">{audition.kind === "reference" ? "A: the original vocal" : "B: your take"}</p>
+          {#if auditioning}
+            <p class="muted">{auditioning === "VocalStem" ? "A: the original vocal" : "B: your take"}</p>
           {/if}
         {/if}
       </div>
     {/key}
   </div>
+
+  {#if !isCapturing(recording)}
+    <Takes {host} {session} onUse={(id) => !busy && void rescore(id)} empty="Record a take or import one: it's kept with the song." />
+  {/if}
 </section>
 
 <style>

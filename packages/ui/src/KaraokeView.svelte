@@ -4,7 +4,7 @@
   import LyricsPanel from "./LyricsPanel.svelte";
   import RecordingSetup from "./RecordingSetup.svelte";
   import SettingsControls from "./SettingsControls.svelte";
-  import { services } from "./context";
+  import { listener, services } from "./context";
   import { frameFeedback, type Feedback } from "./feedback";
   import { PitchTrail, type TrailPoint } from "./grain";
   import {
@@ -25,6 +25,7 @@
   import { enter } from "./motion";
   import { applyTake, armTake, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
   import { clock } from "./clock";
+  import Takes from "./Takes.svelte";
   import { errorMessage, formatTime, transportSeconds, type Session } from "./state";
   import { beatsLeft } from "./takes";
 
@@ -102,7 +103,21 @@
     return true;
   }
 
+  const listen = listener();
+
+  /** Shows take `id`'s full score in the Score view. */
+  async function useForScoring(id: number) {
+    session.score = { kind: "scoring" };
+    session.view = "Score";
+    try {
+      session.score = { kind: "scored", take: id, report: await host.scoreRecorded(id, settings()) };
+    } catch (e) {
+      session.score = { kind: "failed", message: errorMessage(e) };
+    }
+  }
+
   async function start() {
+    listen({ kind: "stop" });
     const fresh = karaoke.kind !== "paused";
     if (!karaokeEvent(fresh ? { kind: "start" } : { kind: "resume" })) return;
     if (fresh) {
@@ -288,8 +303,9 @@
   </div>
 
   {#if !live}
+    <Takes {host} {session} onUse={useForScoring} empty="Each run you sing is saved here as a take, ready to play back." />
     <div class="setup">
-      <RecordingSetup {host} {session} busy={live} bind:calibrating beforeCalibrate={async () => {}} />
+      <RecordingSetup {host} {session} busy={live} bind:calibrating beforeCalibrate={async () => listen({ kind: "stop" })} />
       <LyricsPanel {host} {session} locked={live} />
     </div>
   {/if}

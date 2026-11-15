@@ -3,19 +3,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Project, Track } from "@workstation/engine-api";
 import {
-  auditionCommands,
-  auditionEndCommands,
-  auditionNext,
   backingCommands,
   backingNote,
   backingOptions,
   beatsLeft,
   calibrationNext,
   defaultBacking,
-  observeAudition,
   observeRecording,
   recordingNext,
-  type Audition,
   type Recording,
   type RecordingEvent,
 } from "./takes.ts";
@@ -86,44 +81,6 @@ test("calibration measures once at a time", () => {
   assert.deepEqual(calibrationNext({ kind: "measuring" }, { kind: "fail", message: "quiet" }), { kind: "failed", message: "quiet" });
   assert.deepEqual(calibrationNext({ kind: "failed", message: "quiet" }, { kind: "start" }), { kind: "measuring" });
   assert.equal(calibrationNext({ kind: "idle" }, { kind: "dismiss" }), null);
-});
-
-test("audition plays the reference, then the take, then stops", () => {
-  const span = { start: 1, end: 2 };
-  let s: Audition = { kind: "idle" };
-  s = auditionNext(s, { kind: "start", span, take: 1 })!;
-  assert.equal(s.kind, "reference");
-  // A poll from before the seek (paused elsewhere) is not the end of the phase.
-  assert.equal(observeAudition(s, { kind: "Paused", frame: 9000 }, 1000), null);
-  assert.equal(auditionNext(s, { kind: "ended" }), null);
-  assert.deepEqual(observeAudition(s, { kind: "Playing", frame: 1000 }, 1000), { kind: "playing" });
-  s = auditionNext(s, { kind: "playing" })!;
-  assert.equal(observeAudition(s, { kind: "Playing", frame: 1500 }, 1000), null);
-  assert.deepEqual(observeAudition(s, { kind: "Playing", frame: 2000 }, 1000), { kind: "ended" });
-  s = auditionNext(s, { kind: "ended" })!;
-  assert.equal(s.kind, "take");
-  s = auditionNext(s, { kind: "playing" })!;
-  assert.deepEqual(observeAudition(s, { kind: "Stopped" }, 1000), { kind: "ended" });
-  s = auditionNext(s, { kind: "ended" })!;
-  assert.equal(s.kind, "idle");
-  assert.equal(auditionNext(s, { kind: "ended" }), null);
-  assert.equal(auditionNext(s, { kind: "cancel" }), null);
-});
-
-test("audition solos the vocal stem, then the take, and restores the mix", () => {
-  const p = project([track("Vocals"), track("Drums")]);
-  const span = { start: 1, end: 2 };
-  const ref = auditionCommands(p, { kind: "reference", span, take: 1, playing: false }, 1000);
-  assert.deepEqual(ref.at(-3), { kind: "SetMix", track: 0, params: { gain: 1, pan: 0, mode: "Soloed" } });
-  assert.deepEqual(ref.at(-2), { kind: "Seek", frame: 1000 });
-  const take = auditionCommands(p, { kind: "take", span, take: 1, playing: false }, 1000);
-  // The take is player track 2 (after the two stems).
-  assert.deepEqual(take.at(-3), { kind: "SetMix", track: 2, params: { gain: 1, pan: 0, mode: "Soloed" } });
-  assert.deepEqual(auditionEndCommands(p, { kind: "take", span, take: 1, playing: false }), [
-    { kind: "Pause" },
-    { kind: "SetMix", track: 0, params: mix },
-    { kind: "SetMix", track: 2, params: { ...mix, mode: "Muted" } },
-  ]);
 });
 
 test("the backing default follows the measured accompaniment", () => {

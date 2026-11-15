@@ -1,8 +1,7 @@
 // The Auto-tune view's state machines and pure helpers (AGENTS.md §7). The engine decides every
 // pitch; this only drives the controls, the live monitor and "Apply to take".
 
-import type { MonitorMode, MonitorStatus, PlayerCommand, Project, Scale, TunePreview } from "@workstation/engine-api";
-import { setMix, takeTrack, vocalTrack } from "./takes.ts";
+import type { MonitorMode, MonitorStatus, Project, Scale, TunePreview } from "@workstation/engine-api";
 
 /** Live monitoring: off, switching (the microphone may be opening), on dry or tuned, or failed
  * (the reason shown; any toggle tries again). */
@@ -131,31 +130,4 @@ export function formatSemitones(st: number): string {
 /** Readout of a 0–1 amount as a percentage. */
 export function formatPercent(v: number): string {
   return `${Math.round(v * 100)}%`;
-}
-
-/** What plays while comparing: the song as mixed, or a take in place of the song's vocal. */
-export type Listen = { kind: "song" } | { kind: "take"; take: number };
-
-/** Player commands for `listen`. Every take and the vocal start from their saved mix, so
- * switching between takes (A/B) or back to the song never leaves one unmuted. */
-export function listenCommands(project: Project, listen: Listen): PlayerCommand[] {
-  const v = vocalTrack(project);
-  const saved = [
-    ...(v >= 0 ? [setMix(v, project.tracks[v].mix)] : []),
-    ...project.takes.map((t) => setMix(takeTrack(project, t.id), t.mix)),
-  ];
-  if (listen.kind === "song") return saved;
-  // Without stems the vocal is the whole mix: keep it, and the take plays over it.
-  const stems = project.tracks.some((t) => t.source.kind === "Stem");
-  return [
-    ...saved,
-    ...(v >= 0 && stems ? [setMix(v, { ...project.tracks[v].mix, mode: "Muted" })] : []),
-    setMix(takeTrack(project, listen.take), { gain: 1, pan: 0, mode: "Normal" }),
-  ];
-}
-
-/** The newest tuned version of take `id`, if any. */
-export function tunedVersion(project: Project, id: number): number | null {
-  const tuned = project.takes.filter((t) => t.source.kind === "Tuned" && t.source.from === id);
-  return tuned.length > 0 ? tuned[tuned.length - 1].id : null;
 }

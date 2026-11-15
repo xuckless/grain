@@ -6,6 +6,7 @@
 
 import type { EditSource, Project, ScoreSettings } from "@workstation/engine-api";
 import type { SaveState, ScoreState, ViewId } from "./state";
+import type { Listening } from "./listen";
 import type { Backing } from "./takes";
 
 export class Session {
@@ -20,6 +21,8 @@ export class Session {
   backing = $state<Backing | null>(null);
   /** What the Pitch view edits (`null`: its default, the newest take). */
   pitchSource = $state<EditSource | null>(null);
+  /** Hearing a take (one at a time, app-wide; driven by SessionScreen, see listen.ts). */
+  listening = $state.raw<Listening>({ kind: "idle" });
 
   constructor(project: Project) {
     this.project = project;
@@ -29,6 +32,13 @@ export class Session {
   adopt(project: Project): void {
     this.project = project;
     this.touch();
+  }
+
+  /** Replaces the project with one the host just saved (every take change autosaves, and a
+   * save writes the whole song, AGENTS.md §11). */
+  saved(project: Project): void {
+    this.project = project;
+    this.save = { kind: "clean" };
   }
 
   /** Marks the song as having unsaved changes. */

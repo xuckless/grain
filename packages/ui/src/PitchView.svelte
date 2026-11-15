@@ -2,7 +2,8 @@
   import type { EditOp, EditSource, EngineHost, PitchEdit, PitchEditView, TransportSnapshot } from "@workstation/engine-api";
   import DotSlider from "./DotSlider.svelte";
   import Menu from "./Menu.svelte";
-  import { formatPercent, formatSemitones, listenCommands, type Listen } from "./autotune";
+  import { formatPercent, formatSemitones } from "./autotune";
+  import Takes from "./Takes.svelte";
   import { dot, fit } from "./grain";
   import { enter, reveal, rubberBand, springBack } from "./motion";
   import {
@@ -12,7 +13,6 @@
     decideDrag,
     defaultSource,
     dragged,
-    editedVersion,
     formatShift,
     historyOf,
     hitTest,
@@ -36,7 +36,7 @@
     type Selection,
     type Window,
   } from "./pitch";
-  import { applyTake, runCommands } from "./recorder";
+  import { applyTake } from "./recorder";
   import { playhead } from "./clock";
   import { errorMessage, type Session } from "./state";
   import { colour, stemHue } from "./theme";
@@ -164,22 +164,6 @@
     }
   }
 
-  const editedTake = $derived(source === null ? null : editedVersion(project, source));
-  const listenOptions = $derived([
-    { id: "song", label: "The song" },
-    ...(source?.kind === "Take" ? [{ id: String(source.id), label: "Original take" }] : []),
-    ...(editedTake === null ? [] : [{ id: String(editedTake), label: "Edited version" }]),
-  ]);
-  let listen = $state<Listen>({ kind: "song" });
-
-  function hear(id: string) {
-    listen = id === "song" ? { kind: "song" } : { kind: "take", take: Number(id) };
-    void runCommands(host, listenCommands(session.project, listen));
-  }
-
-  $effect(() => () => {
-    if (listen.kind !== "song") void runCommands(host, listenCommands(session.project, { kind: "song" }));
-  });
 
   // ---- Canvas ---------------------------------------------------------------------------------
 
@@ -474,11 +458,10 @@
         <button class="press primary big" onclick={renderTake} disabled={render.kind === "rendering"}>
           {render.kind === "rendering" ? "Rendering the edits" : "Render as a take"}
         </button>
-        <Menu label="Hear" value={listen.kind === "song" ? "song" : String(listen.take)} options={listenOptions} onPick={hear} />
       </div>
       {#if render.kind === "rendered"}
         {@const id = render.take}
-        <p class="muted" in:enter>Added “{project.takes.find((t) => t.id === id)?.name}”, kept with the song and scored. Compare it under Hear.</p>
+        <p class="muted" in:enter>Added “{project.takes.find((t) => t.id === id)?.name}”, kept with the song and scored. Compare it with the source under Your takes.</p>
       {:else if render.kind === "failed"}
         <p class="muted" in:enter>Couldn't render: {render.message}</p>
       {/if}
@@ -487,6 +470,7 @@
       {/if}
     {/if}
   {/if}
+  <Takes {host} {session} empty="Record or import a take in the Score tab; rendered edits appear here too." />
 </section>
 
 <style>

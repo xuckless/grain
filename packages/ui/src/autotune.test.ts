@@ -4,8 +4,6 @@ import { test } from "node:test";
 import type { MonitorStatus, Project, TunePreview } from "@workstation/engine-api";
 import {
   ALL_PITCH_CLASSES,
-  listenCommands,
-  tunedVersion,
   monitorMode,
   monitorNext,
   pickScale,
@@ -85,29 +83,3 @@ test("preview targets group into held notes", () => {
   assert.equal(pitchRange({ ...preview, sung: [null], target: [null] }), null);
 });
 
-test("A/B puts one take in place of the vocal, and the song back", () => {
-  const mix = { gain: 1, pan: 0, mode: "Normal" } as const;
-  const muted = { ...mix, mode: "Muted" } as const;
-  const song = {
-    tracks: [
-      { source: { kind: "Stem", stem: "Vocals" }, mix },
-      { source: { kind: "Stem", stem: "Drums" }, mix },
-    ],
-    takes: [
-      { id: 1, mix: muted, source: { kind: "Recorded", latency_ms: 0 } },
-      { id: 2, mix: muted, source: { kind: "Tuned", from: 1 } },
-    ],
-  } as unknown as Project;
-  assert.equal(tunedVersion(song, 1), 2);
-  assert.equal(tunedVersion(song, 2), null);
-  const tuned = listenCommands(song, { kind: "take", take: 2 });
-  assert.deepEqual(tuned.slice(-2), [
-    { kind: "SetMix", track: 0, params: muted },
-    { kind: "SetMix", track: 3, params: mix },
-  ]);
-  assert.deepEqual(listenCommands(song, { kind: "song" }), [
-    { kind: "SetMix", track: 0, params: mix },
-    { kind: "SetMix", track: 2, params: muted },
-    { kind: "SetMix", track: 3, params: muted },
-  ]);
-});

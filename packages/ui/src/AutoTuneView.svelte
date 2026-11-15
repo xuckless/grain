@@ -9,21 +9,20 @@
     formatRetune,
     formatSemitones,
     KEYBOARD,
-    listenCommands,
     monitorMode,
     monitorNext,
     pickScale,
     scaleChoices,
     scaleId,
     togglePitchClass,
-    tunedVersion,
     type ApplyState,
-    type Listen,
     type MonitorEvent,
     type MonitorState,
   } from "./autotune";
   import { enter } from "./motion";
-  import { applyTake, runCommands } from "./recorder";
+  import { applyTake } from "./recorder";
+  import Takes from "./Takes.svelte";
+  import { sungTakes } from "./listen";
   import { errorMessage, type Session } from "./state";
 
   /**
@@ -79,10 +78,11 @@
   let picked = $state<number | null>(null);
   const take = $derived.by(() => {
     if (picked !== null && project.takes.some((t) => t.id === picked)) return picked;
-    const originals = project.takes.filter((t) => t.source.kind !== "Tuned");
-    return (originals.at(-1) ?? project.takes.at(-1))?.id ?? null;
+    const sung = sungTakes(project);
+    const originals = sung.filter((t) => t.source.kind !== "Tuned");
+    return (originals.at(-1) ?? sung.at(-1))?.id ?? null;
   });
-  const takeOptions = $derived(project.takes.map((t) => ({ id: String(t.id), label: t.name })));
+  const takeOptions = $derived(sungTakes(project).map((t) => ({ id: String(t.id), label: t.name })));
 
   type PreviewState = { kind: "none" } | { kind: "ready"; preview: TunePreview } | { kind: "failed"; message: string };
   let preview = $state<PreviewState>({ kind: "none" });
@@ -136,25 +136,9 @@
     }
   }
 
-  // ---- A/B ------------------------------------------------------------------------------------
-
-  const tuned = $derived(take === null ? null : tunedVersion(project, take));
-  const listenOptions = $derived([
-    { id: "song", label: "The song" },
-    ...(take === null ? [] : [{ id: String(take), label: "Original take" }]),
-    ...(tuned === null ? [] : [{ id: String(tuned), label: "Tuned take" }]),
-  ]);
-  let listen = $state<Listen>({ kind: "song" });
-
-  function hear(id: string) {
-    listen = id === "song" ? { kind: "song" } : { kind: "take", take: Number(id) };
-    void runCommands(host, listenCommands(session.project, listen));
-  }
-
-  // Leaving the view: the monitor goes off and the mix goes back to the song.
+  // Leaving the view: the monitor goes off.
   $effect(() => () => {
     if (monitor.kind === "on" || monitor.kind === "switching") void autotune.setMonitor("Off").catch(() => undefined);
-    if (listen.kind !== "song") void runCommands(host, listenCommands(session.project, { kind: "song" }));
   });
 </script>
 
@@ -226,7 +210,6 @@
     {:else}
       <div class="controls">
         <Menu label="Take" value={String(take)} options={takeOptions} onPick={(id) => (picked = Number(id))} />
-        <Menu label="Hear" value={listen.kind === "song" ? "song" : String(listen.take)} options={listenOptions} onPick={hear} />
         <span class="spacer"></span>
         <button class="press" onclick={editCurve} disabled={seeding.kind === "seeding"} title="Open this correction in the Pitch view to adjust it note by note">Edit curve…</button>
         <button class="press primary big" onclick={applyToTake} disabled={apply.kind === "applying"}>
@@ -236,7 +219,7 @@
       {#if apply.kind === "applied"}
         {@const id = apply.take}
         {@const added = project.takes.find((t) => t.id === id)}
-        <p class="muted" in:enter>Added “{added?.name}”, kept with the song. Its score is in the Score tab; compare it with the original under Hear.</p>
+        <p class="muted" in:enter>Added “{added?.name}”, kept with the song. Its score is in the Score tab; compare it with the original under Your takes (Compare plays one, then the other).</p>
       {:else if apply.kind === "failed"}
         <p class="muted" in:enter>Couldn't tune the take: {apply.message}</p>
       {/if}
@@ -250,6 +233,8 @@
       {/if}
     {/if}
   </div>
+
+  <Takes {host} {session} empty="Record or import a take in the Score tab; tuned versions appear here too." />
 </section>
 
 <style>

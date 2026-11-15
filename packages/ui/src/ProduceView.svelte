@@ -3,6 +3,9 @@
   import DotSlider from "./DotSlider.svelte";
   import Menu from "./Menu.svelte";
   import Toggle from "./Toggle.svelte";
+  import Takes from "./Takes.svelte";
+  import { listener } from "./context";
+  import { madeFrom } from "./listen";
   import { dotFill } from "./grain";
   import { enter } from "./motion";
   import { sourceFromId, sourceId, sourceOptions } from "./pitch";
@@ -73,7 +76,7 @@
   /** Shows a new take or track; sung takes (cleaned, chained) are also scored in the Score tab. */
   function adopt(added: TakeAdded, sung: boolean) {
     if (sung) applyTake(session, added);
-    else session.adopt(added.project);
+    else session.saved(added.project);
   }
 
   /** Runs one job: `work` resolves with what to tell the job. */
@@ -253,6 +256,8 @@
     onMix(takeTrack(project, id), { mode: params.mode, gain: params.gain, pan: params.pan });
   }
 
+  const listen = listener();
+
   const nameOf = (id: number) => project.takes.find((t) => t.id === id)?.name ?? "";
 </script>
 
@@ -414,11 +419,19 @@
       <div class="head"><h3>Made here</h3></div>
       <ul class="outputs">
         {#each outputs as t (t.id)}
+          {@const from = madeFrom(t)}
           <li in:enter>
             <div class="what">
               <span>{t.name}</span>
               <span class="muted small">{describeOutput(t)}</span>
             </div>
+            <button
+              class="press quiet small-button"
+              title={from ? "Play the source, then this" : "Play this alone"}
+              onclick={() => listen({ kind: "play", items: [...(from ? [from] : []), { kind: "Take", id: t.id }], mode: "Solo" })}
+            >
+              {from ? "Compare" : "Play"}
+            </button>
             <Toggle checked={t.mix.mode !== "Muted"} label="Play with the song" onToggle={(on) => mix(t.id, { ...t.mix, mode: on ? "Normal" : "Muted" })} />
             <DotSlider value={t.mix.gain} min={0} max={1.5} step={0.01} width={120} label="Level" readout={`${Math.round(t.mix.gain * 100)}%`} onChange={(v) => mix(t.id, { ...t.mix, gain: v })} />
             <DotSlider value={t.mix.pan} min={-1} max={1} step={0.01} width={100} label="Pan" readout={formatPan(t.mix.pan)} onChange={(v) => mix(t.id, { ...t.mix, pan: v })} />
@@ -427,6 +440,8 @@
       </ul>
     </div>
   {/if}
+
+  <Takes {host} {session} empty="Record or import a take in the Score tab; cleaned and chained versions appear here too." />
 </section>
 
 <style>

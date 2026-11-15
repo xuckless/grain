@@ -43,14 +43,19 @@ export function dotBar(c: Ctx, x0: number, x1: number, y: number, col: string, r
 export const dotFill: Action<HTMLCanvasElement, number | { fraction: number; lit: string }> = (canvas, value) => {
   const draw = (v: number | { fraction: number; lit: string }) => {
     const { fraction, lit } = typeof v === "number" ? { fraction: v, lit: colour.text } : v;
-    const w = canvas.clientWidth, h = 8;
-    const c = fit(canvas, w, h);
-    if (!c) return;
-    for (let x = 3; x <= w - 3; x += 6) dot(c, x, h / 2, 1.5, x / w <= fraction ? lit : colour.raised);
+    dotRow(canvas, fraction, lit);
   };
   draw(value);
   return { update: draw };
 };
+
+/** Draws a row of dots across `canvas` (8 px tall) lit up to `fraction`. */
+export function dotRow(canvas: HTMLCanvasElement, fraction: number, lit: string = colour.text): void {
+  const w = canvas.clientWidth, h = 8;
+  const c = fit(canvas, w, h);
+  if (!c) return;
+  for (let x = 3; x <= w - 3; x += 6) dot(c, x, h / 2, 1.5, x / w <= fraction ? lit : colour.raised);
+}
 
 /** A horizontal input meter: `level` (0–1 peak) shown on a dB scale from −48 dB, lit dots
  * over a track of dim ones. */

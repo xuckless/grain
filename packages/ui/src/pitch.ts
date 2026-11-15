@@ -3,6 +3,7 @@
 // window and the render job.
 
 import type { EditNote, EditSource, PitchEdit, Project } from "@workstation/engine-api";
+import { sungTakes } from "./listen.ts";
 
 // ---- Undo / redo ------------------------------------------------------------------------------
 
@@ -201,10 +202,11 @@ export type Loading<T> = { kind: "loading" } | { kind: "ready"; value: T } | { k
 
 export type SourceOption = { id: string; label: string };
 
-/** Sources the editor can open: the vocal stem (when the song has a melody) and every take. */
+/** Sources the editor (and Produce) can open: the vocal stem (when the song has a melody) and
+ * every sung take (harmony and generated tracks aren't takes, see `sungTakes`). */
 export function sourceOptions(project: Project): SourceOption[] {
   const vocal = project.analysis.reference_notes.length > 0 ? [{ id: "vocal", label: "Vocal stem" }] : [];
-  return [...vocal, ...project.takes.map((t) => ({ id: `take:${t.id}`, label: t.name }))];
+  return [...vocal, ...sungTakes(project).map((t) => ({ id: `take:${t.id}`, label: t.name }))];
 }
 
 export function sourceId(s: EditSource): string {
@@ -223,13 +225,6 @@ export function defaultSource(project: Project): EditSource | null {
   if (project.analysis.reference_notes.length > 0) return { kind: "VocalStem" };
   const any = project.takes.at(-1);
   return any ? { kind: "Take", id: any.id } : null;
-}
-
-/** The newest rendered (edited) take of `source`, if any. */
-export function editedVersion(project: Project, source: EditSource): number | null {
-  const same = (s: EditSource) => s.kind === source.kind && (s.kind === "VocalStem" || (source.kind === "Take" && s.id === source.id));
-  const edited = project.takes.filter((t) => t.source.kind === "Edited" && same(t.source.from));
-  return edited.length > 0 ? edited[edited.length - 1].id : null;
 }
 
 /** Pitch classes set in `mask` (bit 0 = C). */

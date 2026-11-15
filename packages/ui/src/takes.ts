@@ -1,4 +1,4 @@
-// Takes in the Score view: the recording, calibration and A/B audition state machines, and the
+// Takes in the Score view: the recording and calibration state machines, player tracks, and the
 // backing a singer hears while recording (AGENTS.md §5, §9). Pure functions with no Svelte or
 // host imports, so they are unit-tested under Node (`pnpm --filter @workstation/ui test`).
 // Each `…Next` returns the next state, or `null` for an illegal transition (rejected).
@@ -98,48 +98,7 @@ export function calibrationNext(s: Calibration, e: CalibrationEvent): Calibratio
 export const LATENCY_NUDGE_MS = 5;
 
 // ---------------------------------------------------------------------------------------------
-// A/B audition: a note's span from the reference vocal, then the same span from the take.
-
-export type Span = { start: number; end: number };
-
-/** `playing`: the transport has shown this phase playing inside its span (until then a poll may
- * still report the position from before the seek). */
-export type Audition =
-  | { kind: "idle" }
-  | { kind: "reference"; span: Span; take: number; playing: boolean }
-  | { kind: "take"; span: Span; take: number; playing: boolean };
-
-export type AuditionEvent = { kind: "start"; span: Span; take: number } | { kind: "playing" } | { kind: "ended" } | { kind: "cancel" };
-
-export function auditionNext(s: Audition, e: AuditionEvent): Audition | null {
-  switch (e.kind) {
-    case "start":
-      return { kind: "reference", span: e.span, take: e.take, playing: false };
-    case "playing":
-      return s.kind !== "idle" && !s.playing ? { ...s, playing: true } : null;
-    case "ended":
-      if (s.kind === "idle" || !s.playing) return null;
-      return s.kind === "reference" ? { kind: "take", span: s.span, take: s.take, playing: false } : { kind: "idle" };
-    case "cancel":
-      return s.kind === "idle" ? null : { kind: "idle" };
-  }
-}
-
-/** A phase starts when playback is seen inside its span, and ends when it passes the end or stops. */
-export function observeAudition(s: Audition, t: Transport, sampleRate: number): AuditionEvent | null {
-  if (s.kind === "idle") return null;
-  const inSpan = t.kind === "Playing" && t.frame >= Math.floor(s.span.start * sampleRate) && t.frame < s.span.end * sampleRate;
-  if (!s.playing) return inSpan ? { kind: "playing" } : null;
-  return inSpan ? null : { kind: "ended" };
-}
-
-/** Seconds of lead-in before a note so its attack is heard. */
-const AUDITION_LEAD = 0.15;
-
-/** The span auditioned for a note. */
-export function noteSpan(start: number, end: number): Span {
-  return { start: Math.max(0, start - AUDITION_LEAD), end: end + AUDITION_LEAD };
-}
+// Player tracks and mixes.
 
 /** Player index of the vocal stem (or the unseparated mix). */
 export function vocalTrack(project: Project): number {
@@ -163,33 +122,6 @@ export function withMix(project: Project, track: number, params: MixParams): Pro
 /** Copies `params`: project state may be a reactive proxy, which hosts can't post or clone. */
 export function setMix(track: number, params: MixParams): PlayerCommand {
   return { kind: "SetMix", track, params: { mode: params.mode, gain: params.gain, pan: params.pan } };
-}
-
-/** Saved mix of every track an audition touches, to put back afterwards. */
-function restore(project: Project, take: number): PlayerCommand[] {
-  const v = vocalTrack(project);
-  const t = project.takes.find((x) => x.id === take);
-  return [...(v >= 0 ? [setMix(v, project.tracks[v].mix)] : []), ...(t ? [setMix(takeTrack(project, take), t.mix)] : [])];
-}
-
-/** Player commands that enter audition state `s` (from any other phase). */
-export function auditionCommands(project: Project, s: Audition, sampleRate: number): PlayerCommand[] {
-  if (s.kind === "idle") return [{ kind: "Pause" }];
-  const v = vocalTrack(project);
-  const solo = s.kind === "reference" ? v : takeTrack(project, s.take);
-  const base = { gain: 1, pan: 0 };
-  return [
-    { kind: "Pause" },
-    ...restore(project, s.take),
-    setMix(solo, { ...base, mode: "Soloed" }),
-    { kind: "Seek", frame: Math.max(0, Math.floor(s.span.start * sampleRate)) },
-    { kind: "Play" },
-  ];
-}
-
-/** Commands that leave an audition: stop and put the mix back. */
-export function auditionEndCommands(project: Project, s: Audition): PlayerCommand[] {
-  return s.kind === "idle" ? [] : [{ kind: "Pause" }, ...restore(project, s.take)];
 }
 
 // ---------------------------------------------------------------------------------------------

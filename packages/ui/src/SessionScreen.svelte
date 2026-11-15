@@ -10,7 +10,9 @@
   import ScoreView from "./ScoreView.svelte";
   import Tabs from "./Tabs.svelte";
   import TopBar from "./TopBar.svelte";
-  import { services } from "./context";
+  import { provideListen, services } from "./context";
+  import { listenCommands, listenNext, observeListening, type ListenEvent } from "./listen";
+  import { effectiveBacking, runCommands } from "./recorder";
   import { Orb } from "./grain";
   import { enter, iconSwap, popover, pulse, receiveShared, sendShared } from "./motion";
   import { clockText } from "./clock";
@@ -58,6 +60,41 @@
     session.adopt(next);
   }
   const playing = $derived(snapshot.transport.kind === "Playing");
+
+  // ---- Listening to a take (one playback at a time, listen.ts) --------------------------------
+
+  /** Applies a listen event; the player follows. Rejected events change nothing. */
+  function listen(e: ListenEvent) {
+    const prev = session.listening;
+    const next = listenNext(prev, e);
+    if (!next) return;
+    session.listening = next;
+    void runCommands(host, listenCommands(session.project, prev, next, effectiveBacking(session), snapshot.sample_rate));
+  }
+  provideListen(listen);
+
+  // The transport starts and ends each item (and a pause elsewhere ends it).
+  $effect(() => {
+    const e = observeListening(session.project, session.listening, snapshot.transport, snapshot.sample_rate);
+    if (e) listen(e);
+  });
+
+  /** The top bar's play/pause: the song, or the take being heard. Playing the song ends any
+   * listening (its mix goes back first). */
+  function playPause() {
+    const l = session.listening;
+    if (l.kind === "playing") listen({ kind: "pause" });
+    else if (l.kind === "paused") listen({ kind: "resume" });
+    else onCommand(playing ? { kind: "Pause" } : { kind: "Play" });
+  }
+
+  function stop() {
+    listen({ kind: "stop" });
+    onCommand({ kind: "Stop" });
+  }
+
+  // Leaving the song (or Back to Home) puts the mix back.
+  $effect(() => () => listen({ kind: "stop" }));
   const key = $derived(project.analysis.keys[0]);
   const canSave = $derived(host.projects.kind === "available");
   const unsaved = $derived(canSave && session.save.kind === "dirty");
@@ -89,7 +126,7 @@
         void save();
       } else if (e.key === " " && !(e.target instanceof HTMLButtonElement || e.target instanceof HTMLInputElement)) {
         e.preventDefault();
-        onCommand(playing ? { kind: "Pause" } : { kind: "Play" });
+        playPause();
       } else if (e.key === "Escape" && closing.kind === "confirming") {
         closing = { kind: "idle" };
       }
@@ -117,10 +154,10 @@
       <span class="song" in:receiveShared|global={{ key: `title:${title}` }} out:sendShared|global={{ key: `title:${title}` }}>{title}</span>
     {/snippet}
     {#snippet center()}
-      <button class="press play" aria-label={playing ? "Pause" : "Play"} onclick={() => onCommand(playing ? { kind: "Pause" } : { kind: "Play" })}>
+      <button class="press play" aria-label={playing ? "Pause" : "Play"} onclick={playPause}>
         {#key playing}<span class="glyph" transition:iconSwap><Icon name={playing ? "pause" : "play"} /></span>{/key}
       </button>
-      <button class="press icon quiet" aria-label="Stop" disabled={snapshot.transport.kind === "Stopped"} onclick={() => onCommand({ kind: "Stop" })}><Icon name="stop" /></button>
+      <button class="press icon quiet" aria-label="Stop" disabled={snapshot.transport.kind === "Stopped"} onclick={stop}><Icon name="stop" /></button>
       <span class="mono readout"><span use:clockText={formatTime}></span> <span class="muted">/ {formatTime(duration)}</span></span>
       <span class="mono muted">{project.analysis.tempo.bpm.toFixed(0)} BPM</span>
       {#if key}<span class="mono muted">{key.label}</span>{/if}

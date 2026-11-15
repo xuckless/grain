@@ -2,6 +2,7 @@
 
 import { getContext, setContext } from "svelte";
 import type { Burst } from "./grain";
+import type { ListenEvent } from "./listen";
 
 export type ToastTone = "info" | "error";
 
@@ -13,6 +14,11 @@ export type Services = {
 };
 
 const KEY = Symbol("services");
+const LISTEN = Symbol("listen");
 
 export const provideServices = (s: Services): void => void setContext(KEY, s);
 export const services = (): Services => getContext<Services>(KEY);
+
+/** The loaded song's listen machine (listen.ts), driven by SessionScreen. */
+export const provideListen = (listen: (e: ListenEvent) => void): void => void setContext(LISTEN, listen);
+export const listener = (): ((e: ListenEvent) => void) => getContext(LISTEN);
