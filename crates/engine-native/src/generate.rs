@@ -383,7 +383,10 @@ mod tests {
                 "--extra",
                 "acestep",
                 "--project",
-                "/data/ml-sidecar/project"
+                // Platform separators: `\` on Windows.
+                &PathBuf::from("/data/ml-sidecar")
+                    .join("project")
+                    .to_string_lossy(),
             ]
         );
     }
