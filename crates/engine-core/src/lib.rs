@@ -13,6 +13,7 @@ pub mod edit;
 pub mod export;
 pub mod generate;
 pub mod harmony;
+pub mod input;
 pub mod key;
 pub mod live;
 pub mod lyrics;

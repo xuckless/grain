@@ -6,6 +6,7 @@
 //! for the same signal. It never runs on an audio thread: hosts feed it from their capture
 //! drain (desktop writer thread data, web main thread).
 
+use crate::input::StreamState;
 use crate::pitch::{self, PitchFrame, PitchTrack, Yin};
 use crate::score::{self, FrameComparison, FrameTotals, ScoreSettings};
 use serde::{Deserialize, Serialize};
@@ -91,6 +92,8 @@ pub struct LiveFrame {
 pub struct LiveUpdate {
     pub frames: Vec<LiveFrame>,
     pub totals: FrameTotals,
+    /// The microphone stream; a host sets `Failed` when it stopped delivering mid-run.
+    pub input: StreamState,
 }
 
 /// A live run: capture sample `i` is song time `i / sample_rate − song_zero`.
@@ -153,6 +156,7 @@ impl LiveSession {
         LiveUpdate {
             frames,
             totals: self.totals,
+            input: StreamState::Running,
         }
     }
 }
