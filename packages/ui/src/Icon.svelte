@@ -4,7 +4,7 @@
     | "back" | "close" | "play" | "pause" | "stop" | "check" | "chevron" | "save" | "info"
     | "gear" | "more" | "star" | "starFilled" | "undo" | "redo" | "export" | "zoomIn" | "zoomOut" | "fit"
     | "mute" | "unmute" | "solo" | "midi" | "loop" | "record"
-    | "mic" | "drums" | "bass" | "guitar" | "piano" | "waves";
+    | "mic" | "melody" | "drums" | "bass" | "guitar" | "piano" | "waves";
 </script>
 
 <script lang="ts">
@@ -55,6 +55,8 @@
     <path d="M4 8.5V7.5a2.5 2.5 0 012.5-2.5H15M12.8 2.8L15 5l-2.2 2.2M16 11.5v1a2.5 2.5 0 01-2.5 2.5H5M7.2 17.2L5 15l2.2-2.2"></path>
   {:else if name === "record"}
     <circle cx="10" cy="10" r="5.5" fill="currentColor" stroke="none"></circle>
+  {:else if name === "melody"}
+    <ellipse cx="6" cy="14.6" rx="2.3" ry="1.8"></ellipse><path d="M8.3 14.4V4.6l7.2-1.6v9.6"></path><ellipse cx="13.2" cy="12.8" rx="2.3" ry="1.8"></ellipse><path d="M8.3 7.4l7.2-1.6"></path>
   {:else if name === "mic"}
     <rect x="7.5" y="2.8" width="5" height="9" rx="2.5"></rect><path d="M4.8 9.6a5.2 5.2 0 0010.4 0M10 14.8v2.6M7.2 17.4h5.6"></path>
   {:else if name === "drums"}
