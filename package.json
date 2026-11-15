@@ -10,5 +10,8 @@
     "dev:web": "pnpm wasm && pnpm --filter web dev",
     "dev:desktop": "pnpm --filter desktop tauri dev",
     "build:desktop": "pnpm --filter desktop tauri build"
+  },
+  "devDependencies": {
+    "playwright-core": "1.49.1"
   }
 }
