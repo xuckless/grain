@@ -1,247 +1,99 @@
-# music_analysis
+<div align="center">
 
-A singing and music workstation: stem separation, a multitrack timeline, performance scoring,
-live karaoke, auto-tune, a pitch editor and AI production. It ships as a desktop app (Tauri) and
-a web app (WASM), both built on one Rust engine. See [AGENTS.md](AGENTS.md) for the product spec
-and engineering rules.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/logo-dark.svg"/>
+  <img src="docs/readme/logo-light.svg" alt="Grain" width="300"/>
+</picture>
 
-## What it does
+**Split any song, sing it back, and shape your voice. All on your own machine.**
 
-| Feature | Where | Desktop | Web |
-|---|---|---|---|
-| Import a file or a YouTube link, split it into stems (HTDemucs; optional Mel-Band RoFormer "Best vocals"), find tempo, key and the vocal melody | Home | ✓ | files only; Fast separation |
-| Multitrack mix: compact rows with instrument icons, mute/solo, gain and pan knobs, shared zoom, scrubbing; MIDI lanes from basic-pitch or the drum classifier, `.mid` export | Mix | ✓ | ✓ |
-| Score a take against the melody (pitch, timing, stability), A/B a note; import takes | Score | ✓ | ✓ |
-| Live karaoke: record takes, LRCLIB lyrics, scrolling note lane, live pitch trail and streaks, seek, 2 s pre-roll, loop A/B | Karaoke | ✓ | ✓ |
-| Auto-tune: live monitor (dry or tuned), applied to the take as a chain step | Auto-tune | ✓ | ✓ |
-| Melodyne-style pitch editor: drag notes, stretch, split, vibrato, drift, formant; ghost notes of the melody, snap to original, A/B | Pitch | ✓ | ✓ |
-| Produce: DeepFilterNet clean-up, vocal chain (live and offline), harmonies, melody MIDI, ACE-Step backing | Produce | ✓ | chain, harmony, MIDI; generation only with a remote backend |
-| Model manager: download, verify and delete every model; opt-in licences; AI generation install | Models | ✓ | ✓ (no generation install) |
+<a href="https://github.com/xuckless/grain/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/xuckless/grain/ci.yml?branch=main&style=flat-square&label=CI&color=F0449A"/></a> <a href="#license"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-F0449A?style=flat-square"/></a> <img alt="Rust engine" src="https://img.shields.io/badge/engine-Rust-050506?style=flat-square"/> <img alt="macOS, Windows, Linux, Web" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Web-050506?style=flat-square"/>
 
-Everything is non-destructive. Each take keeps its raw recording and one processing chain, Pitch
-edits → Auto-tune → Clean up → Vocal chain, each step switchable on and off; ★ marks the master
-take that views and export start from. ⌘Z / ⇧⌘Z undo mix, take, pitch and chain changes.
-**Export…** in the top bar writes a mixdown (WAV 24-bit; MP3 and M4A on desktop through the bundled
-ffmpeg) or the `.grain` project file. Harmonies and generations are new tracks. ⚙ Settings holds
-the playback mode (voice only, + instrumental, + full mix; never the guide vocal), latency
-calibration and monitoring; every view has its tips under (i) and rare actions under ⋯.
+[Quick start](#quick-start) · [Guide](docs/guide.md) · [How it works](#how-it-works) · [Develop](#develop) · [License](#license)
 
-## Layout
+</div>
 
-| Path | What |
-|---|---|
-| `crates/engine-core` | DSP and analysis: YIN, STFT, resampling, tempo, key, melody notes, DTW alignment, scoring, mixer/transport, project model. Also builds for wasm32. |
-| `crates/engine-ml` | Model host processing (HTDemucs, RoFormer, RMVPE, basic-pitch) and the model registry compiled from `models/manifest.toml` |
-| `crates/engine-native` | Desktop host: decode, resample, cpal playback, ONNX Runtime, stem cache |
-| `crates/engine-wasm` | Web bindings (main thread + AudioWorklet) |
-| `crates/ingest` | YouTube audio through `yt-dlp` + `ffmpeg`: bundled sidecars, else `PATH` (desktop only) |
-| `crates/cli` | `music` CLI: `compare` (port of `prototype/main.py`), `import`, `score` |
-| `packages/engine-api` | TypeScript types generated from Rust, plus the host contract |
-| `packages/ui` | Shared Svelte 5 UI in the Grain design system: `theme.ts` (colours), `motion.ts` (all timing), `grain.ts` (every dot/particle drawing) |
-| `apps/web`, `apps/desktop` | The two hosts |
-| `services/ml-sidecar` | Opt-in Python sidecar (FastAPI, managed by `uv`) for ACE-Step 1.5 generation |
-| `third_party/deep-filter-rt` | Vendored DeepFilterNet3 runtime (MIT OR Apache-2.0; see its `NOTICE.md`) |
+## Every part on its own track
 
-## Setup
+Paste a YouTube link or drop in a file. Grain separates it into vocals, drums, bass, guitar, piano and the rest, and lays them out like a multitrack session. It finds the tempo, the key and the vocal melody as it goes. Mute, solo, mix, or turn any part into MIDI.
 
-You need Rust (with the `wasm32-unknown-unknown` target), `wasm-pack`, Node 22 and pnpm. YouTube import in dev builds uses `yt-dlp` and `ffmpeg` from `PATH`; release builds can bundle them (below).
+<img src="docs/readme/stems.svg" alt="A song split into six coloured stems, each drawn as a dot waveform" width="720"/>
 
-```bash
-python3 scripts/fetch_models.py   # weights → models/weights/ (optional; without them songs stay one mix track, pitch uses YIN)
+## Karaoke that listens
+
+Lyrics arrive already timed. The melody scrolls past as bars and your voice draws a live trail through them. Notes light up as you hit them, and every pass is saved as a take. Afterwards you get a score for pitch, timing, stability and coverage, plus a note-by-note graph of where you were sharp, flat, early or late.
+
+<img src="docs/readme/karaoke.svg" alt="Karaoke lane: reference notes as bars, your live pitch as a dot trail, and the lyric line wiping in time" width="720"/>
+
+## Fix it like a pro
+
+Auto-tune snaps you to the song's key, live in your headphones or on a take. The pitch editor goes note by note, in the style of Melodyne. Drag a note to move it, flatten drift, shape vibrato, or snap it to the original melody, which sits behind your take as a ghost.
+
+<img src="docs/readme/pitch.svg" alt="Pitch editor: your notes as dot blobs over dashed outlines of the original melody, each with a cents badge" width="720"/>
+
+## One take, one chain, nothing destroyed
+
+Star your best take as the master. Pitch edits, auto-tune, noise clean-up and a vocal chain stack on top of it, and the raw recording is never touched. Add harmonies in the song's key, or generate a backing track with local AI. Then export the mix as WAV, MP3 or M4A.
+
+<img src="docs/readme/chain.svg" alt="The master take flows through pitch edits, auto-tune, clean up and the vocal chain, each switchable, into the export" width="720"/>
+
+## Quick start
+
+```sh
+git clone https://github.com/xuckless/grain && cd grain
 pnpm install
+python3 scripts/fetch_models.py        # separation + pitch models, sha256-checked
+pnpm dev:desktop                       # or: pnpm dev:web → http://localhost:5173
 ```
 
-In the app, **Models** (top right, on Home and in a song) lists every model in
-`models/manifest.toml` with its size, licence and state, and downloads, verifies (SHA-256) and
-deletes them. The desktop app keeps them in its data folder
-(`~/Library/Application Support/dev.workstation.app/models` on macOS; debug builds also read
-`models/weights/`), the web app in the browser's private storage (OPFS; `pnpm dev:web` also serves
-`models/weights/`). Restricted (non-commercial, `opt-in`) models ask you to accept their licence
-first. Downloads only come from Hugging Face and GitHub.
+Open a song, then try the tabs left to right: **Mix → Score → Karaoke → Auto-tune → Pitch → Produce**. Before your first take, calibrate your mic in **⚙ Settings**. Use headphones when you sing. Optional models, including local AI generation, install from the **Models** panel.
 
-`fetch_models.py` downloads the same models for development (HTDemucs, RMVPE, basic-pitch). The
-Best-vocals model (Mel-Band RoFormer) is not hosted as ONNX: if it isn't built yet, the script
-downloads its checkpoint to `models/build/` and prints the export command
-(`scripts/export_melband_roformer.py`, needs PyTorch). MuScriptor (CC-BY-NC-4.0) is listed but
-gated on Hugging Face and PyTorch-only, so it can't be downloaded yet.
+<details>
+<summary>Build a desktop app with yt-dlp and ffmpeg bundled</summary>
 
-## Run
-
-```bash
-pnpm dev:web          # http://localhost:5173 (serves models/weights at /models)
-pnpm dev:desktop      # Tauri window
-cargo run --release -p music-cli -- import song.mp3 --models models/weights [--quality best-vocals]
-cargo run --release -p music-cli -- score song.mp3 my-take.m4a --models models/weights
-cargo run --release -p music-cli -- pitch vocals.wav --models models/weights   # YIN vs RMVPE
-cargo run --release -p music-cli -- compare mine.wav artist.wav
-```
-
-## Desktop release with bundled yt-dlp and ffmpeg
-
-```bash
-python3 scripts/fetch_sidecars.py      # pinned GitHub releases → apps/desktop/src-tauri/binaries/, sha256-checked
+```sh
+python3 scripts/fetch_sidecars.py      # pinned GitHub releases, sha256-checked
 pnpm --filter desktop tauri build --bundles app --config src-tauri/tauri.bundle.conf.json
 ```
 
-`sidecars.toml` (next to `tauri.conf.json`) pins the URLs and checksums per target; pass
-`--target <rust-triple>` to fetch for another platform. A plain `pnpm build:desktop` needs no
-sidecars and finds the tools on `PATH`. In the app, Home shows which yt-dlp is in use and an
-**Update extractor** button (yt-dlp's own `-U`, applied to a copy in the app's data folder).
+Without the bundle config, Grain uses whatever `yt-dlp` and `ffmpeg` it finds on your `PATH`.
 
-## Recording a take
+</details>
 
-Open a song, go to **Karaoke** and press **● Sing** (bottom centre). The song starts 2 s before the
-playhead, you hear a one-bar count-in, and the microphone records until **Pause** or **Finish**.
-Each run is lined up with the song, scored, and kept with the project; **Score** shows the score of
-the take picked in its toolbar (★ the master by default) and imports takes from ⋯. Click a note in
-the graph to hear the original, then your take.
+## How it works
 
-- **Your takes:** every take is saved with the song the moment it exists (recorded or imported)
-  and listed under **Your takes** in Score and Karaoke. Play one as **Voice only**, **Voice +
-  instrumental** or **Voice + full mix** (also in ⚙ Settings), rename (undoable) or delete it.
-  Playing a take stops the song, and pressing Play stops the take.
-- **Backing** (Karaoke toolbar, what you hear while singing): *Instrumental* (the song without its vocal stem), *Instrumental + guide vocal* (the
-  original vocal quietly) or *Full mix*. The default is Instrumental, except for songs whose
-  non-vocal stems are more than 30 dB below the mix (a cappella), which default to the guide vocal.
-- **Headphones** keep the backing out of your take.
-- **Latency** (⚙ Settings): press **Calibrate** once per microphone and output. Unplug your headphones, or hold
-  them against the microphone, so it can hear a short chirp. The measured round-trip delay is
-  stored per device pair and removed from every take; nudge it with − / + if takes still sound
-  early or late. Uncalibrated, desktop assumes 0 ms beyond what the drivers report, and the web uses
-  the browser's output-latency estimate.
-- **Web:** projects are stored in the browser (OPFS) and listed under Recent; **Export** downloads
-  a `.grain` file (stems and takes as 16-bit PCM plus the project), and **Open project file…**
-  reopens one. Recording needs the cross-origin isolation headers the dev and preview servers send.
+<img src="docs/readme/pipeline.svg" alt="Import, separate, analyse, sing and score, shape, export" width="720"/>
 
-## Karaoke
+<details>
+<summary>Each step in detail</summary>
 
-Open a song and go to **Karaoke** (it needs a vocal melody to sing against). The first time a song
-opens there, its lyrics are looked up on [LRCLIB](https://lrclib.net): the artist and title are
-guessed from the video title or file name (`Artist - Title.mp3`), and you can correct them and
-**Search** again. Only the artist, title and song length are sent. Found lyrics are kept with the
-project, and **Save** keeps them (and any edits).
+| Step | What happens | Why this way |
+| --- | --- | --- |
+| **Import** | `yt-dlp` fetches the best audio stream (desktop), or you open a local file. Everything is decoded to 44.1 kHz stereo. | The source is often lossy, so every later step is built to cope with codec artefacts. |
+| **Separate** | [HTDemucs](https://github.com/facebookresearch/demucs) splits the mix into six stems through ONNX Runtime. The STFT runs in our Rust code, outside the model. The optional **Best vocals** mode runs a [Mel-Band RoFormer](https://huggingface.co/KimberleyJSN/melbandroformer) first. | Running the STFT ourselves keeps the same graph working natively and on WebGPU. Results are cached per song, so nothing is separated twice. |
+| **Analyse** | Tempo comes from onset flux and beat tracking. The key is matched against Krumhansl profiles on the instrumental. The melody comes from [RMVPE](https://huggingface.co/lj1995/VoiceConversionWebUI), segmented into notes. | RMVPE was built for singing inside a full mix, so it tracks vocals where general pitch trackers fail. |
+| **Sing & score** | Live pitch uses YIN in Rust. Takes are aligned by known latency plus DTW, then scored per frame and per note in cents. Lyrics come from [LRCLIB](https://lrclib.net). | The scoring is deterministic and documented, with no opaque "vibe score". Latency calibration keeps timing honest. |
+| **Shape** | TD-PSOLA for live auto-tune and a phase vocoder for offline work, both preserving formants and both our own Rust. [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) handles clean-up, and our own DSP vocal chain does the rest. [ACE-Step](https://github.com/ace-step/ACE-Step-1.5) generates backing tracks. | Both shifters are pure Rust, so desktop and web run identical code. AI generation is an opt-in local sidecar, never a cloud call. |
+| **Export** | A mixdown of the tracks you choose, plus your processed master take, as WAV-24, MP3 or M4A, or the whole session as a `.grain` archive. | The guide vocal you sang along to never ends up in your export. |
 
-- Move to where you want to start (drag the lane, click the ruler under it, or click a lyric line)
-  and press **● Sing**: the song starts 2 s early, a one-bar count-in, then it plays with the
-  backing you chose in the toolbar.
-- **Loop:** press it once at A and again at B. Every pass is saved as its own take and the next
-  pass counts in again from A.
-- The lane scrolls the song's notes past the playhead. Your voice draws a trail: white is in tune,
-  amber is close, violet is off. Notes fill as you pass them, hits burst and build your **Streak**,
-  and **Score** is the share of the melody you've sung in tune. Octave folding lets you sing an
-  octave up or down.
-- Two lyric lines show at a time, and the current one wipes syllable by syllable (Japanese and
-  Chinese by character), timed to the song's notes.
-- **Pause** saves what you've sung so far as a take; **Resume** counts you back in. **Finish** (or the
-  song's end) saves the last run. Each take is scored in full in **Score**.
-- Lyrics early or late? Use **Lyrics offset** − / + (100 ms steps), or **Edit lines** to fix a line's
-  text or start time.
+</details>
 
-## Auto-tune
+Grain is a Rust engine (`crates/`) with a Svelte 5 UI (`packages/ui`). The same engine runs natively inside a [Tauri](https://tauri.app) desktop app and compiles to WebAssembly for the web app. Audio-thread code never allocates, locks or runs ML.
 
-Open a song and go to **Auto-tune**.
+## Develop
 
-- **Key** defaults to the song's detected key. You can also pick another key the analysis found, Chromatic, or **Custom notes** (tap the keys of the one-octave keyboard). **Pull to** chooses the nearest scale note, or **Follow the melody**, which pulls to the song's own melody in your octave.
-- **Retune speed:** 0 is the hard, robotic snap; 50–400 ms sounds natural. **Humanize** lets held notes keep their vibrato. **Formant** shifts the voice's character without changing pitch. **Mix** blends the dry voice back in.
-- **Hear yourself live** monitors the microphone over the song, dry or **Tuned**. Use headphones: speakers feed back. The hint shows how far behind you the monitor is (about 32 ms for the tuner, plus your devices' latency).
-- **Apply to take** (bottom centre) puts auto-tune on the picked take with the high-quality offline shifter; the raw recording is kept, **On** bypasses it, ⋯ removes it, ⌘Z undoes it. Before you apply, the graph shows your pitch (grey), the notes it is pulled to, and the corrected pitch (pink).
-
-## Pitch editor
-
-Open a song and go to **Pitch**. The toolbar's take picker chooses the take (★ the master by default); every tool is in the toolbar.
-
-- Each sung note is a blob of dots (thicker where it's louder) on a piano roll, with the scale's
-  notes as dotted rows, your pitch in grey and the edited pitch over it.
-- **Drag a note up or down** to change its pitch: it snaps to **Scale notes** or **Semitones**
-  (Snap menu); hold **⌥ Alt** for free cents. Drag it **sideways** to move it in time, or by an
-  **edge** to stretch it (0.5–2×). Click selects (⇧/⌘ adds), ⌘A selects all, Esc clears.
-- **Split notes** (Tool menu) splits where you click; **Merge with next** joins a selected note
-  with the following one.
-- The sliders work on the selection, or on every note when none is selected: **Pitch centre**
-  (how far each note is pulled to its scale note), **Pitch drift** (flattens slow wander),
-  **Vibrato** (0–200%), **Glide in** (how fast the pitch moves in from the previous note),
-  **Formant**. **Correct pitch** does centre 100% + drift 50% in one go. **Delete** resets the
-  selected notes; ⌘Z / ⇧⌘Z undo and redo.
-- The original melody shows as ghost notes; each note shows its offset in cents. **Snap to
-  original** moves notes onto the melody; **A/B original** plays the original vocal, then the take.
-- **Apply edits to take** (bottom centre) puts the edits on the take's chain, re-rendering only the
-  changed notes; **On** bypasses them.
-- From **Auto-tune**, **Edit curve…** opens the take in the editor with every note set where
-  auto-tune would pull it, so you can adjust the correction note by note.
-
-## MIDI
-
-In **Mix**, **MIDI** on a track transcribes it: pitched tracks with basic-pitch (download it in
-**Models** first), the drum stem with a built-in kick/snare/hat classifier. The notes appear as a
-lane under the track; **Export .mid** saves a Standard MIDI File at the song's tempo, and **Redo**
-transcribes again.
-
-## Produce
-
-Open a song and go to **Produce**: stacked cards over the picked take (★ the master by default).
-Clean up and the vocal chain are steps of the take's chain (on/off, Remove, ⌘Z); harmonies and
-generations are new tracks listed under **Made here** with their own play toggle, level and pan.
-
-- **Clean up** (desktop) removes room noise, hum and hiss with DeepFilterNet 3 (download
-  `deepfilternet3`, 8 MB, in **Models** first). It runs at 48 kHz on the CPU, about 50× faster than
-  real time. Noise is pulled down by at most 30 dB so breaths stay.
-- **Vocal chain:** high-pass → de-esser → compressor → EQ (low, presence, air) → saturation →
-  reverb and delay. **Preset** sets every control from the take's own level: *Auto* also measures
-  its brightness and sibilance and corrects them (a dark take gets more presence and air, a sibilant
-  one more de-essing); *Natural*, *Pop*, *R&B*, *Rock*, *Hip-hop* and *Ballad* keep their own tone.
-  Tweak any slider, switch on **Hear it live** to sing through it over the song (headphones), and
-  **Apply to take** to put it on the take. The meters show the take's loudness (LUFS), peak,
-  brightness and sibilance.
-- **Harmony:** **Third above/below** and **Sixth above/below** sing a diatonic harmony in the song's
-  key from the singer's own voice (pitch-shifted with formants kept), as a new track that plays with
-  the song, quieter and panned. **Melody MIDI** exports the melody (or the last harmony) as `.mid`.
-- **Generate** (desktop, opt-in): ACE-Step 1.5 makes a **Backing for the vocal**, **One instrument**
-  (drums, bass, guitar, keys, strings, …) or **Repaints** a section of the mix, conditioned on the
-  song's tempo, key and the source vocal, plus your style prompt and a seed. Install it once from
-  **Models → Install AI generation**: it needs [`uv`](https://docs.astral.sh/uv/), then downloads
-  about 2 GB of Python packages (PyTorch) and 6.3 GB of weights (the 2B base model, its VAE and text
-  encoder) into the app's data folder. Each generation starts a local helper on 127.0.0.1 with a
-  one-time key, loads the model (MPS on Apple silicon, else CPU), and quits when done, so nothing
-  stays in memory. Expect minutes per song on Apple silicon and much longer on CPU. The web build
-  offers generation only when built with `VITE_GRAIN_GENERATION_URL` and
-  `VITE_GRAIN_GENERATION_TOKEN` pointing at a sidecar you run elsewhere.
-
-## Checks
-
-```bash
-cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
+```sh
 cargo test --workspace
-cargo test -p engine-core --target wasm32-unknown-unknown   # engine-core DSP tests under Node
-pnpm types && pnpm wasm && pnpm check && pnpm build:web
-pnpm --filter @workstation/ui test                   # recording, calibration, listening, pitch editor, model manager
-python3 scripts/fetch_models.py --check
-(cd services/ml-sidecar && uv run --frozen python -I -m pytest -q tests)   # sidecar HTTP contract (stub backend)
-cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights); a real model download
+cargo clippy --workspace --all-targets -- -D warnings
+pnpm check && pnpm build:web
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and Linux.
+The full check list, the perf harness and per-feature walkthroughs are in [docs/guide.md](docs/guide.md). The engineering rules (explicit state machines, no duplication, the real-time and motion rules) are in [AGENTS.md](AGENTS.md). `prototype/` keeps the original Python pitch-comparison script that started it all.
 
-### UI frame times
+## License
 
-`scripts/perf/run.mjs` drives the web build in headless Chrome (frame-rate limit off, GPU raster,
-device pixel ratio 2) and prints frame-time p50/p95/p99/max, long tasks and main-thread → audio
-messages per second for: Home idle, Mix idle, a gain-knob turn, playback, a drag while playing,
-scrubbing, tab switching, each view idle, Pitch playback and a pitch-editor drag (AGENTS.md §10.1).
+[GPL-3.0](LICENSE).
 
-```bash
-pnpm build:web
-pnpm --filter web preview --port 4400 &
-node scripts/perf/run.mjs http://localhost:4400 samples/your-song.mp3 out.json   # DPR=1, SOFTWARE=1, CHROME=… to vary
-kill %1
-```
+Models are downloaded at runtime under their own licences, which the Models panel shows. Non-commercial models are opt-in only. [Geist](https://vercel.com/font) fonts are under the SIL OFL. Bundled `ffmpeg` builds carry their own licence in the app's `Resources/licenses`.
 
-With the frame-rate limit off most frames have no input to handle, so p99 is the number that
-shows a drag's cost.
-
-The prototype is in `prototype/`. License: GPL-3.0.
-
-## Fonts
-
-Geist and Geist Mono are bundled from `@fontsource-variable/*` (SIL OFL 1.1). `packages/ui/src/assets/GeistPixelCircle.woff2`
-(wordmark, hero and score reveal only) comes from the Grain design canvas. It's believed to be Vercel's Geist Pixel
-(Geist family, OFL 1.1), but that licence is **unverified**. Confirm it before distributing a build.
+Separate, analyse and sing only music you have the right to use. Downloading from YouTube may break its Terms of Service, so Grain only does it on your own machine, for personal use.

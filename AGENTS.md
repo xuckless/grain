@@ -2,7 +2,7 @@
 
 Guidance for humans and coding agents working in this repository.
 
-> **Status:** M0 and most of M1 are built (see README.md for running it). Remaining M1 gaps are listed under §11. The original PyQt5 prototype is kept in `prototype/` as a reference. Project-level decisions are recorded in [§0](#0-decisions-locked). Anything still marked **(proposed)** is a default that applies until the owner decides otherwise.
+> **Status:** milestones M0–M5 and the UX redesign are built. See [docs/guide.md](docs/guide.md) for running and using it; open items are listed under §11. The original PyQt5 prototype is kept in `prototype/` as a reference. Project-level decisions are recorded in [§0](#0-decisions-locked). Anything still marked **(proposed)** is a default that applies until the owner decides otherwise.
 
 ---
 
@@ -606,7 +606,7 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
 
 Frame budgets: p95 frame time ≤ 16.7 ms on every screen, ≤ 8.3 ms (120 Hz) for the main
 interactions (fader and slider drags, playback, scrubbing, pitch-editor drags), and no long task
-over 50 ms while the user is interacting. Measure with `scripts/perf/run.mjs` (README) before
+over 50 ms while the user is interacting. Measure with `scripts/perf/run.mjs` (docs/guide.md) before
 and after a change; don't guess.
 
 1. **Big data is raw state.** Project, score reports, previews and other engine payloads are
@@ -727,7 +727,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 - Performance (§10.1): raw session state, pushed transport with a per-frame clock, coalesced
   mix sends, lanes drawn only when dirty, compositor playheads, batched dots, paused particles,
   async desktop commands, the web chain pick in a compute worker. Before/after numbers come from
-  `scripts/perf/run.mjs` (README).
+  `scripts/perf/run.mjs` (docs/guide.md).
 - Takes: one `Takes` list (Score, Karaoke, Auto-tune, Pitch, Produce) of sung takes (harmony and
   generated tracks stay in Mix and Produce's outputs), each playable solo or over the recording
   backing, renameable, deletable (with confirmation) and, where it was made from another, "Compare"
@@ -767,7 +767,7 @@ Keep this table current: update the Status column whenever a milestone moves.
   `store.ts`, which streams per channel for the frame budget), pinned by one round-trip test on the
   Rust side only; the web export mixes on the main thread in chunks; the redesigned views were
   checked in the web build only (no desktop UI run during development).
-- **Design/licensing:** the Geist Pixel font's licence is unverified (README); the UI design pass
+- **Design/licensing:** the Geist Pixel font's licence is unverified (docs/guide.md, Fonts); the UI design pass
   row stays "in progress"; minimum web hardware (§12) is undecided.
 
 ---
