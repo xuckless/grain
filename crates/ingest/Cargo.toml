@@ -1,0 +1,9 @@
+[package]
+name = "ingest"
+description = "YouTube audio ingest via local yt-dlp + ffmpeg sidecars (desktop only, AGENTS.md §4.1)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = "2"

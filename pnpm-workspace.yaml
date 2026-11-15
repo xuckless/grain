@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+  - apps/*
+  - crates/engine-wasm/pkg
+# Dependency install scripts are not needed by this workspace.
+allowBuilds:
+  protobufjs: false

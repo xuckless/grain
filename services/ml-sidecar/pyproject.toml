@@ -1,0 +1,29 @@
+[project]
+name = "grain-sidecar"
+version = "0.1.0"
+description = "Grain's optional local AI-generation sidecar: ACE-Step 1.5 behind a token-protected localhost HTTP API"
+license = "GPL-3.0-only"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[project.optional-dependencies]
+# The opt-in install (several GB with PyTorch); the app runs `uv sync --extra acestep`.
+acestep = [
+    "ace-step @ git+https://github.com/ace-step/ACE-Step-1.5@ca1e85fe9430179831e6bc6be790c332190a3866",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["grain_sidecar"]

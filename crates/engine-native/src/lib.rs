@@ -1,0 +1,14 @@
+//! Desktop host for the engine.
+
+pub mod cache;
+pub mod capture;
+pub mod decode;
+pub mod denoise;
+pub mod generate;
+pub mod import;
+pub mod latency;
+pub mod models;
+pub mod pitch;
+pub mod playback;
+pub mod separate;
+pub mod transcribe;

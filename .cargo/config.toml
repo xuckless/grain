@@ -1,0 +1,7 @@
+[env]
+# ts-rs writes the generated TypeScript API types here (run `cargo test -p engine-core export_bindings`).
+TS_RS_EXPORT_DIR = { value = "packages/engine-api/src/generated", relative = true }
+
+[target.wasm32-unknown-unknown]
+# `cargo test -p engine-core --target wasm32-unknown-unknown` runs the DSP tests under Node.
+runner = "wasm-bindgen-test-runner"

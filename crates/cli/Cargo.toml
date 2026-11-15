@@ -1,0 +1,16 @@
+[package]
+name = "music-cli"
+description = "Command-line access to the engine (prototype parity checks, import, scoring)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "music"
+path = "src/main.rs"
+
+[dependencies]
+engine-core.workspace = true
+engine-native.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine-core",
+    "crates/engine-ml",
+    "crates/engine-native",
+    "crates/cli",
+    "crates/ingest",
+    "crates/engine-wasm",
+    "apps/desktop/src-tauri",
+]
+# Vendored third-party code (not linted as ours).
+exclude = ["third_party/deep-filter-rt"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[workspace.dependencies]
+engine-core = { path = "crates/engine-core" }
+engine-ml = { path = "crates/engine-ml" }
+engine-native = { path = "crates/engine-native" }
+ingest = { path = "crates/ingest" }
+
+[profile.dev.package."*"]
+opt-level = 2
