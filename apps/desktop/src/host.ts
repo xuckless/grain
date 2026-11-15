@@ -9,6 +9,7 @@ import type {
   ImportOutcome,
   ImportStage,
   LiveUpdate,
+  InputState,
   Latency,
   MonitorStatus,
   Project,
@@ -57,7 +58,8 @@ async function withGeneratorStates<T>(onState: (s: GeneratorState) => void, run:
 /** macOS draws its window buttons over the page (tauri.conf.json: titleBarStyle "Overlay");
  * the top bar leaves this much room for them. Other platforms keep native decorations. */
 const MAC_BUTTONS_INSET = 88;
-const chrome: WindowChrome = navigator.userAgent.includes("Mac OS")
+const isMac = navigator.userAgent.includes("Mac OS");
+const chrome: WindowChrome = isMac
   ? {
       kind: "overlay",
       insetLeft: MAC_BUTTONS_INSET,
@@ -146,6 +148,12 @@ export async function createDesktopHost(): Promise<EngineHost> {
       latency: () => invoke<Latency>("latency"),
       setLatency: (ms) => invoke<Latency>("set_latency", { ms }),
       measureLatency: () => invoke<Latency>("measure_latency"),
+      input: () => invoke<InputState>("input_device"),
+      // macOS picks the input system-wide (System Settings › Sound, Control Center), iPhone
+      // microphones via Continuity included; an in-app picker elsewhere is a later task.
+      inputSettings: isMac
+        ? { kind: "system", open: () => invoke("open_input_settings") }
+        : { kind: "none", hint: "Grain records from your system's default microphone: choose it in your sound settings." },
     },
     autotune: {
       setMonitor: (mode) => invoke<MonitorStatus>("set_monitor", { mode }),

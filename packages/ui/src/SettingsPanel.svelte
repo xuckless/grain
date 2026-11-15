@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EngineHost, Latency } from "@workstation/engine-api";
+  import type { EngineHost, InputState, Latency } from "@workstation/engine-api";
   import Toggle from "./Toggle.svelte";
   import { saveCalibrateFirst } from "./prefs";
   import { monitorMode, switchMonitor } from "./autotune";
@@ -25,9 +25,37 @@
   let latency = $state<Latency | null>(null);
   let root = $state<HTMLDivElement | undefined>();
 
+  /** The system's default microphone, re-read while Settings is open (it may be switched in
+   * System Settings or Control Center meanwhile); latency is per device pair, so it follows. */
+  let input = $state<{ kind: "Loading" } | InputState>({ kind: "Loading" });
+  const INPUT_POLL_MS = 2000;
+
+  async function readInput() {
+    if (mic.kind !== "available") return;
+    try {
+      const now = await mic.input();
+      const changed = input.kind !== now.kind || (now.kind === "Ready" && input.kind === "Ready" && now.device !== input.device);
+      input = now;
+      if (changed) latency = await mic.latency();
+    } catch (e) {
+      console.warn(errorMessage(e));
+    }
+  }
+
   $effect(() => {
-    if (mic.kind === "available") mic.latency().then((l) => (latency = l), (e) => console.warn(errorMessage(e)));
+    void readInput();
+    const timer = window.setInterval(() => void readInput(), INPUT_POLL_MS);
+    return () => window.clearInterval(timer);
   });
+
+  async function changeInput() {
+    if (mic.kind !== "available" || mic.inputSettings.kind !== "system") return;
+    try {
+      await mic.inputSettings.open();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  }
 
   function calibrationEvent(e: CalibrationEvent): boolean {
     const next = calibrationNext(calibration, e);
@@ -100,6 +128,26 @@
   </section>
 
   {#if mic.kind === "available"}
+    <section>
+      <h3>Microphone</h3>
+      <div class="row">
+        <span class="device" title={input.kind === "Ready" ? input.device : undefined}>
+          {#if input.kind === "Ready"}{input.device}{:else if input.kind === "Unavailable"}{input.reason}{:else}…{/if}
+        </span>
+        <span class="spacer"></span>
+        {#if mic.inputSettings.kind === "system"}
+          <button class="press raised small-btn" onclick={changeInput}>Change…</button>
+        {/if}
+      </div>
+      <p class="muted">
+        {#if mic.inputSettings.kind === "system"}
+          Grain uses the microphone you pick in System Settings › Sound or Control Center, an iPhone via Continuity included.
+        {:else}
+          {mic.inputSettings.hint}
+        {/if}
+      </p>
+    </section>
+
     <section>
       <h3>Microphone latency</h3>
       <div class="row">
@@ -222,6 +270,15 @@
     min-width: 48px;
     text-align: center;
     font-size: 13px;
+  }
+  .device {
+    min-width: 0;
+    flex: 0 1 auto;
+    font-size: 15px;
+    line-height: 20px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .small-btn {
     height: 36px;

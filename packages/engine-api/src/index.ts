@@ -2,6 +2,7 @@
 // Data types are generated from Rust by ts-rs (`pnpm types`); only the host contract is written here.
 
 import type { ImportStage } from "./generated/ImportStage";
+import type { InputState } from "./generated/InputState";
 import type { Latency } from "./generated/Latency";
 import type { LiveUpdate } from "./generated/LiveUpdate";
 import type { LyricsUpdate } from "./generated/LyricsUpdate";
@@ -59,9 +60,11 @@ export type { ImportStage } from "./generated/ImportStage";
 export type { SeparationQuality } from "./generated/SeparationQuality";
 export type { Key } from "./generated/Key";
 export type { KeyCandidate } from "./generated/KeyCandidate";
+export type { InputState } from "./generated/InputState";
 export type { Latency } from "./generated/Latency";
 export type { LatencySource } from "./generated/LatencySource";
 export type { MixParams } from "./generated/MixParams";
+export type { StreamState } from "./generated/StreamState";
 export type { Mode } from "./generated/Mode";
 export type { MonitorMode } from "./generated/MonitorMode";
 export type { MonitorStatus } from "./generated/MonitorStatus";
@@ -223,8 +226,18 @@ export type Microphone =
       setLatency(ms: number): Promise<Latency>;
       /** Plays the loopback chirp and stores the measured latency. */
       measureLatency(): Promise<Latency>;
+      /** The input every recording, calibration and the monitor opens: the system's default
+       * microphone, looked up again each time a stream starts. */
+      input(): Promise<InputState>;
+      /** Where the user picks that microphone. `system`: the OS's own sound settings (macOS
+       * System Settings › Sound › Input, which also lists an iPhone via Continuity). */
+      inputSettings: InputSettings;
     }
   | { kind: "unavailable"; reason: string };
+
+/** Where the microphone is chosen: the operating system's own settings, opened by `open`, or
+ * nowhere the app can open (the browser's site settings, or a platform without a picker yet). */
+export type InputSettings = { kind: "system"; open(): Promise<void> } | { kind: "none"; hint: string };
 
 /** Auto-tune (AGENTS.md §7): live monitoring through the player and the preview. Applying it is
  * a step of the take's processing chain (`TakeStore.setChain`, AGENTS.md §8.7). */

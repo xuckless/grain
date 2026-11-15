@@ -345,11 +345,29 @@
         trail.add(points(update.frames));
         celebrate(addFrames(performance_, notes, update.frames, update.totals));
         refresh();
+        if (update.input.kind === "Failed") inputFailed(update.input.reason);
       } catch (e) {
         console.warn(errorMessage(e));
       }
     });
   });
+
+  // The microphone stopped mid-run (switched, unplugged or silent). A take ends like a Pause, so
+  // what was sung is saved; a retake is dropped, keeping its original; a count-in had nothing
+  // sung yet. Each says why.
+  function inputFailed(reason: string) {
+    if (karaoke.kind !== "singing" && karaoke.kind !== "countIn") return;
+    if (karaoke.pass.kind === "retake") {
+      toast(`${reason} The retake was dropped; your original take is kept.`, "error");
+      void cancel();
+    } else if (karaoke.kind === "countIn") {
+      toast(`${reason} Press Sing to start again.`, "error");
+      void finish();
+    } else {
+      toast(`${reason} Your singing so far is saved; press Resume to go on.`, "error");
+      void pause();
+    }
+  }
 
   // Leaving the view mid-run keeps the singing: the run is saved like a finish. A run still
   // calibrating has nothing sung yet, so it's dropped.

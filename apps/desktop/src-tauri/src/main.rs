@@ -11,6 +11,7 @@ mod produce;
 use anyhow::Context;
 use engine_core::cue::{self, Latency, LatencySource, PROBE_TAIL_SECONDS};
 use engine_core::edit::{self, EditOp, EditSource, EditUpdate, PitchEdit, PitchEditView};
+use engine_core::input::InputState;
 use engine_core::live::{LiveSession, LiveUpdate};
 use engine_core::lyrics::{self, LyricsUpdate, ProjectLyrics};
 use engine_core::midi::{self, TranscribeOutcome};
@@ -987,7 +988,10 @@ fn live_pitch(engine: State<Engine>, settings: ScoreSettings) -> Result<LiveUpda
         };
         if let Live::Waiting = live {
             let (Some(cue), Some(first)) = (l.playback.peek_cue(), capture.first_instant()) else {
-                return Ok(LiveUpdate::default());
+                return Ok(LiveUpdate {
+                    input: capture.state(),
+                    ..LiveUpdate::default()
+                });
             };
             let latency = engine
                 .latency
@@ -1008,7 +1012,10 @@ fn live_pitch(engine: State<Engine>, settings: ScoreSettings) -> Result<LiveUpda
         };
         let samples = capture.samples_since(*read);
         *read += samples.len();
-        Ok(session.push(&samples))
+        Ok(LiveUpdate {
+            input: capture.state(),
+            ..session.push(&samples)
+        })
     })
     .map_err(fail)
 }
@@ -1122,11 +1129,70 @@ async fn measure_latency(app: AppHandle) -> Result<Latency, String> {
     .map_err(fail)
 }
 
+/// The system's default microphone, which every recording, calibration and the monitor opens.
+#[tauri::command(async)]
+fn input_device() -> InputState {
+    capture::input_state()
+}
+
+/// Opens System Settings › Sound › Input, where macOS users pick their microphone (an iPhone via
+/// Continuity included). Other platforms have no picker yet (AGENTS.md §11).
+#[tauri::command(async)]
+fn open_input_settings() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Pick the microphone in your system's sound settings.".into());
+    }
+    let open = |target: &str| {
+        std::process::Command::new("open")
+            .arg(target)
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if open("x-apple.systempreferences:com.apple.Sound-Settings.extension?input")
+        || open("x-apple.systempreferences:com.apple.preference.sound")
+    {
+        Ok(())
+    } else {
+        Err("Couldn't open System Settings › Sound.".into())
+    }
+}
+
+/// Appends every panic (message, location, thread) to `path`, so a crash in the field leaves a
+/// trace. Logs the first 50 per run: a panic repeating on an audio thread mustn't fill the disk.
+fn log_panics(path: PathBuf) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static LOGGED: AtomicU32 = AtomicU32::new(0);
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if LOGGED.fetch_add(1, Ordering::Relaxed) < 50 {
+            let thread = std::thread::current();
+            let when = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(
+                    f,
+                    "[{when}] thread {:?}: {info}",
+                    thread.name().unwrap_or("unnamed")
+                );
+            }
+        }
+        previous(info);
+    }));
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data = app.path().app_data_dir()?;
+            log_panics(data.join("logs").join("panic.log"));
             let mut model_dirs = vec![data.join("models")];
             // Development builds also look in the repository's models/weights.
             if cfg!(debug_assertions) {
@@ -1175,6 +1241,8 @@ fn main() {
             latency,
             set_latency,
             measure_latency,
+            input_device,
+            open_input_settings,
             set_monitor,
             set_tune,
             tune_preview,

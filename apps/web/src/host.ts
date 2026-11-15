@@ -6,6 +6,7 @@ import type {
   ImportOutcome,
   Latency,
   LiveUpdate,
+  StreamState,
   Microphone,
   MonitorMode,
   MonitorStatus,
@@ -96,7 +97,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** A live update with nothing sung yet. */
 function noLive(): LiveUpdate {
-  return { frames: [], totals: { hit: 0, miss: 0, reference_only: 0, user_only: 0 } };
+  return { frames: [], totals: { hit: 0, miss: 0, reference_only: 0, user_only: 0 }, input: { kind: "Running" } };
 }
 
 export async function createWebHost(): Promise<EngineHost> {
@@ -254,6 +255,12 @@ export async function createWebHost(): Promise<EngineHost> {
     }
   }
 
+  /** Whether the open microphone still delivers: its track ends when the device goes away. */
+  function inputStream(): StreamState {
+    const ended = input.kind === "open" && input.stream.getAudioTracks().some((t) => t.readyState === "ended");
+    return ended ? { kind: "Failed", reason: "The microphone was disconnected." } : { kind: "Running" };
+  }
+
   /** The microphone finished opening; if every holder let go meanwhile, it closes again. */
   function opened(stream: MediaStream, source: MediaStreamAudioSourceNode) {
     if (input.kind !== "opening") return;
@@ -334,9 +341,14 @@ export async function createWebHost(): Promise<EngineHost> {
     });
   }
 
-  async function devicePair(): Promise<string> {
+  /** The browser's default microphone ("Microphone" until the page may read device labels). */
+  async function inputName(): Promise<string> {
     const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
-    const input = (inputs.find((d) => d.deviceId === "default") ?? inputs[0])?.label || "Microphone";
+    return (inputs.find((d) => d.deviceId === "default") ?? inputs[0])?.label || "Microphone";
+  }
+
+  async function devicePair(): Promise<string> {
+    const input = await inputName();
     const sink = (context as AudioContext & { sinkId?: string | { type: string } }).sinkId;
     const output = typeof sink === "string" && sink ? sink : "Default output";
     return `${input} | ${output}`;
@@ -484,7 +496,7 @@ export async function createWebHost(): Promise<EngineHost> {
               update.frames.push(...u.frames);
               update.totals = u.totals;
             }
-            return update;
+            return { ...update, input: inputStream() };
           },
           async finish(settings: ScoreSettings) {
             if (mic.kind !== "recording") throw new Error("No take is being recorded.");
@@ -538,6 +550,10 @@ export async function createWebHost(): Promise<EngineHost> {
               mic = { kind: "closed" };
             }
           },
+          async input() {
+            return { kind: "Ready", device: await inputName() };
+          },
+          inputSettings: { kind: "none", hint: "Choose the microphone in your browser's site settings (the icon in the address bar)." },
         };
 
   // The cascade's vocal model is ~930 MB and peaks near 8 GB of memory: desktop only.
