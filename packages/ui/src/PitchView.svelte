@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { EditOp, EditSource, EngineHost, PitchEdit, PitchEditView, TakeChain, TransportSnapshot } from "@workstation/engine-api";
   import BottomAction from "./BottomAction.svelte";
   import DotSlider from "./DotSlider.svelte";
@@ -95,7 +96,7 @@
         // specks): then the notes' opening stretch, which the viewport then follows.
         const fitted = initialWindow(view.edit, duration);
         const v = session.viewport;
-        win = isFit(v, duration) ? fitted : { ...fitted, from: v.start, to: v.start + v.span };
+        setWin(isFit(v, duration) ? fitted : { ...fitted, from: v.start, to: v.start + v.span });
       },
       (e) => sid === id && (loading = { kind: "failed", message: errorMessage(e) }),
     );
@@ -128,16 +129,19 @@
     }
   }
 
-  // The shared viewport follows the roll's time window.
+  /** Sets the roll's window and shares its time span as the session viewport. */
+  function setWin(w: Window) {
+    win = w;
+    session.viewport = clampView({ start: w.from, span: w.to - w.from, overshoot: 0 }, duration);
+  }
+
+  // The roll follows the viewport when something else (the zoom controls) changes it; only the
+  // viewport is tracked, so the roll's own changes don't loop back.
   $effect(() => {
-    const { from, to } = win;
     const v = session.viewport;
-    if (Math.abs(v.start - from) > 1e-6 || Math.abs(v.span - (to - from)) > 1e-6) session.viewport = clampView({ start: from, span: to - from, overshoot: 0 }, duration);
-  });
-  // …and the roll follows it when the zoom controls change it.
-  $effect(() => {
-    const v = session.viewport;
-    if (Math.abs(v.start - win.from) > 1e-6 || Math.abs(v.span - (win.to - win.from)) > 1e-6) win = { ...win, from: v.start, to: v.start + v.span };
+    untrack(() => {
+      if (Math.abs(v.start - win.from) > 1e-6 || Math.abs(v.span - (win.to - win.from)) > 1e-6) win = { ...win, from: v.start, to: v.start + v.span };
+    });
   });
 
   // ---- Controls -------------------------------------------------------------------------------
@@ -324,7 +328,7 @@
       case "panning": {
         const dx = (px - drag.x0) / pxPerSecond, dy = (py - drag.y0) / pxPerSemitone;
         const p = pan(drag.from, -dx, dy, duration);
-        win = p.window;
+        setWin(p.window);
         drag = { ...drag, overPx: rubberBand(p.over * pxPerSecond, RUBBER_LIMIT_PX) };
         return;
       }
@@ -380,11 +384,11 @@
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
       if (e.metaKey || e.ctrlKey) {
-        win = zoom(win, Math.exp(e.deltaY * 0.002), secondsAt(local(e).px), duration);
+        setWin(zoom(win, Math.exp(e.deltaY * 0.002), secondsAt(local(e).px), duration));
       } else if (e.shiftKey) {
-        win = pan(win, 0, -e.deltaY / pxPerSemitone / 4, duration).window;
+        setWin(pan(win, 0, -e.deltaY / pxPerSemitone / 4, duration).window);
       } else {
-        win = pan(win, (e.deltaX + e.deltaY) / pxPerSecond, 0, duration).window;
+        setWin(pan(win, (e.deltaX + e.deltaY) / pxPerSecond, 0, duration).window);
       }
     };
     el.addEventListener("wheel", wheel, { passive: false });

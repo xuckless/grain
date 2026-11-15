@@ -152,7 +152,7 @@
     position: absolute;
     right: 0;
     top: 52px;
-    width: 400px;
+    width: 440px;
     box-sizing: border-box;
     padding: 18px 20px;
     background: var(--c-raised);
