@@ -7,6 +7,7 @@
   import Toggle from "./Toggle.svelte";
   import Toolbar, { type OverflowItem } from "./Toolbar.svelte";
   import ZoomControls from "./ZoomControls.svelte";
+  import { clampView, isFit } from "./viewport";
   import { formatPercent, formatSemitones } from "./autotune";
   import { commitChain, selectedTakeId, takeById, withActive, withBypass, type ChainJob } from "./chain";
   import { listener } from "./context";
@@ -90,10 +91,11 @@
       (view) => {
         if (sid !== id) return;
         loading = { kind: "ready", value: { view, edit: view.edit, edited: view.edited, mask: view.scale_mask } };
-        // Time follows the shared viewport; the pitch range fits the notes.
+        // Time follows the shared viewport, unless it shows the whole song (notes would be
+        // specks): then the notes' opening stretch, which the viewport then follows.
         const fitted = initialWindow(view.edit, duration);
         const v = session.viewport;
-        win = { ...fitted, from: v.start, to: v.start + v.span };
+        win = isFit(v, duration) ? fitted : { ...fitted, from: v.start, to: v.start + v.span };
       },
       (e) => sid === id && (loading = { kind: "failed", message: errorMessage(e) }),
     );
@@ -130,7 +132,7 @@
   $effect(() => {
     const { from, to } = win;
     const v = session.viewport;
-    if (Math.abs(v.start - from) > 1e-6 || Math.abs(v.span - (to - from)) > 1e-6) session.viewport = { start: from, span: to - from, overshoot: 0 };
+    if (Math.abs(v.start - from) > 1e-6 || Math.abs(v.span - (to - from)) > 1e-6) session.viewport = clampView({ start: from, span: to - from, overshoot: 0 }, duration);
   });
   // …and the roll follows it when the zoom controls change it.
   $effect(() => {

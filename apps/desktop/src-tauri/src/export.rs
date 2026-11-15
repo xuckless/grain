@@ -189,12 +189,23 @@ mod tests {
     #[test]
     fn every_format_decodes_back_to_the_mixdown() {
         let sr = 44_100;
-        let tone = |f: f32| (0..sr as usize * 2).map(move |i| 0.4 * (std::f32::consts::TAU * f * i as f32 / sr as f32).sin());
-        let mix = StereoAudio { sample_rate: sr, left: tone(440.0).collect(), right: tone(660.0).collect() };
+        let tone = |f: f32| {
+            (0..sr as usize * 2)
+                .map(move |i| 0.4 * (std::f32::consts::TAU * f * i as f32 / sr as f32).sin())
+        };
+        let mix = StereoAudio {
+            sample_rate: sr,
+            left: tone(440.0).collect(),
+            right: tone(660.0).collect(),
+        };
         let wav = export::encode_wav24(&mix);
         let dir = std::env::temp_dir().join(format!("grain-export-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let formats: Vec<ExportFormat> = export_formats().into_iter().filter(|(_, why)| why.is_none()).map(|(f, _)| f).collect();
+        let formats: Vec<ExportFormat> = export_formats()
+            .into_iter()
+            .filter(|(_, why)| why.is_none())
+            .map(|(f, _)| f)
+            .collect();
         assert!(formats.contains(&ExportFormat::Wav24));
         for format in formats {
             let path = dir.join(format!("mix.{}", format.extension()));
@@ -204,8 +215,16 @@ mod tests {
             // Lossy codecs add priming delay and ringing: compare levels, and for WAV the samples.
             let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
             let want = rms(&mix.left);
-            assert!((rms(&back.left) - want).abs() < 0.02, "{format:?}: rms {} vs {want}", rms(&back.left));
-            assert!((back.left.len() as i64 - mix.left.len() as i64).abs() < 4_096, "{format:?}: {} frames", back.left.len());
+            assert!(
+                (rms(&back.left) - want).abs() < 0.02,
+                "{format:?}: rms {} vs {want}",
+                rms(&back.left)
+            );
+            assert!(
+                (back.left.len() as i64 - mix.left.len() as i64).abs() < 4_096,
+                "{format:?}: {} frames",
+                back.left.len()
+            );
             if format == ExportFormat::Wav24 {
                 for i in (0..mix.left.len()).step_by(4_999) {
                     assert!((back.left[i] - mix.left[i]).abs() < 1e-5);

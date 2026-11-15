@@ -413,7 +413,7 @@
     border-radius: 12px;
   }
   .controls {
-    width: 316px;
+    width: 372px;
     flex: none;
     display: flex;
     align-items: center;
