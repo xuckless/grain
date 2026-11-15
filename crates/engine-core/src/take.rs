@@ -94,6 +94,10 @@ pub struct Take {
     /// Sung takes are muted in normal playback (A/B auditions solo them); harmony and
     /// generated tracks play with the song.
     pub mix: MixParams,
+    /// The non-destructive processing chain over the raw take (AGENTS.md §8.7). Projects saved
+    /// before it existed load with every step unset.
+    #[serde(default)]
+    pub chain: crate::process::TakeChain,
 }
 
 /// A take just added to the loaded song: the updated project, the take's id and its score.
@@ -220,6 +224,7 @@ pub fn add_take(
         pitch_tracker: pitch.tracker,
         pitch: pitch.track,
         mix: source.initial_mix(),
+        chain: crate::process::TakeChain::default(),
         source,
     });
     id

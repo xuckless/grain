@@ -175,6 +175,9 @@ pub struct Project {
     /// MIDI layers, at most one per track (see [`crate::midi`]).
     #[serde(default)]
     pub transcriptions: Vec<Transcription>,
+    /// The starred master take (see [`crate::process::master`]); `None`: the newest take.
+    #[serde(default)]
+    pub master_take: Option<u32>,
 }
 
 /// Which separation an import runs (AGENTS.md §4.2). `Fast`: HTDemucs alone. `BestVocals`: the
@@ -276,6 +279,7 @@ pub fn build(song: SongSource, audio: &SongAudio, reference: TrackedPitch) -> Pr
         lyrics: ProjectLyrics::NotFetched,
         pitch_edits: Vec::new(),
         transcriptions: Vec::new(),
+        master_take: None,
     }
 }
 

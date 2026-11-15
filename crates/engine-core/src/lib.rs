@@ -21,6 +21,7 @@ pub mod onset;
 pub mod peaks;
 pub mod pitch;
 pub mod player;
+pub mod process;
 pub mod produce;
 pub mod project;
 pub mod psola;

@@ -329,7 +329,12 @@ pub fn render(
     timeline: &[f32],
     settings: TuneSettings,
 ) -> Result<Vec<f32>, TakeError> {
-    let track = take_pitch(project, id)?;
+    Ok(render_track(project, take_pitch(project, id)?, timeline, settings))
+}
+
+/// [`render`] following `track` (the take's pitch, or its pitch after the pitch editor's edits
+/// when the tuner runs after them in the take's chain, AGENTS.md §8.7).
+pub fn render_track(project: &Project, track: &PitchTrack, timeline: &[f32], settings: TuneSettings) -> Vec<f32> {
     let settings = settings.clamped();
     let curve: Vec<f32> = correction_curve(track, &project.analysis.reference_notes, settings)
         .iter()
@@ -342,11 +347,11 @@ pub fn render(
         track.hop_seconds,
         settings.formant_semitones,
     );
-    Ok(timeline
+    timeline
         .iter()
         .zip(&wet)
         .map(|(d, w)| (1.0 - settings.mix) * d + settings.mix * w)
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
