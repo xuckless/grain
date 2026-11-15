@@ -90,6 +90,11 @@ tempo, then the song plays from the playhead while the microphone records; press
 the song end. The take is lined up with the song, scored, and kept with the project (pick earlier
 takes in the **Take** menu; click a note in the graph to hear the original, then your take).
 
+- **Your takes:** every take is saved with the song the moment it exists (recorded, imported,
+  tuned, edited, cleaned, chained) and listed under **Your takes** in Score, Karaoke, Auto-tune,
+  Pitch and Produce. Play one **Solo** or **With backing** (the backing below), rename or delete
+  it, or **Compare** a tuned/edited/cleaned version with the take it came from (the original
+  plays, then the new one). Playing a take stops the song, and pressing Play stops the take.
 - **Backing:** *Instrumental* (the song without its vocal stem), *Instrumental + guide vocal* (the
   original vocal quietly) or *Full mix*. The default is Instrumental, except for songs whose
   non-vocal stems are more than 30 dB below the mix (a cappella), which default to the guide vocal.
@@ -199,13 +204,30 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test -p engine-core --target wasm32-unknown-unknown   # engine-core DSP tests under Node
 pnpm types && pnpm wasm && pnpm check && pnpm build:web
-pnpm --filter @workstation/ui test                   # recording, calibration, A/B, pitch editor, model manager
+pnpm --filter @workstation/ui test                   # recording, calibration, listening, pitch editor, model manager
 python3 scripts/fetch_models.py --check
 (cd services/ml-sidecar && uv run --frozen python -I -m pytest -q tests)   # sidecar HTTP contract (stub backend)
 cargo test --release -p engine-native -- --ignored   # RMVPE on synthetic sines (needs weights); a real model download
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and Linux.
+
+### UI frame times
+
+`scripts/perf/run.mjs` drives the web build in headless Chrome (frame-rate limit off, GPU raster,
+device pixel ratio 2) and prints frame-time p50/p95/p99/max, long tasks and main-thread → audio
+messages per second for: Home idle, Mix idle, a gain-fader drag, playback, a drag while playing,
+scrubbing, tab switching, each view idle, Pitch playback and a pitch-editor drag (AGENTS.md §10.1).
+
+```bash
+pnpm build:web
+pnpm --filter web preview --port 4400 &
+node scripts/perf/run.mjs http://localhost:4400 samples/your-song.mp3 out.json   # DPR=1, SOFTWARE=1, CHROME=… to vary
+kill %1
+```
+
+With the frame-rate limit off most frames have no input to handle, so p99 is the number that
+shows a drag's cost.
 
 The prototype is in `prototype/`. License: GPL-3.0.
 

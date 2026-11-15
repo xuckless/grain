@@ -492,6 +492,37 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
   - 4-minute song import, desktop with a GPU: separation under 60 s.
   - Timeline steady at 60 fps with 12 tracks.
 
+### 10.1 UI performance rules (mandatory for all UI work)
+
+Frame budgets: p95 frame time ≤ 16.7 ms on every screen, ≤ 8.3 ms (120 Hz) for the main
+interactions (fader and slider drags, playback, scrubbing, pitch-editor drags), and no long task
+over 50 ms while the user is interacting. Measure with `scripts/perf/run.mjs` (README) before
+and after a change; don't guess.
+
+1. **Big data is raw state.** Project, score reports, previews and other engine payloads are
+   `$state.raw` (see `session.svelte.ts`) and replaced whole (`session.adopt`, `withMix`), never
+   mutated in place. Deep proxies over peaks and pitch tracks cost milliseconds per read.
+2. **Action parameters are primitives.** Svelte deep-reads object parameters of `use:` actions
+   on every update. Keys for `reveal` and friends are strings or numbers (`identity(obj)` when
+   "this object was replaced" is the key). Passing the project to an action caused 800 ms long
+   tasks during fader drags.
+3. **No per-frame IPC.** The host pushes the transport (`subscribeTransport`: ~40 Hz while it
+   moves, and on every other change); `clock.ts` extrapolates it per frame. Anything drawn per
+   frame reads `clock.seconds()` inside `onFrame`, never a reactive snapshot. Slider sends are
+   coalesced to one per track per frame (`App.setMix`) with the visual state local. Hosts keep
+   command order (`runCommands` hands all commands over at once).
+4. **Canvases draw when their data changes, not per frame.** Static lanes are drawn once per
+   distinct key (`MixView`'s `art` action); playheads are DOM overlays moved by transform
+   (`use:playhead`); per-frame drawing goes through the one shared `onFrame` loop, paused while
+   off screen (IntersectionObserver) or idle (`Behaviour.idle`). Batch dots of one colour into
+   one path (`dotPath`): per-dot fills dominate a busy canvas.
+5. **Compute leaves the main thread.** Desktop: every Tauri command is async (`#[tauri::command(async)]`
+   or `spawn_blocking`); none runs on the main thread. Web: wasm work over ~4 ms that only needs
+   audio in and a value out runs in `compute-worker.ts`; long main-thread loops (OPFS saves)
+   yield between chunks.
+6. **No layout thrash.** Don't read layout (`getBoundingClientRect`, `clientWidth`) after writing
+   styles in the same frame; measure in event handlers or bind sizes.
+
 ---
 
 ## 11. Roadmap
@@ -578,8 +609,27 @@ Keep this table current: update the Status column whenever a milestone moves.
      - Clean-up is desktop only and offline only (see §8.1); de-reverb is deferred.
      - The vocal chain's presets are tuned on synthetic voices; they need listening on real takes.
        Live chain meters aren't shown (only the offline before/after).
-     - Harmony follows the detected key only (no chord awareness), and the score/auto-tune take
-       pickers also list harmony and generated tracks.
+     - Harmony follows the detected key only (no chord awareness).
+
+**UI performance and takes pass (as built):**
+
+- Performance (§10.1): raw session state, pushed transport with a per-frame clock, coalesced
+  mix sends, lanes drawn only when dirty, compositor playheads, batched dots, paused particles,
+  async desktop commands, the web chain pick in a compute worker. Before/after numbers come from
+  `scripts/perf/run.mjs` (README).
+- Takes: one `Takes` list (Score, Karaoke, Auto-tune, Pitch, Produce) of sung takes (harmony and
+  generated tracks stay in Mix and Produce's outputs), each playable solo or over the recording
+  backing, renameable, deletable (with confirmation) and, where it was made from another, "Compare"
+  plays the original then this one. Score and Karaoke add "Use for scoring".
+- Listening is one app-wide machine (`listen.ts`: Idle → Playing ⇄ Paused → Idle, with a queue
+  and an optional span). Score's note A/B runs on it too. Playing the song, recording, calibrating
+  or singing karaoke ends it first; the song's mix comes back when it ends.
+- **Autosave decision:** every take change (recorded, imported, tuned, edited, cleaned, chained,
+  harmony, generated, renamed, deleted) saves the song at once: desktop writes the cache entry's
+  `project.json` (take audio is already there), web writes the OPFS `.grain` file (one channel per
+  write). A save writes the whole project, so it also keeps any mix, lyrics or edit changes made
+  before; Save stays for those changes alone. Deleting a take rebuilds the player (its tracks are
+  indexed by position), which stops playback.
 
 ### Everything still open (project-wide)
 
@@ -594,6 +644,10 @@ Keep this table current: update the Status column whenever a milestone moves.
   drum transcription is a simple classifier.
 - **Produce:** the M5 list above (ACE-Step untested with real weights, `uv` not bundled, no web or
   live denoise, de-reverb deferred).
+- **UI performance:** the web's chain render, harmony and pitch render still run on the main
+  thread (they're explicit jobs with a working state, not interactions); one tab switch (opening a
+  view's wasm data) still measures a ~90 ms long task; desktop IPC was not profiled in the running
+  app (the push and coalescing remove per-frame invokes by construction).
 - **Design/licensing:** the Geist Pixel font's licence is unverified (README); the UI design pass
   row stays "in progress"; minimum web hardware (§12) is undecided.
 
