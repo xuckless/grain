@@ -135,7 +135,7 @@
           }}
         />
       </div>
-      <p class="muted">A one-second test sound before Sing and Retake. If it isn't heard (headphones on), your last latency is used and recording goes ahead.</p>
+      <p class="muted">A short test sound (under 2 s) before Sing and Retake. If it isn't heard (headphones on), your last latency is used and recording goes ahead.</p>
     </section>
 
     <section>
