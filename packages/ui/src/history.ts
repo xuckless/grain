@@ -1,5 +1,5 @@
 // One session-wide undo/redo history (AGENTS.md §8.6): ⌘Z / ⇧⌘Z step through mix changes, take
-// changes (master, rename), pitch edits and processing-chain edits in the order they were made.
+// changes (master, rename, delete, retake), pitch edits and processing-chain edits in the order they were made.
 // Commands are plain data with both states, so undo and redo are the same operation pointed
 // either way; SessionScreen executes them against the host.
 
@@ -11,6 +11,10 @@ export type Command =
   /** Which take is the master (★). */
   | { kind: "Master"; before: number | null; after: number | null }
   | { kind: "Rename"; take: number; before: string; after: string }
+  /** A take deleted (the host keeps it aside until the song closes, so undo restores it). */
+  | { kind: "Delete"; take: number; before: "kept"; after: "deleted" }
+  /** A retake: which take holds the slot (`before`, the original; `after`, the retake). */
+  | { kind: "Replace"; before: number; after: number }
   /** A pitch-editor edit list (the Pitch Edits step of a take's chain). `key`: one slider drag
    * (consecutive changes with the same key are one step). */
   | { kind: "PitchEdit"; source: EditSource; before: PitchEdit; after: PitchEdit; key: string | null }
@@ -66,6 +70,10 @@ export function describe(c: Command): string {
       return "master take";
     case "Rename":
       return "rename";
+    case "Delete":
+      return "take delete";
+    case "Replace":
+      return "retake";
     case "PitchEdit":
       return "pitch edit";
     case "Chain":

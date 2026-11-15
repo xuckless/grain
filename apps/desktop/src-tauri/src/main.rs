@@ -57,6 +57,9 @@ struct Loaded {
     monitor: Monitor,
     /// The chain render cache of the take last edited (see [`chain::Rendered`]).
     rendered: Option<chain::Rendered>,
+    /// Takes deleted or retaken over this session, kept (audio on disk too) so ⌘Z can bring
+    /// them back; their audio is removed when the song closes.
+    aside: Vec<take::SetAside>,
 }
 
 /// The microphone held open for live monitoring (AGENTS.md §7 step 3); the player knows
@@ -200,8 +203,16 @@ fn start_session(
     // Takes play through their processing chains (AGENTS.md §8.7), rendered before locking.
     let takes = chain::player_takes(engine, &project, takes);
     let mut session = engine.session.lock().expect("session lock");
-    // Close the old stream before opening a new one.
-    *session = Session::Empty;
+    // Close the old stream before opening a new one. Rebuilding the same song's player keeps
+    // its set-aside takes; any other song's are gone for good.
+    let aside = match std::mem::replace(&mut *session, Session::Empty) {
+        Session::Loaded(old) if old.cache_key == cache_key => old.aside,
+        Session::Loaded(old) => {
+            discard_aside(engine, &old);
+            Vec::new()
+        }
+        Session::Empty => Vec::new(),
+    };
     let playback = Playback::start(&project, audio, &takes)?;
     *session = Session::Loaded(Box::new(Loaded {
         cache_key,
@@ -210,8 +221,19 @@ fn start_session(
         mic: Mic::Closed,
         monitor: Monitor::Off,
         rendered: None,
+        aside,
     }));
     Ok(project)
+}
+
+/// Removes the audio of the takes `loaded` set aside (the song is closing, so no undo needs
+/// them). Failures leave an unlisted file behind, which nothing reads.
+fn discard_aside(engine: &Engine, loaded: &Loaded) {
+    for a in &loaded.aside {
+        if let Err(e) = engine.cache.remove_take(&loaded.cache_key, a.take.id) {
+            eprintln!("couldn't remove take {}: {e:#}", a.take.id);
+        }
+    }
 }
 
 /// Runs `f` on the loaded song.
@@ -315,18 +337,22 @@ fn rename_take(engine: State<Engine>, id: u32, name: String) -> Result<Project, 
     .map_err(fail)
 }
 
-/// Deletes a take and its audio, saved at once. The player is rebuilt without it (its tracks
-/// are indexed by position), so playback stops. Returns the project.
-#[tauri::command]
-async fn delete_take(app: AppHandle, id: u32) -> Result<Project, String> {
+/// Changes which takes the song holds (`f` sets takes aside or puts them back), saves at once,
+/// and rebuilds the player (its tracks are indexed by position, so playback stops). Returns the
+/// project.
+async fn rearrange_takes(
+    app: AppHandle,
+    f: impl FnOnce(&mut Project, &mut Vec<take::SetAside>) -> Result<(), take::TakeError>
+        + Send
+        + 'static,
+) -> Result<Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let engine = app.state::<Engine>();
         let key = with_loaded(&engine, |l| {
-            take::remove_take(&mut l.project, id)?;
+            f(&mut l.project, &mut l.aside)?;
             engine.cache.save_project(&l.cache_key, &l.project)?;
             Ok(l.cache_key.clone())
         })?;
-        engine.cache.remove_take(&key, id)?;
         match engine.cache.lookup(&key)? {
             Lookup::Hit {
                 project,
@@ -341,10 +367,34 @@ async fn delete_take(app: AppHandle, id: u32) -> Result<Project, String> {
     .map_err(fail)
 }
 
+/// Deletes a take, saved at once. Its audio is kept until the song closes, so ⌘Z restores it.
+#[tauri::command]
+async fn delete_take(app: AppHandle, id: u32) -> Result<Project, String> {
+    rearrange_takes(app, move |p, aside| take::set_aside(p, aside, id)).await
+}
+
+/// Puts a deleted take back where it was.
+#[tauri::command]
+async fn restore_take(app: AppHandle, id: u32) -> Result<Project, String> {
+    rearrange_takes(app, move |p, aside| take::put_back(p, aside, id)).await
+}
+
+/// Take `replacement` takes over take `target`'s place (a retake, or undoing or redoing one).
+#[tauri::command]
+async fn replace_take(app: AppHandle, target: u32, replacement: u32) -> Result<Project, String> {
+    rearrange_takes(app, move |p, aside| {
+        take::replace_take(p, aside, target, replacement)
+    })
+    .await
+}
+
 /// Stops playback and unloads the song.
 #[tauri::command(async)]
 fn close_session(engine: State<Engine>) -> Result<(), String> {
-    *engine.session.lock().map_err(fail)? = Session::Empty;
+    let old = std::mem::replace(&mut *engine.session.lock().map_err(fail)?, Session::Empty);
+    if let Session::Loaded(old) = old {
+        discard_aside(&engine, &old);
+    }
     Ok(())
 }
 
@@ -1104,6 +1154,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             rename_take,
             delete_take,
+            restore_take,
+            replace_take,
             import_file,
             separation_offer,
             url_import,

@@ -207,6 +207,8 @@ export async function createDesktopHost(): Promise<EngineHost> {
     takes: {
       rename: (id, name) => invoke<Project>("rename_take", { id, name }),
       remove: (id) => invoke<Project>("delete_take", { id }),
+      restore: (id) => invoke<Project>("restore_take", { id }),
+      replace: (target, replacement) => invoke<Project>("replace_take", { target, replacement }),
       setChain: (id, chain) => invoke<ChainOutcome>("set_take_chain", { id, chain }),
       setMaster: (id) => invoke<Project>("set_master", { id }),
     },

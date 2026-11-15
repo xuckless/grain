@@ -3,7 +3,7 @@
   export type IconName =
     | "back" | "close" | "play" | "pause" | "stop" | "check" | "chevron" | "save" | "info"
     | "gear" | "more" | "star" | "starFilled" | "undo" | "redo" | "export" | "zoomIn" | "zoomOut" | "fit"
-    | "mute" | "unmute" | "solo" | "midi" | "loop" | "record"
+    | "mute" | "unmute" | "solo" | "midi" | "loop" | "record" | "trash" | "retake"
     | "mic" | "melody" | "drums" | "bass" | "guitar" | "piano" | "waves";
 </script>
 
@@ -14,6 +14,10 @@
 <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
   {#if name === "back"}
     <path d="M12 4.5L6.5 10l5.5 5.5"></path>
+  {:else if name === "trash"}
+    <path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 9.5h6.6L14 6M8.5 8.5v4.5M11.5 8.5v4.5"></path>
+  {:else if name === "retake"}
+    <path d="M15 10a5 5 0 1 1-1.5-3.6M13.8 3.8v2.9h-2.9"></path><circle cx="10" cy="10" r="1.6" fill="currentColor" stroke="none"></circle>
   {:else if name === "close"}
     <path d="M5.5 5.5l9 9M14.5 5.5l-9 9"></path>
   {:else if name === "play"}

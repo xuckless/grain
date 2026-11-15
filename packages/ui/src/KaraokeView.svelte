@@ -22,16 +22,21 @@
     noteAt,
     observeKaraoke,
     performanceTotals,
+    retakeSpan,
     type Karaoke,
     type KaraokeEvent,
+    type Pass,
   } from "./karaoke";
+  import { selectedTakeId } from "./chain";
+  import { replaceTake } from "./takeops";
+  import Working from "./Working.svelte";
   import { currentLine, sungFraction } from "./lyrics";
   import { enter } from "./motion";
   import { applyTake, armTake, backingHint, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
   import { clock } from "./clock";
   import Takes from "./Takes.svelte";
   import { errorMessage, formatTime, transportSeconds, type Session } from "./state";
-  import { beatsLeft } from "./takes";
+  import { beatsLeft, calibrateBeforeRecording, calibrationNote, type AutoCalibration } from "./takes";
 
   /**
    * The Karaoke view (AGENTS.md §6): the song's reference notes scroll through a pitch lane
@@ -127,14 +132,50 @@
 
   const seekTo = (s: number) => run([{ kind: "Seek", frame: Math.max(0, Math.min(project.frames - 1, Math.floor(s * snapshot.sample_rate))) }]);
 
-  async function start() {
-    listen({ kind: "stop" });
+  /** Where the run being sung started (song seconds, pre-roll included), for its take's span. */
+  let runFrom = 0;
+  /** The last calibration before a recording, for the (i) note when it used a stored latency. */
+  let calibrated = $state<AutoCalibration | null>(null);
+
+  /** Sing (or Resume): from the playhead, or from A with a loop set, a pre-roll early. */
+  function sing() {
     const fresh = karaoke.kind !== "paused";
-    if (session.mic.kind !== "free" || !karaokeEvent(fresh ? { kind: "start" } : { kind: "resume" })) return;
+    const from = (loop ? loop.start : seconds) - PRE_ROLL;
+    void begin(fresh ? { kind: "start", calibrate: session.calibrateFirst } : { kind: "resume" }, from, fresh);
+  }
+
+  /** The take Retake sings again: the one picked in the toolbar (or the ★ master). */
+  const retakeTarget = $derived(selectedTakeId(project, session.take));
+  const canRetake = $derived(retakeTarget !== null && (karaoke.kind === "idle" || karaoke.kind === "paused" || karaoke.kind === "finished" || karaoke.kind === "failed"));
+
+  /** Retake: sings the picked take's span again; the new take replaces it once it's saved. */
+  function retake() {
+    if (retakeTarget === null) return;
+    const span = retakeSpan(project, session.spans, retakeTarget, PRE_ROLL);
+    if (!span) return;
+    void begin({ kind: "retake", target: retakeTarget, end: span.to, calibrate: session.calibrateFirst }, span.from, true);
+  }
+
+  async function begin(e: KaraokeEvent, from: number, fresh: boolean) {
+    listen({ kind: "stop" });
+    if (session.mic.kind !== "free" || mic.kind !== "available" || !karaokeEvent(e)) return;
+    // The run holds the microphone from here, its calibration included.
     session.mic = { kind: "recording" };
-    // The pre-roll: start a little before where the singer will come in.
-    const from = loop && fresh ? loop.start : seconds;
-    await seekTo(from - PRE_ROLL);
+    if (karaoke.kind === "calibrating") {
+      calibrated = { kind: "calibrating" };
+      try {
+        calibrated = await calibrateBeforeRecording(mic);
+      } catch (err) {
+        calibrated = null;
+        karaokeEvent({ kind: "fail", message: errorMessage(err) });
+        return;
+      }
+      if (calibrated.source !== "Measured") toast("Couldn't hear the test sound: headphones on or volume low. Using your last latency.");
+      // Cancelled while it listened: nothing to record.
+      if (!karaokeEvent({ kind: "calibrated" })) return;
+    }
+    runFrom = Math.max(0, from);
+    await seekTo(from);
     if (fresh) {
       performance_ = newPerformance(notes);
       trail.clear();
@@ -144,58 +185,95 @@
     }
     try {
       await armTake(host, project, effectiveBacking(session));
-    } catch (e) {
-      karaokeEvent({ kind: "fail", message: errorMessage(e) });
+    } catch (err) {
+      karaokeEvent({ kind: "fail", message: errorMessage(err) });
     }
   }
 
-  // The microphone is free again whenever no run is live.
-  $effect(() => {
-    if (!isLive(karaoke) && session.mic.kind === "recording") session.mic = { kind: "free" };
-  });
+  /** Drops a retake (or a run still calibrating): the original take is untouched. */
+  async function cancel() {
+    const from = karaoke.kind;
+    if (!karaokeEvent({ kind: "cancel" })) return;
+    if (from !== "calibrating") {
+      await run([{ kind: "Pause" }]);
+      await cancelTake(host, project).catch((e) => console.warn(errorMessage(e)));
+      endRun(performance_, null);
+      refresh();
+    }
+    release();
+  }
 
-  /** Saves the run that just ended as a take; it's scored offline and shows in Score. */
-  async function saveRun(): Promise<boolean> {
+  /** The microphone is free again whenever no run is live (also called when a run ends after the
+   * view has gone, where effects no longer run). */
+  function release() {
+    if (!isLive(karaoke) && session.mic.kind === "recording") session.mic = { kind: "free" };
+  }
+  $effect(release);
+
+  /** Saving a take: Saving → Saved (a brief confirm with a burst) | Failed (the run's failure). */
+  type SaveNotice = { kind: "none" } | { kind: "saving" } | { kind: "saved" };
+  let saveNotice = $state<SaveNotice>({ kind: "none" });
+  /** How long "Saved" stays up. */
+  const SAVED_MS = 900;
+
+  /** Saves the run that just ended as a take; it's scored offline and shows in Score. A retake
+   * then takes over its target's place: the original stays in the song until the retake is
+   * saved, and a failed swap keeps both. Returns the saved take, or null. */
+  async function saveRun(pass: Pass): Promise<number | null> {
+    saveNotice = { kind: "saving" };
+    const to = transportSeconds(await host.transport().catch(() => snapshot));
     try {
       const added = await finishTake(host, project, settings());
       applyTake(session, added);
+      session.spans = new Map(session.spans).set(added.take, { from: runFrom, to });
+      if (pass.kind === "retake") {
+        try {
+          await replaceTake(host.takes, session, pass.target, added.take);
+        } catch (e) {
+          toast(`Saved the retake as a new take, but couldn't replace the original: ${errorMessage(e)}`, "error");
+        }
+      }
       celebrate(endRun(performance_, added.take));
       refresh();
-      return true;
+      saveNotice = { kind: "saved" };
+      setTimeout(() => saveNotice.kind === "saved" && (saveNotice = { kind: "none" }), SAVED_MS);
+      return added.take;
     } catch (e) {
+      saveNotice = { kind: "none" };
       endRun(performance_, null);
       refresh();
       karaokeEvent({ kind: "fail", message: errorMessage(e) });
-      return false;
+      return null;
     }
   }
 
   async function pause() {
     if (!karaokeEvent({ kind: "pause" })) return;
     await run([{ kind: "Pause" }]);
-    if (!(await saveRun())) return;
+    if ((await saveRun({ kind: "take" })) === null) return;
     const t = (await host.transport()).transport;
     karaokeEvent({ kind: "paused", frame: t.kind === "Paused" ? t.frame : 0 });
   }
 
   async function finish() {
-    const from = karaoke.kind;
+    const from = karaoke;
     if (!karaokeEvent({ kind: "finish" })) return;
-    if (from === "paused") return;
+    if (from.kind === "paused") return;
     await run([{ kind: "Pause" }]);
-    if (from === "countIn") {
-      // Nothing was sung in this run: drop it.
+    if (from.kind === "countIn") {
+      // Nothing was sung in this run: drop it (a retake keeps its original).
       await cancelTake(host, project).catch((e) => console.warn(errorMessage(e)));
       endRun(performance_, null);
       karaokeEvent({ kind: "saved" });
-    } else if (await saveRun()) {
+    } else if (from.kind === "singing" && (await saveRun(from.pass)) !== null) {
       karaokeEvent({ kind: "saved" });
     }
+    release();
   }
 
-  // The transport ends the count-in, and the song's end (or Stop) finishes the performance.
+  // The transport ends the count-in, and the song's end (or Stop, or a retake's span) finishes.
   $effect(() => {
-    const e = observeKaraoke(karaoke, snapshot.transport);
+    const e = observeKaraoke(karaoke, snapshot.transport, seconds);
     if (!e) return;
     if (e.kind === "finish") void finish();
     else karaokeEvent(e);
@@ -222,15 +300,12 @@
   // Passing B while singing saves the pass and counts in again from A.
   let passing = false;
   $effect(() => {
-    if (!loop || karaoke.kind !== "singing" || seconds < loop.end || passing) return;
+    if (!loop || karaoke.kind !== "singing" || karaoke.pass.kind !== "take" || seconds < loop.end || passing) return;
     passing = true;
     void (async () => {
       await pause();
-      // `pause` moved the machine on; read it afresh.
-      if ((karaoke as Karaoke).kind === "paused") {
-        await seekTo(loop.start - PRE_ROLL);
-        await start();
-      }
+      // `pause` moved the machine on; read it afresh. Resuming counts in again from A.
+      if ((karaoke as Karaoke).kind === "paused") sing();
       passing = false;
     })();
   });
@@ -276,9 +351,11 @@
     });
   });
 
-  // Leaving the view mid-run keeps the singing: the run is saved like a finish.
+  // Leaving the view mid-run keeps the singing: the run is saved like a finish. A run still
+  // calibrating has nothing sung yet, so it's dropped.
   $effect(() => () => {
-    if (isLive(karaoke)) void finish();
+    if (karaoke.kind === "calibrating") void cancel();
+    else if (isLive(karaoke)) void finish();
   });
 
   $effect(() => {
@@ -298,10 +375,13 @@
   const busy = $derived(live || session.mic.kind === "calibrating");
   const duration = $derived(project.frames / project.sample_rate);
 
+  const note = $derived(calibrated ? calibrationNote(calibrated) : null);
   const hints = $derived([
+    ...(note ? [note] : []),
     "Use headphones, so the backing doesn't bleed into the microphone.",
     "Drag the lane or click the ruler to move; click a lyric line to start from it. Sing starts 2 s early so you hear the lead-in.",
     "Loop: press once at A and again at B. Each pass is saved as its own take.",
+    "Retake sings the picked take's stretch again and replaces it once the new one is saved. Cancel keeps the original.",
     ...(backingHint(session) ? [backingHint(session)!] : []),
   ]);
 </script>
@@ -312,12 +392,23 @@
       <Icon name="loop" />{loop ? `${formatTime(loop.start)}–${formatTime(loop.end)}` : marking.kind === "a" ? "Set B" : "Loop"}
     </button>
   {/snippet}
+  {#snippet retakeButton()}
+    <button
+      class="press raised big retake"
+      onclick={retake}
+      disabled={!canRetake || busy || mic.kind !== "available"}
+      title={retakeTarget === null ? "Sing a take first" : `Sing “${project.takes.find((t) => t.id === retakeTarget)?.name}” again; it replaces the original once saved`}
+    >
+      <Icon name="retake" />Retake
+    </button>
+  {/snippet}
   {#snippet rules()}
     <SettingsControls {session} disabled={live} />
   {/snippet}
   <Toolbar {hints} items={[{ key: "loop", control: loopButton }, { key: "rules", control: rules }]}>
     <BackingMenu {session} disabled={live} />
     <TakePicker {host} {session} />
+    {#if retakeTarget !== null}{@render retakeButton()}{/if}
   </Toolbar>
 
   <div class="lane" bind:this={lane} role="slider" tabindex="-1" aria-label="Drag to move through the song" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(seconds)} onpointerdown={laneDown} onpointermove={laneMove} onpointerup={laneUp} onpointercancel={laneUp}>
@@ -335,6 +426,11 @@
         <strong class="pixel countdown" in:enter>{beats || ""}</strong>
       {/if}
     </div>
+    {#if karaoke.kind === "calibrating"}
+      <Working label="Calibrating…" expected={1.6} />
+    {:else if saveNotice.kind !== "none"}
+      <Working label={saveNotice.kind === "saved" ? "Take saved" : "Saving your take…"} expected={2} done={saveNotice.kind === "saved"} />
+    {/if}
   </div>
 
   <button class="ruler" aria-label="Song position: click to move there" disabled={live} onclick={rulerClick}>
@@ -364,14 +460,20 @@
   </div>
 
   <div class="status">
-    {#if karaoke.kind === "countIn"}
-      <p class="muted">Count-in: sing from the next bar.</p>
+    {#if karaoke.kind === "calibrating"}
+      <p class="muted">Playing a short test sound to measure your latency.</p>
+    {:else if karaoke.kind === "countIn"}
+      <p class="muted">{karaoke.pass.kind === "retake" ? "Retake: count-in, then sing the same stretch again." : "Count-in: sing from the next bar."}</p>
     {:else if karaoke.kind === "singing"}
-      <p class="muted">Pause saves what you've sung so far; Finish (or the song's end) wraps up.</p>
+      <p class="muted">
+        {karaoke.pass.kind === "retake"
+          ? `Retake: it stops at ${formatTime(karaoke.pass.end)} and replaces the original. Cancel keeps the original.`
+          : "Pause saves what you've sung so far; Finish (or the song's end) wraps up."}
+      </p>
     {:else if karaoke.kind === "paused"}
       <p class="muted">Paused at {formatTime(karaoke.frame / snapshot.sample_rate)}. That run is saved as a take; Resume counts you back in.</p>
     {:else if karaoke.kind === "pausing" || karaoke.kind === "finishing"}
-      <p class="muted">Saving your take</p>
+      <p class="muted">Saving your take…</p>
     {:else if karaoke.kind === "finished"}
       <div class="result" in:enter>
         <p>
@@ -396,16 +498,27 @@
   {/if}
 
   <BottomAction>
-    {#if karaoke.kind === "singing" || karaoke.kind === "pausing"}
-      <button class="press cta" onclick={pause} disabled={karaoke.kind === "pausing"}><Icon name="pause" />Pause</button>
+    {#if karaoke.kind === "calibrating"}
+      <button class="press cta" disabled><Icon name="record" />Calibrating…</button>
+    {:else if karaoke.kind === "pausing" || karaoke.kind === "finishing"}
+      <button class="press cta" disabled>Saving take…</button>
+    {:else if (karaoke.kind === "singing" || karaoke.kind === "countIn") && karaoke.pass.kind === "retake"}
+      <button class="press cta" onclick={cancel}><Icon name="close" />Cancel retake</button>
+    {:else if karaoke.kind === "singing"}
+      <button class="press cta" onclick={pause}><Icon name="pause" />Pause</button>
     {:else}
-      <button class="press cta sing" onclick={start} disabled={busy || mic.kind !== "available" || karaoke.kind === "finishing"} title={mic.kind === "unavailable" ? mic.reason : undefined}>
+      <button class="press cta sing" onclick={sing} disabled={busy || mic.kind !== "available" || karaoke.kind === "countIn"} title={mic.kind === "unavailable" ? mic.reason : undefined}>
         <Icon name="record" />{karaoke.kind === "paused" ? "Resume" : "Sing"}
       </button>
     {/if}
     {#snippet side()}
-      {#if live || karaoke.kind === "paused"}
-        <button class="press raised big" onclick={finish} disabled={karaoke.kind === "pausing" || karaoke.kind === "finishing"}>Finish</button>
+      {#if karaoke.kind === "calibrating"}
+        <button class="press raised big" onclick={cancel}>Cancel</button>
+      {:else if karaoke.kind === "countIn" || karaoke.kind === "singing" || karaoke.kind === "paused"}
+        <button class="press raised big" onclick={finish}>Finish</button>
+      {/if}
+      {#if karaoke.kind === "paused" || karaoke.kind === "finished"}
+        {@render retakeButton()}
       {/if}
     {/snippet}
   </BottomAction>
@@ -451,6 +564,11 @@
   .lane {
     touch-action: none;
     cursor: grab;
+  }
+  .retake {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
   }
   :global(.cta.sing) {
     gap: 8px;

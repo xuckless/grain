@@ -1,8 +1,8 @@
 // Run with `pnpm --filter @workstation/ui test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { FrameComparison, FrameTotals, LiveFrame, Note, Transport } from "@workstation/engine-api";
-import { addFrames, displayMidi, endRun, inTune, karaokeNext, newPerformance, noteAt, observeKaraoke, performanceTotals, type Karaoke, type KaraokeEvent } from "./karaoke.ts";
+import type { FrameComparison, FrameTotals, LiveFrame, Note, Project, Transport } from "@workstation/engine-api";
+import { addFrames, displayMidi, endRun, inTune, karaokeNext, newPerformance, noteAt, observeKaraoke, performanceTotals, retakeSpan, type Karaoke, type KaraokeEvent } from "./karaoke.ts";
 
 function walk(events: KaraokeEvent[], from: Karaoke = { kind: "idle" }): Karaoke {
   return events.reduce<Karaoke>((s, e) => {
@@ -12,34 +12,74 @@ function walk(events: KaraokeEvent[], from: Karaoke = { kind: "idle" }): Karaoke
   }, from);
 }
 
+const take = { kind: "take" } as const;
+const start = { kind: "start", calibrate: false } as const;
+
 test("karaoke session: count-in, sing, pause, resume, finish", () => {
-  const singing = walk([{ kind: "start" }, { kind: "countInHeard" }, { kind: "countInElapsed" }]);
-  assert.deepEqual(singing, { kind: "singing" });
+  const singing = walk([start, { kind: "countInHeard" }, { kind: "countInElapsed" }]);
+  assert.deepEqual(singing, { kind: "singing", pass: take });
   const paused = walk([{ kind: "pause" }, { kind: "paused", frame: 4410 }], singing);
   assert.deepEqual(paused, { kind: "paused", frame: 4410 });
-  assert.deepEqual(walk([{ kind: "resume" }], paused), { kind: "countIn", heard: false });
+  assert.deepEqual(walk([{ kind: "resume" }], paused), { kind: "countIn", heard: false, pass: take });
   assert.deepEqual(walk([{ kind: "finish" }], paused), { kind: "finished" }, "the last run was saved when pausing");
   assert.deepEqual(walk([{ kind: "finish" }, { kind: "saved" }, { kind: "reset" }], singing), { kind: "idle" });
+});
+
+test("Sing calibrates first when asked, then counts in; cancelling a calibration records nothing", () => {
+  const calibrating = walk([{ kind: "start", calibrate: true }]);
+  assert.deepEqual(calibrating, { kind: "calibrating", pass: take });
+  assert.equal(karaokeNext(calibrating, { kind: "countInHeard" }), null, "no count-in until calibrated");
+  assert.deepEqual(walk([{ kind: "calibrated" }], calibrating), { kind: "countIn", heard: false, pass: take });
+  assert.deepEqual(walk([{ kind: "cancel" }], calibrating), { kind: "idle" });
+  assert.equal(karaokeNext({ kind: "countIn", heard: false, pass: take }, { kind: "calibrated" }), null);
+});
+
+test("a retake sings its span, can't pause, finishes at the span's end, and can be cancelled", () => {
+  const retake = { kind: "retake", target: 3, end: 12 } as const;
+  const singing = walk([{ kind: "retake", target: 3, end: 12, calibrate: true }, { kind: "calibrated" }, { kind: "countInHeard" }, { kind: "countInElapsed" }]);
+  assert.deepEqual(singing, { kind: "singing", pass: retake });
+  assert.equal(karaokeNext(singing, { kind: "pause" }), null);
+  const t = { kind: "Playing", frame: 0 } as unknown as Transport;
+  assert.equal(observeKaraoke(singing, t, 11.9), null);
+  assert.deepEqual(observeKaraoke(singing, t, 12), { kind: "finish" });
+  assert.deepEqual(walk([{ kind: "finish" }], singing), { kind: "finishing", pass: retake }, "the save knows to replace take 3");
+  assert.deepEqual(walk([{ kind: "cancel" }], singing), { kind: "idle" }, "cancel keeps the original");
+  assert.equal(karaokeNext({ kind: "singing", pass: take }, { kind: "cancel" }), null, "a new take finishes instead");
+  assert.ok(karaokeNext({ kind: "paused", frame: 0 }, { kind: "retake", target: 3, end: 12, calibrate: false }), "Retake from a pause");
+  assert.equal(karaokeNext(singing, { kind: "retake", target: 3, end: 12, calibrate: false }), null);
 });
 
 test("karaoke session rejects illegal transitions", () => {
   const idle: Karaoke = { kind: "idle" };
   assert.equal(karaokeNext(idle, { kind: "pause" }), null);
   assert.equal(karaokeNext(idle, { kind: "finish" }), null);
-  assert.equal(karaokeNext({ kind: "countIn", heard: false }, { kind: "countInElapsed" }), null, "count-in must be heard first");
-  assert.equal(karaokeNext({ kind: "singing" }, { kind: "start" }), null);
+  assert.equal(karaokeNext(idle, { kind: "cancel" }), null);
+  assert.equal(karaokeNext({ kind: "countIn", heard: false, pass: take }, { kind: "countInElapsed" }), null, "count-in must be heard first");
+  assert.equal(karaokeNext({ kind: "singing", pass: take }, start), null);
   assert.equal(karaokeNext({ kind: "pausing" }, { kind: "resume" }), null);
   assert.equal(karaokeNext({ kind: "finished" }, { kind: "fail", message: "x" }), null);
-  assert.deepEqual(karaokeNext({ kind: "singing" }, { kind: "fail", message: "mic" }), { kind: "failed", message: "mic" });
+  assert.deepEqual(karaokeNext({ kind: "singing", pass: take }, { kind: "fail", message: "mic" }), { kind: "failed", message: "mic" });
+  assert.deepEqual(karaokeNext({ kind: "calibrating", pass: take }, { kind: "fail", message: "mic" }), { kind: "failed", message: "mic" });
 });
 
 test("the transport drives the count-in and the song's end", () => {
   const t = (kind: Transport["kind"]): Transport => ({ kind, frame: 0, remaining: 100 }) as unknown as Transport;
-  assert.deepEqual(observeKaraoke({ kind: "countIn", heard: false }, t("Playing")), null, "a poll from before the count-in");
-  assert.deepEqual(observeKaraoke({ kind: "countIn", heard: false }, t("CountIn")), { kind: "countInHeard" });
-  assert.deepEqual(observeKaraoke({ kind: "countIn", heard: true }, t("Playing")), { kind: "countInElapsed" });
-  assert.deepEqual(observeKaraoke({ kind: "singing" }, t("Stopped")), { kind: "finish" });
-  assert.equal(observeKaraoke({ kind: "pausing" }, t("Stopped")), null);
+  assert.deepEqual(observeKaraoke({ kind: "countIn", heard: false, pass: take }, t("Playing"), 0), null, "a poll from before the count-in");
+  assert.deepEqual(observeKaraoke({ kind: "countIn", heard: false, pass: take }, t("CountIn"), 0), { kind: "countInHeard" });
+  assert.deepEqual(observeKaraoke({ kind: "countIn", heard: true, pass: take }, t("Playing"), 0), { kind: "countInElapsed" });
+  assert.deepEqual(observeKaraoke({ kind: "singing", pass: take }, t("Stopped"), 0), { kind: "finish" });
+  assert.equal(observeKaraoke({ kind: "pausing" }, t("Stopped"), 0), null);
+  assert.equal(observeKaraoke({ kind: "calibrating", pass: take }, t("Stopped"), 0), null, "calibration stops the song itself");
+});
+
+test("a retake sings the span its take's run covered, else its sung span with the pre-roll", () => {
+  const pitch = { hop_seconds: 1, frames: [...Array(10)].map((_, i) => (i >= 4 && i <= 7 ? { kind: "Voiced", midi: 60 } : { kind: "Unvoiced" })) };
+  const project = { frames: 44100 * 20, sample_rate: 44100, takes: [{ id: 1, start_seconds: 4, pitch, source: { kind: "Recorded", latency_ms: 0 } }] } as unknown as Project;
+  assert.deepEqual(retakeSpan(project, new Map([[1, { from: 1, to: 9 }]]), 1, 2), { from: 1, to: 9 });
+  const fallback = retakeSpan(project, new Map(), 1, 2)!;
+  assert.equal(fallback.from, 2);
+  assert.ok(fallback.to > 7 && fallback.to < 9);
+  assert.equal(retakeSpan(project, new Map(), 99, 2), null);
 });
 
 const notes: Note[] = [

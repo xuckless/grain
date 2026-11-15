@@ -237,7 +237,7 @@ mod tests {
         let b = add(&mut project, 330.0);
         take::rename_take(&mut project, b, "Chorus").unwrap();
         cache.save_project(key, &project).unwrap();
-        take::remove_take(&mut project, a).unwrap();
+        take::set_aside(&mut project, &mut Vec::new(), a).unwrap();
         cache.save_project(key, &project).unwrap();
         cache.remove_take(key, a).unwrap();
 
