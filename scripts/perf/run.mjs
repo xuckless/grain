@@ -74,6 +74,8 @@ await page.addInitScript(() => {
     },
   };
 });
+// The harness stays offline: Karaoke's lyrics lookup (LRCLIB) is refused.
+await page.route(/^https?:\/\/(?!localhost|127\.0\.0\.1)/, (r) => r.abort());
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 
