@@ -5,7 +5,7 @@
   import { clock, onFrame } from "./clock";
   import { listener, services } from "./context";
   import { dotRow } from "./grain";
-  import { isListening, listenProgress, madeFrom, sungTakes, type ListenItem, type ListenMode } from "./listen";
+  import { isListening, listenProgress, madeFrom, sungTakes, LISTEN_MODES, type ListenItem } from "./listen";
   import { enter, popover } from "./motion";
   import { errorMessage, type Session } from "./state";
 
@@ -33,7 +33,7 @@
 
   const project = $derived(session.project);
   const takes = $derived(sungTakes(project).slice().reverse());
-  let mode = $state<ListenMode>("Solo");
+  const mode = $derived(session.playback);
 
   /** One row at a time is being renamed, asked about deleting, or saving. */
   type RowEdit =
@@ -59,9 +59,11 @@
   const nameOf = (from: ListenItem) => (from.kind === "VocalStem" ? "the vocal stem" : `“${project.takes.find((t) => t.id === from.id)?.name ?? "the original"}”`);
 
   async function rename(id: number, draft: string) {
+    const before = project.takes.find((t) => t.id === id)?.name ?? draft;
     edit = { kind: "saving", id };
     try {
       session.saved(await host.takes.rename(id, draft));
+      session.record({ kind: "Rename", take: id, before, after: draft.trim() || before });
     } catch (e) {
       toast(`Couldn't rename the take: ${errorMessage(e)}`, "error");
     }
@@ -74,7 +76,7 @@
     try {
       session.saved(await host.takes.remove(id));
       if (session.score.kind === "scored" && session.score.take === id) session.score = { kind: "none" };
-      if (session.pitchSource?.kind === "Take" && session.pitchSource.id === id) session.pitchSource = null;
+      if (session.take === id) session.take = null;
     } catch (e) {
       toast(`Couldn't delete the take: ${errorMessage(e)}`, "error");
     }
@@ -103,8 +105,8 @@
   <header>
     <h3>Your takes</h3>
     <div class="modes" role="radiogroup" aria-label="Play takes">
-      {#each [["Solo", "Solo"], ["WithBacking", "With backing"]] as [id, label] (id)}
-        <button class="press mode" class:on={mode === id} role="radio" aria-checked={mode === id} onclick={() => (mode = id as ListenMode)}>{label}</button>
+      {#each LISTEN_MODES as m (m.id)}
+        <button class="press mode" class:on={mode === m.id} role="radio" aria-checked={mode === m.id} onclick={() => (session.playback = m.id)}>{m.label}</button>
       {/each}
     </div>
   </header>

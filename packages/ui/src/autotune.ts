@@ -1,7 +1,7 @@
 // The Auto-tune view's state machines and pure helpers (AGENTS.md §7). The engine decides every
 // pitch; this only drives the controls, the live monitor and "Apply to take".
 
-import type { MonitorMode, MonitorStatus, Project, Scale, TunePreview } from "@workstation/engine-api";
+import type { EngineHost, MonitorMode, MonitorStatus, Project, Scale, TuneSettings, TunePreview } from "@workstation/engine-api";
 
 /** Live monitoring: off, switching (the microphone may be opening), on dry or tuned, or failed
  * (the reason shown; any toggle tries again). */
@@ -39,12 +39,20 @@ export function monitorMode(s: MonitorState): MonitorMode {
   }
 }
 
-/** Rendering a take tuned into a new take. `applied.take`: the new take. */
-export type ApplyState =
-  | { kind: "idle" }
-  | { kind: "applying"; take: number }
-  | { kind: "applied"; take: number }
-  | { kind: "failed"; message: string };
+/** Switches live monitoring on `holder` (the session) through the host's player. */
+export async function switchMonitor(host: EngineHost, holder: { monitor: MonitorState }, to: MonitorMode, tune: TuneSettings): Promise<void> {
+  const next = monitorNext(holder.monitor, { kind: "request", to });
+  if (!next) return;
+  holder.monitor = next;
+  let event: MonitorEvent;
+  try {
+    if (to !== "Off") await host.autotune.setTune(tune);
+    event = { kind: "switched", status: await host.autotune.setMonitor(to) };
+  } catch (e) {
+    event = { kind: "fail", message: e instanceof Error ? e.message : String(e) };
+  }
+  holder.monitor = monitorNext(holder.monitor, event) ?? holder.monitor;
+}
 
 export type ScaleChoice = { id: string; label: string };
 

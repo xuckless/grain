@@ -4,7 +4,7 @@
 
 import type { EngineHost, PlayerCommand, Project, ScoreSettings, TakeAdded } from "@workstation/engine-api";
 import { errorMessage, type Session } from "./state";
-import { backingCommands, backingRestoreCommands, defaultBacking, type Backing } from "./takes";
+import { backingCommands, backingNote, backingRestoreCommands, defaultBacking, type Backing } from "./takes";
 
 /** Sends commands in order. All are handed to the host at once (hosts keep the order), so two
  * lists sent one after the other never interleave. The engine rejects illegal ones; the pushed
@@ -22,6 +22,12 @@ function microphone(host: EngineHost) {
 /** The backing a take records over: the singer's pick, else the song's default. */
 export function effectiveBacking(session: Session): Backing {
   return session.backing ?? defaultBacking(session.project.analysis.accompaniment);
+}
+
+/** Why the default backing is what it is, when that needs saying (for the (i) hints). */
+export function backingHint(session: Session): string | null {
+  const a = session.project.analysis.accompaniment;
+  return effectiveBacking(session) === defaultBacking(a) ? backingNote(a) : null;
 }
 
 /** Sets the backing, then opens the microphone and starts the count-in from the current

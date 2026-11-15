@@ -8,13 +8,23 @@
 // limit them to one span (Score's note A/B: the reference vocal's note, then the take's).
 
 import type { EditSource, PlayerCommand, Project, Take, Transport } from "@workstation/engine-api";
-import { backingCommands, setMix, takeTrack, vocalTrack, type Backing } from "./takes.ts";
+import { setMix, takeTrack, vocalTrack } from "./takes.ts";
 
 /** What can be heard alone: a take, or the song's vocal stem. */
 export type ListenItem = EditSource;
 
-/** `Solo`: the item alone. `WithBacking`: over the backing chosen for recording. */
-export type ListenMode = "Solo" | "WithBacking";
+/** How a take is played back (AGENTS.md §8.6): the voice alone, over the instrumental (the
+ * default), or over the full original mix. The quiet guide vocal used while recording is never a
+ * playback mode: it is never in takes, playback or exports. */
+export type ListenMode = "Voice" | "Instrumental" | "FullMix";
+
+export const LISTEN_MODES: readonly { id: ListenMode; label: string }[] = [
+  { id: "Voice", label: "Voice only" },
+  { id: "Instrumental", label: "Voice + instrumental" },
+  { id: "FullMix", label: "Voice + full mix" },
+];
+
+export const DEFAULT_LISTEN_MODE: ListenMode = "Instrumental";
 
 export type Span = { start: number; end: number };
 
@@ -102,17 +112,21 @@ export function noteSpan(start: number, end: number): Span {
 }
 
 /** The mix that plays `item` in `mode`, from the song's saved mix. */
-function itemMix(project: Project, item: ListenItem, mode: ListenMode, backing: Backing): PlayerCommand[] {
+export function itemMix(project: Project, item: ListenItem, mode: ListenMode): PlayerCommand[] {
   const track = item.kind === "VocalStem" ? vocalTrack(project) : takeTrack(project, item.id);
   if (track < 0) return [];
-  if (mode === "Solo") return [setMix(track, { ...FULL, mode: "Soloed" })];
-  // Over the backing: the stem plays as the song does; a take replaces the song's vocal as the
-  // recording backing does (muted, or quiet as a guide).
-  return item.kind === "VocalStem" ? [] : [...backingCommands(project, backing), setMix(track, { ...FULL, mode: "Normal" })];
+  if (mode === "Voice") return [setMix(track, { ...FULL, mode: "Soloed" })];
+  if (item.kind === "VocalStem") return [];
+  // Over the instrumental the song's vocal stem is muted; over the full mix it plays at its own
+  // level (never lowered to a guide).
+  const v = vocalTrack(project);
+  const stems = v >= 0 && project.tracks[v].source.kind === "Stem";
+  const vocal = mode === "Instrumental" && stems ? [setMix(v, { ...project.tracks[v].mix, mode: "Muted" })] : [];
+  return [...vocal, setMix(track, { ...FULL, mode: "Normal" })];
 }
 
 /** Player commands that move from `prev` to `next`. */
-export function listenCommands(project: Project, prev: Listening, next: Listening, backing: Backing, sampleRate: number): PlayerCommand[] {
+export function listenCommands(project: Project, prev: Listening, next: Listening, sampleRate: number): PlayerCommand[] {
   switch (next.kind) {
     case "idle":
       return prev.kind === "idle" ? [] : [{ kind: "Pause" }, ...songMix(project)];
@@ -125,7 +139,7 @@ export function listenCommands(project: Project, prev: Listening, next: Listenin
       return [
         { kind: "Pause" },
         ...songMix(project),
-        ...itemMix(project, next.item, next.mode, backing),
+        ...itemMix(project, next.item, next.mode),
         { kind: "Seek", frame: Math.max(0, Math.floor(span.start * sampleRate)) },
         { kind: "Play" },
       ];

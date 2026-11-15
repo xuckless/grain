@@ -554,30 +554,30 @@ export const WAVE_STEP_PX = 5;
 
 /**
  * Per-column peak level (0–1) of a track's `[min, max]` peak pairs, for `columns` columns
- * spanning the whole song.
+ * spanning the part of the song from `from` to `to` (fractions of the song; the shared timeline
+ * viewport, AGENTS.md §8.6).
  */
-export function columnLevels(peaks: readonly number[], columns: number): Float32Array {
+export function columnLevels(peaks: readonly number[], columns: number, from = 0, to = 1): Float32Array {
   const pairs = peaks.length / 2;
   const out = new Float32Array(columns);
   for (let col = 0; col < columns; col++) {
-    const a = Math.floor((col / columns) * pairs);
-    const b = Math.max(a + 1, Math.floor(((col + 1) / columns) * pairs));
+    const a = Math.floor((from + (col / columns) * (to - from)) * pairs);
+    const b = Math.max(a + 1, Math.floor((from + ((col + 1) / columns) * (to - from)) * pairs));
     let level = 0;
-    for (let i = a; i < Math.min(b, pairs); i++) level = Math.max(level, Math.abs(peaks[2 * i]), Math.abs(peaks[2 * i + 1]));
+    for (let i = Math.max(0, a); i < Math.min(b, pairs); i++) level = Math.max(level, Math.abs(peaks[2 * i]), Math.abs(peaks[2 * i + 1]));
     out[col] = level;
   }
   return out;
 }
 
-const levelCache = new WeakMap<readonly number[], { columns: number; levels: Float32Array }>();
+const levelCache = new WeakMap<readonly number[], { columns: number; from: number; to: number; levels: Float32Array }>();
 
-/** [`columnLevels`], memoized per peaks array: a track's peaks never change, so resizing is the
- * only thing that recomputes them (not every project update). */
-export function cachedLevels(peaks: readonly number[], columns: number): Float32Array {
+/** [`columnLevels`], memoised per peaks array (the same array until the song changes). */
+export function cachedLevels(peaks: readonly number[], columns: number, from = 0, to = 1): Float32Array {
   const hit = levelCache.get(peaks);
-  if (hit && hit.columns === columns) return hit.levels;
-  const levels = columnLevels(peaks, columns);
-  levelCache.set(peaks, { columns, levels });
+  if (hit && hit.columns === columns && hit.from === from && hit.to === to) return hit.levels;
+  const levels = columnLevels(peaks, columns, from, to);
+  levelCache.set(peaks, { columns, from, to, levels });
   return levels;
 }
 
