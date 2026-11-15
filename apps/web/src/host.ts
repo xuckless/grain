@@ -38,6 +38,8 @@ import { createRing, drain, ringViews, type Ring } from "./capture-ring";
 import * as store from "./store";
 import wasmUrl from "engine-wasm/engine_wasm_bg.wasm?url";
 import workletUrl from "./player-worklet.ts?worker&url";
+import ComputeWorker from "./compute-worker.ts?worker";
+import { Compute } from "./compute-protocol";
 import type { FromWorklet, ToWorklet, TrackData } from "./worklet-protocol";
 
 /** Separation and analysis run at the engine's working rate; the AudioContext matches it. */
@@ -97,6 +99,7 @@ function noLive(): LiveUpdate {
 export async function createWebHost(): Promise<EngineHost> {
   const module = await WebAssembly.compileStreaming(fetch(wasmUrl));
   await init({ module_or_path: module });
+  const compute = new Compute(new ComputeWorker(), module);
 
   const context = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: "interactive" });
   await context.audioWorklet.addModule(workletUrl);
@@ -110,6 +113,11 @@ export async function createWebHost(): Promise<EngineHost> {
   node.connect(context.destination);
 
   let snapshot: TransportSnapshot = { transport: { kind: "Stopped" }, sample_rate: context.sampleRate };
+  const transportListeners = new Set<(s: TransportSnapshot) => void>();
+  const setSnapshot = (t: Transport) => {
+    snapshot = { transport: t, sample_rate: context.sampleRate };
+    for (const l of transportListeners) l(snapshot);
+  };
   /** The tuned monitor's delay (frames), reported when a song loads. */
   let monitorFrames = 0;
   let cueStarted: ((t: Transport) => void) | undefined;
@@ -125,14 +133,14 @@ export async function createWebHost(): Promise<EngineHost> {
           monitorFrames = m.monitorLatency;
           return;
         case "transport":
-          snapshot = { transport: m.transport, sample_rate: context.sampleRate };
+          setSnapshot(m.transport);
           return;
         case "rejected":
           console.warn(`player: ${m.message}`);
           rejected?.(m.message);
           return;
         case "cueStarted":
-          snapshot = { transport: m.transport, sample_rate: context.sampleRate };
+          setSnapshot(m.transport);
           cueStarted?.(m.transport);
           return;
       }
@@ -610,8 +618,10 @@ export async function createWebHost(): Promise<EngineHost> {
     },
     producer: {
       async chainPick(source, preset) {
-        await nextFrame();
-        return loadedSong().chainPick(source, preset) as ChainPick;
+        // The trial render takes about a second: it runs in the compute worker.
+        const song = loadedSong();
+        const [sampleRate, bpm] = song.chainContext();
+        return compute.run<ChainPick>({ kind: "chainPick", audio: song.sourceAudio(source), sampleRate, bpm, preset });
       },
       async chainApply(source, preset, chain, settings) {
         const song = loadedSong();
@@ -643,6 +653,11 @@ export async function createWebHost(): Promise<EngineHost> {
     },
     async transport() {
       return snapshot;
+    },
+    subscribeTransport(listener) {
+      transportListeners.add(listener);
+      listener(snapshot);
+      return () => void transportListeners.delete(listener);
     },
   };
 }

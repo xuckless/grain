@@ -86,6 +86,8 @@ export async function createDesktopHost(): Promise<EngineHost> {
     { kind: "available"; origin: ExtractorOrigin } | { kind: "missing"; reason: string } | { kind: "unavailable" }
   >("url_import");
   const separation = await invoke<SeparationOffer>("separation_offer");
+  /** The last player command sent; the next waits for it. */
+  let sendQueue: Promise<unknown> = Promise.resolve();
   return {
     chrome,
     projects: {
@@ -196,7 +198,22 @@ export async function createDesktopHost(): Promise<EngineHost> {
           withGeneratorStates(onState, () => invoke<TakeAdded>("generate", { task, prompt, seed, settings })),
       },
     },
-    send: (command) => invoke("player", { command }),
+    send(command) {
+      // Commands run off the main thread (AGENTS.md §10.1); chaining keeps their order.
+      const sent = sendQueue.then(() => invoke<void>("player", { command }));
+      sendQueue = sent.catch(() => {});
+      return sent;
+    },
     transport: () => invoke<TransportSnapshot>("transport"),
+    subscribeTransport(listener) {
+      // The backend pushes `transport` events (see `push_transport`); read once to start.
+      let alive = true;
+      const unlisten = listen<TransportSnapshot>("transport", (e) => alive && listener(e.payload));
+      void invoke<TransportSnapshot>("transport").then((s) => alive && listener(s));
+      return () => {
+        alive = false;
+        void unlisten.then((f) => f());
+      };
+    },
   };
 }

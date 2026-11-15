@@ -409,11 +409,21 @@ impl WasmSong {
         self.add_tracked(TakeSource::Edited { from: source }, edited, settings)
     }
 
-    /// Measures an `EditSource` and returns `preset`'s settings for it (a `ChainPick`).
-    #[wasm_bindgen(js_name = chainPick)]
-    pub fn chain_pick(&self, source: JsValue, preset: JsValue) -> Result<JsValue, JsError> {
-        let audio = self.edit_audio(from_js(source)?)?;
-        to_js(&produce::pick(&self.project, &audio, from_js(preset)?))
+    /// The audio a source is edited and produced from (for [`chain_pick_audio`] in a worker).
+    #[wasm_bindgen(js_name = sourceAudio)]
+    pub fn source_audio(&self, source: JsValue) -> Result<js_sys::Float32Array, JsError> {
+        Ok(js_sys::Float32Array::from(
+            &self.edit_audio(from_js(source)?)?[..],
+        ))
+    }
+
+    /// The song's sample rate and tempo, which [`chain_pick_audio`] needs.
+    #[wasm_bindgen(js_name = chainContext)]
+    pub fn chain_context(&self) -> Vec<f64> {
+        vec![
+            f64::from(self.project.sample_rate),
+            self.project.analysis.tempo.bpm,
+        ]
     }
 
     /// Renders a source through the vocal chain as a new take; returns a `ChainApplied`.
@@ -668,6 +678,22 @@ pub fn project_summary(project: JsValue, id: String, saved_ms: f64) -> Result<Js
 }
 
 /// The count-in `PlayerCommand` for a song at `bpm` played at `sample_rate`.
+/// `WasmSong.chainPick` from the audio alone, for the web compute worker (AGENTS.md §10.1).
+#[wasm_bindgen(js_name = chainPickAudio)]
+pub fn chain_pick_audio(
+    audio: &[f32],
+    sample_rate: u32,
+    bpm: f64,
+    preset: JsValue,
+) -> Result<JsValue, JsError> {
+    to_js(&produce::pick_audio(
+        audio,
+        sample_rate,
+        bpm,
+        from_js(preset)?,
+    ))
+}
+
 #[wasm_bindgen(js_name = countIn)]
 pub fn count_in(bpm: f64, sample_rate: u32) -> Result<JsValue, JsError> {
     to_js(&cue::count_in(bpm, sample_rate))

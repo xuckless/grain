@@ -42,9 +42,19 @@ pub enum DenoiseOutcome {
 /// is then set from a trial render, so the result lands on [`chain::TARGET_LUFS`] (the preset's
 /// own estimate can't know how hard the compressor and EQ will work on real material).
 pub fn pick(project: &Project, audio: &[f32], preset: ChainPreset) -> ChainPick {
-    let sr = project.sample_rate;
+    pick_audio(
+        audio,
+        project.sample_rate,
+        project.analysis.tempo.bpm,
+        preset,
+    )
+}
+
+/// [`pick`] from the audio alone (`sr` its rate, `bpm` the song's tempo): what a compute worker
+/// runs without the song.
+pub fn pick_audio(audio: &[f32], sr: u32, bpm: f64, preset: ChainPreset) -> ChainPick {
     let measures = chain::measure(audio, sr);
-    let mut settings = chain::settings(preset, &measures, project.analysis.tempo.bpm);
+    let mut settings = chain::settings(preset, &measures, bpm);
     let trial = chain::lufs(
         &chain::render(
             audio,

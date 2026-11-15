@@ -287,7 +287,7 @@ async fn open_project(app: AppHandle, id: String) -> Result<Project, String> {
 }
 
 /// Writes the loaded song's mix settings to its project.
-#[tauri::command]
+#[tauri::command(async)]
 fn save_project(engine: State<Engine>) -> Result<(), String> {
     with_loaded(&engine, |l| {
         engine.cache.save_project(&l.cache_key, &l.project)
@@ -296,7 +296,7 @@ fn save_project(engine: State<Engine>) -> Result<(), String> {
 }
 
 /// Stops playback and unloads the song.
-#[tauri::command]
+#[tauri::command(async)]
 fn close_session(engine: State<Engine>) -> Result<(), String> {
     *engine.session.lock().map_err(fail)? = Session::Empty;
     Ok(())
@@ -344,7 +344,7 @@ enum SeparationOffer {
     FastOnly { reason: String },
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn separation_offer(engine: State<Engine>) -> SeparationOffer {
     if Separators::offers(&engine.model_dirs(), SeparationQuality::BestVocals) {
         SeparationOffer::Choice
@@ -356,13 +356,13 @@ fn separation_offer(engine: State<Engine>) -> SeparationOffer {
 }
 
 #[cfg(feature = "youtube")]
-#[tauri::command]
+#[tauri::command(async)]
 fn url_import(engine: State<Engine>) -> UrlImport {
     engine.extractor.status()
 }
 
 #[cfg(not(feature = "youtube"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn url_import() -> UrlImport {
     UrlImport::Unavailable
 }
@@ -426,7 +426,7 @@ async fn import_url(_url: String, _quality: SeparationQuality) -> Result<Project
     Err("this build has no YouTube import".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn player(engine: State<Engine>, command: PlayerCommand) -> Result<(), String> {
     with_loaded(&engine, |l| {
         l.playback.send(command)?;
@@ -439,18 +439,50 @@ fn player(engine: State<Engine>, command: PlayerCommand) -> Result<(), String> {
     .map_err(fail)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn transport(engine: State<Engine>) -> Result<TransportSnapshot, String> {
     let session = engine.session.lock().map_err(fail)?;
-    match &*session {
-        Session::Loaded(l) => Ok(TransportSnapshot {
+    Ok(snapshot_of(&session))
+}
+
+fn snapshot_of(session: &Session) -> TransportSnapshot {
+    match session {
+        Session::Loaded(l) => TransportSnapshot {
             transport: l.playback.transport(),
             sample_rate: l.playback.sample_rate(),
-        }),
-        Session::Empty => Ok(TransportSnapshot {
+        },
+        Session::Empty => TransportSnapshot {
             transport: Transport::Stopped,
             sample_rate: WORKING_SAMPLE_RATE,
-        }),
+        },
+    }
+}
+
+/// How often the transport is pushed to the UI while it moves (the UI extrapolates between).
+const TRANSPORT_PUSH: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Pushes the transport to the UI as `transport` events: every [`TRANSPORT_PUSH`] while the
+/// playhead moves, and once on any other change. The UI never polls it per frame (AGENTS.md
+/// §10.1). A session lock held by a long job skips a tick instead of waiting; the UI keeps
+/// extrapolating the playhead meanwhile.
+fn push_transport(app: AppHandle) {
+    let mut last: Option<TransportSnapshot> = None;
+    loop {
+        std::thread::sleep(TRANSPORT_PUSH);
+        let engine = app.state::<Engine>();
+        let Ok(session) = engine.session.try_lock() else {
+            continue;
+        };
+        let snap = snapshot_of(&session);
+        drop(session);
+        let moving = matches!(
+            snap.transport,
+            Transport::Playing { .. } | Transport::CountIn { .. } | Transport::Probing { .. }
+        );
+        if moving || last != Some(snap) {
+            let _ = app.emit("transport", snap);
+            last = Some(snap);
+        }
     }
 }
 
@@ -491,7 +523,7 @@ async fn score_take(
 
 /// Turns live monitoring off, or on dry or tuned. Opening the microphone at the output's rate
 /// can fail (the UI shows why).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_monitor(engine: State<Engine>, mode: MonitorMode) -> Result<MonitorStatus, String> {
     with_loaded(&engine, |l| {
         match (mode, &l.monitor) {
@@ -521,7 +553,7 @@ fn set_monitor(engine: State<Engine>, mode: MonitorMode) -> Result<MonitorStatus
 }
 
 /// The auto-tune settings: the live tuner's, and the project's (a save keeps them).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_tune(engine: State<Engine>, settings: TuneSettings) -> Result<(), String> {
     with_loaded(&engine, |l| {
         l.project.tune = settings;
@@ -531,7 +563,7 @@ fn set_tune(engine: State<Engine>, settings: TuneSettings) -> Result<(), String>
 }
 
 /// What auto-tune would do to a take (from its stored pitch; no audio needed).
-#[tauri::command]
+#[tauri::command(async)]
 fn tune_preview(
     engine: State<Engine>,
     take: u32,
@@ -598,19 +630,19 @@ async fn pitch_open(app: AppHandle, source: EditSource) -> Result<PitchEditView,
 }
 
 /// Applies one pitch-editor edit; the list is kept with the project.
-#[tauri::command]
+#[tauri::command(async)]
 fn pitch_apply(engine: State<Engine>, edit: PitchEdit, op: EditOp) -> Result<EditUpdate, String> {
     with_loaded(&engine, |l| Ok(edit::apply_op(&mut l.project, edit, &op)?)).map_err(fail)
 }
 
 /// Replaces a source's edit list (undo and redo).
-#[tauri::command]
+#[tauri::command(async)]
 fn pitch_set(engine: State<Engine>, edit: PitchEdit) -> Result<EditUpdate, String> {
     with_loaded(&engine, |l| Ok(edit::store(&mut l.project, edit)?)).map_err(fail)
 }
 
 /// Seeds a take's edit list from auto-tune's settings (the editable correction curve).
-#[tauri::command]
+#[tauri::command(async)]
 fn pitch_from_tune(
     engine: State<Engine>,
     take: u32,
@@ -650,7 +682,7 @@ async fn pitch_render(
 }
 
 /// The model manager's list: every manifest model and where it is on this device.
-#[tauri::command]
+#[tauri::command(async)]
 fn models_list(engine: State<Engine>) -> Vec<ModelEntry> {
     engine.models.lock().expect("models lock").entries()
 }
@@ -708,7 +740,7 @@ async fn model_download(
 }
 
 /// Deletes a downloaded model's files from app data.
-#[tauri::command]
+#[tauri::command(async)]
 fn model_delete(engine: State<Engine>, id: String) -> Result<ModelState, String> {
     let info = models::model(&id).ok_or_else(|| format!("unknown model {id}"))?;
     let state = engine
@@ -766,7 +798,7 @@ async fn transcribe(app: AppHandle, source: TrackSource) -> Result<TranscribeOut
 }
 
 /// Writes a track's MIDI layer to `path` as a Standard MIDI File.
-#[tauri::command]
+#[tauri::command(async)]
 fn export_midi(engine: State<Engine>, source: TrackSource, path: PathBuf) -> Result<(), String> {
     let bytes = with_loaded(&engine, |l| {
         let t = midi::transcription(&l.project, source).context("this track has no MIDI yet")?;
@@ -777,7 +809,7 @@ fn export_midi(engine: State<Engine>, source: TrackSource, path: PathBuf) -> Res
 }
 
 /// Re-scores a saved take (from its stored pitch; no audio needed).
-#[tauri::command]
+#[tauri::command(async)]
 fn score_recorded(
     engine: State<Engine>,
     take: u32,
@@ -790,7 +822,7 @@ fn score_recorded(
 }
 
 /// Opens the microphone and starts the count-in from the current position.
-#[tauri::command]
+#[tauri::command(async)]
 fn start_recording(engine: State<Engine>) -> Result<(), String> {
     with_loaded(&engine, |l| {
         anyhow::ensure!(matches!(l.mic, Mic::Closed), "the microphone is busy");
@@ -824,7 +856,7 @@ fn start_recording(engine: State<Engine>) -> Result<(), String> {
 }
 
 /// Peak input level of the take being recorded, 0–1.
-#[tauri::command]
+#[tauri::command(async)]
 fn capture_level(engine: State<Engine>) -> f32 {
     with_loaded(&engine, |l| {
         Ok(match &l.mic {
@@ -901,7 +933,7 @@ async fn finish_recording(app: AppHandle, settings: ScoreSettings) -> Result<Tak
 }
 
 /// Live pitch of the take being recorded since the previous call, compared with the reference.
-#[tauri::command]
+#[tauri::command(async)]
 fn live_pitch(engine: State<Engine>, settings: ScoreSettings) -> Result<LiveUpdate, String> {
     with_loaded(&engine, |l| {
         let Mic::Recording {
@@ -942,13 +974,13 @@ fn live_pitch(engine: State<Engine>, settings: ScoreSettings) -> Result<LiveUpda
 }
 
 /// Sets the loaded song's lyrics (fetched, not found, or edited) and returns them timed.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_lyrics(engine: State<Engine>, update: LyricsUpdate) -> Result<ProjectLyrics, String> {
     with_loaded(&engine, |l| Ok(lyrics::apply(&mut l.project, update)?)).map_err(fail)
 }
 
 /// Abandons the take being recorded.
-#[tauri::command]
+#[tauri::command(async)]
 fn cancel_recording(engine: State<Engine>) -> Result<(), String> {
     with_loaded(&engine, |l| {
         if let Mic::Recording { .. } = l.mic {
@@ -963,7 +995,7 @@ fn cancel_recording(engine: State<Engine>) -> Result<(), String> {
 }
 
 /// The round-trip latency removed from takes on the current devices.
-#[tauri::command]
+#[tauri::command(async)]
 fn latency(engine: State<Engine>) -> Result<Latency, String> {
     with_loaded(&engine, |l| {
         Ok(engine.latency.get(&device_pair(&l.playback)))
@@ -972,7 +1004,7 @@ fn latency(engine: State<Engine>) -> Result<Latency, String> {
 }
 
 /// Sets the latency by hand (the ± nudge).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_latency(engine: State<Engine>, ms: f32) -> Result<Latency, String> {
     with_loaded(&engine, |l| {
         let latency = Latency {
@@ -1075,6 +1107,8 @@ fn main() {
                 #[cfg(feature = "youtube")]
                 extractor: extractor::Extractor::new(&data),
             });
+            let handle = app.handle().clone();
+            std::thread::spawn(move || push_transport(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

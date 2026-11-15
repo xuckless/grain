@@ -154,7 +154,7 @@ pub async fn harmony(
 }
 
 /// Writes a source's melody (or its harmony at `interval`) to `path` as a MIDI file.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_melody(
     engine: State<Engine>,
     from: EditSource,
@@ -200,7 +200,7 @@ pub async fn denoise(
     .await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn generator_state(engine: State<Engine>) -> GeneratorState {
     engine
         .generator

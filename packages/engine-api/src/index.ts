@@ -348,6 +348,11 @@ export interface EngineHost {
   setLyrics(update: LyricsUpdate): Promise<ProjectLyrics>;
   /** Re-scores take `id` of the loaded song (difficulty or octave changed, or picked again). */
   scoreRecorded(id: number, settings: ScoreSettings): Promise<ScoreReport>;
+  /** Sends a player command. Fire-and-forget: the UI never waits on it to draw. */
   send(command: PlayerCommand): Promise<void>;
+  /** The transport now (one-off reads). */
   transport(): Promise<TransportSnapshot>;
+  /** Pushes the transport to `listener` while the playhead moves (~40 Hz) and on every other
+   * change; the UI extrapolates between pushes (AGENTS.md §10.1). Returns the unsubscribe. */
+  subscribeTransport(listener: (s: TransportSnapshot) => void): () => void;
 }
