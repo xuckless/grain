@@ -65,6 +65,17 @@ pub fn resolve(exe_dir: &Path, data_bin: &Path) -> Resolution {
     }
 }
 
+/// A tool (`ffmpeg`, `ffprobe`) bundled next to the app's executable, else on [`search_path`].
+pub fn find_tool(exe_dir: &Path, name: &str) -> Option<PathBuf> {
+    let bundled = exe_dir.join(exe(name));
+    if bundled.is_file() {
+        return Some(bundled);
+    }
+    std::env::split_paths(&search_path())
+        .map(|dir| dir.join(exe(name)))
+        .find(|p| p.is_file())
+}
+
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }

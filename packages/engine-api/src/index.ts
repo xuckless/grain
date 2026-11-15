@@ -27,12 +27,13 @@ import type { ModelEntry } from "./generated/ModelEntry";
 import type { ModelState } from "./generated/ModelState";
 import type { TrackSource } from "./generated/TrackSource";
 import type { TranscribeOutcome } from "./generated/TranscribeOutcome";
-import type { ChainApplied } from "./generated/ChainApplied";
+import type { TakeChain } from "./generated/TakeChain";
+import type { ExportFormat } from "./generated/ExportFormat";
+import type { ExportRequest } from "./generated/ExportRequest";
 import type { ChainPick } from "./generated/ChainPick";
 import type { ChainPreset } from "./generated/ChainPreset";
 import type { ChainReport } from "./generated/ChainReport";
 import type { ChainSettings } from "./generated/ChainSettings";
-import type { DenoiseOutcome } from "./generated/DenoiseOutcome";
 import type { GenerationRequest } from "./generated/GenerationRequest";
 import type { GenerationTask } from "./generated/GenerationTask";
 import type { GeneratorEvent } from "./generated/GeneratorEvent";
@@ -111,12 +112,18 @@ export type { MidiNote } from "./generated/MidiNote";
 export type { Transcription } from "./generated/Transcription";
 export type { TranscriptionMethod } from "./generated/TranscriptionMethod";
 export type { TranscribeOutcome } from "./generated/TranscribeOutcome";
-export type { ChainApplied } from "./generated/ChainApplied";
 export type { ChainPick } from "./generated/ChainPick";
 export type { ChainPreset } from "./generated/ChainPreset";
 export type { ChainReport } from "./generated/ChainReport";
 export type { ChainSettings } from "./generated/ChainSettings";
-export type { DenoiseOutcome } from "./generated/DenoiseOutcome";
+export type { TakeChain } from "./generated/TakeChain";
+export type { Step } from "./generated/Step";
+export type { PitchStep } from "./generated/PitchStep";
+export type { CleanStep } from "./generated/CleanStep";
+export type { VocalStep } from "./generated/VocalStep";
+export type { ExportFormat } from "./generated/ExportFormat";
+export type { ExportRange } from "./generated/ExportRange";
+export type { ExportRequest } from "./generated/ExportRequest";
 export type { GenerationRequest } from "./generated/GenerationRequest";
 export type { GenerationTask } from "./generated/GenerationTask";
 export type { GeneratorEvent } from "./generated/GeneratorEvent";
@@ -167,7 +174,7 @@ export type WindowChrome =
   | { kind: "overlay"; insetLeft: number; startDrag(): void; toggleMaximize(): void }
   | { kind: "plain" };
 
-/** One-file project archives (web: export the loaded song, or open an exported one). */
+/** One-file `.grain` project archives (AGENTS.md §12): export the loaded song, or open one. */
 export type ProjectArchive =
   | {
       kind: "available";
@@ -219,8 +226,8 @@ export type Microphone =
     }
   | { kind: "unavailable"; reason: string };
 
-/** Auto-tune (AGENTS.md §7): live monitoring through the player, and offline rendering of a
- * take into a new, tuned take. */
+/** Auto-tune (AGENTS.md §7): live monitoring through the player and the preview. Applying it is
+ * a step of the take's processing chain (`TakeStore.setChain`, AGENTS.md §8.7). */
 export type AutoTune = {
   /** Turns live monitoring off, or on dry or tuned. Rejects (with the reason) when the
    * microphone can't be opened. */
@@ -229,13 +236,11 @@ export type AutoTune = {
   setTune(settings: TuneSettings): Promise<void>;
   /** What tuning take `take` would do (from its stored pitch, instant). */
   preview(take: number, settings: TuneSettings): Promise<TunePreview>;
-  /** Renders take `take` tuned (high quality) as a new take, "<take> (tuned)", added to the
-   * song and scored. The original is kept. */
-  apply(take: number, tune: TuneSettings, settings: ScoreSettings): Promise<TakeAdded>;
 };
 
-/** The pitch editor (AGENTS.md §7.1). Every change is kept with the loaded project (saved on the
- * next Save); the UI keeps undo/redo as snapshots of the edit list. */
+/** The pitch editor (AGENTS.md §7.1): the edit list of a take's Pitch edits step. Every change
+ * is kept with the loaded project (saved on the next Save); the session history keeps undo/redo
+ * as snapshots of the edit list. Hearing the edits is the chain step (`TakeStore.setChain`). */
 export type PitchEditor = {
   /** A take or the vocal stem: its saved edit list (or a fresh analysis), pitch and loudness. */
   open(source: EditSource): Promise<PitchEditView>;
@@ -245,8 +250,6 @@ export type PitchEditor = {
   set(edit: PitchEdit): Promise<EditUpdate>;
   /** Seeds take `take`'s edit list from auto-tune's settings (the editable correction curve). */
   fromTune(take: number, settings: TuneSettings): Promise<EditUpdate>;
-  /** Renders a source's edits as a new take, "<source> (edited)", added and scored. */
-  render(source: EditSource, settings: ScoreSettings): Promise<TakeAdded>;
 };
 
 /** The model manager (AGENTS.md §10): every manifest model, downloaded on request into the
@@ -275,15 +278,9 @@ export type Transcriber = {
   exportMidi(source: TrackSource): Promise<ExportOutcome>;
 };
 
-/** DeepFilterNet clean-up (desktop: tract on the CPU; the web build has no runtime for it). */
-export type Denoiser =
-  | {
-      kind: "available";
-      /** Suppresses a source's noise as a new take, "<source> (cleaned)"; `NeedsModel` when
-       * the model isn't downloaded. */
-      run(source: EditSource, settings: ScoreSettings): Promise<DenoiseOutcome>;
-    }
-  | { kind: "unavailable"; reason: string };
+/** Whether the Clean up chain step can run (DeepFilterNet: tract on the CPU on desktop; the web
+ * build has no runtime for it). */
+export type Denoiser = { kind: "available"; model: string } | { kind: "unavailable"; reason: string };
 
 /** ACE-Step generation (AGENTS.md §8). `local`: the opt-in sidecar on this machine, installed
  * from the Models panel; `remote`: a backend URL configured for this build (nothing to
@@ -303,14 +300,12 @@ export type Generator =
     }
   | { kind: "unavailable"; reason: string };
 
-/** Produce (AGENTS.md §8): DSP and AI production on a take or the vocal stem. Every result is
- * a new take or track that keeps how it was made; the source is never changed. The live vocal
- * chain is a player command (`{ kind: "Chain" }` through `send`). */
+/** Produce (AGENTS.md §8). Clean up and the vocal chain are steps of the take's processing chain
+ * (`TakeStore.setChain`); harmony and generation make new tracks. The live vocal chain is a
+ * player command (`{ kind: "Chain" }` through `send`). */
 export type Producer = {
   /** Measures a source and gives `preset`'s settings for it. */
   chainPick(source: EditSource, preset: ChainPreset): Promise<ChainPick>;
-  /** Renders a source through the vocal chain as a new take, with before/after measures. */
-  chainApply(source: EditSource, preset: ChainPreset, chain: ChainSettings, settings: ScoreSettings): Promise<ChainApplied>;
   /** Sings a diatonic harmony from the source's own voice as a new track (audible, panned). */
   harmony(source: EditSource, interval: Interval, settings: ScoreSettings): Promise<TakeAdded>;
   /** Saves the source's melody, or its harmony at `interval`, as a .mid file. */
@@ -319,17 +314,45 @@ export type Producer = {
   readonly generator: Generator;
 };
 
+/** Whether no step of a chain changes the take (mirrors engine-core `TakeChain::is_neutral`). */
+export function chainIsNeutral(c: TakeChain): boolean {
+  return [c.pitch, c.tune, c.clean, c.vocal].every((s) => s.state !== "Active");
+}
+
 /** A `.mid` name for a source's melody (or harmony) export. */
 export function melodyFileName(source: EditSource, interval: Interval | null): string {
   const base = source.kind === "VocalStem" ? "Melody" : `Take ${source.id}`;
   return interval ? `${base} (${interval}).mid` : `${base}.mid`;
 }
 
-/** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
+/** What a chain change did: rendered (the player now plays the result), or the Clean up step
+ * needs its model downloaded first (nothing changed). Mirrors the desktop host's `ChainOutcome`. */
+export type ChainOutcome = { kind: "Rendered"; project: Project } | { kind: "NeedsModel"; model: string };
+
 export type TakeStore = {
   rename(id: number, name: string): Promise<Project>;
   /** Deletes take `id` and its audio. The player is rebuilt without it, so playback stops. */
   remove(id: number): Promise<Project>;
+  /** Replaces take `id`'s processing chain (AGENTS.md §8.7) and renders it off the main thread,
+   * re-running only from the first step that changed; saved at once. One call at a time. */
+  setChain(id: number, chain: TakeChain): Promise<ChainOutcome>;
+  /** Stars take `id` as the master (`null`: the newest take is); saved at once. */
+  setMaster(id: number | null): Promise<Project>;
+};
+
+/** One export format and whether this host can write it. */
+export type FormatOffer = { format: ExportFormat; availability: { kind: "ready" } | { kind: "unavailable"; reason: string } };
+
+/** Pushed while an export runs (the dialog's Rendering and Encoding states). */
+export type ExportProgress = { kind: "Rendering"; fraction: number } | { kind: "Encoding" };
+
+export type MixdownOutcome = { kind: "saved"; path: string } | { kind: "cancelled" };
+
+/** Export (AGENTS.md §8.8): the mixdown of the chosen tracks at their mix levels, takes through
+ * their chains. The host picks the destination (save dialog or download). */
+export type Exporter = {
+  formats(): Promise<FormatOffer[]>;
+  run(request: ExportRequest, name: string, onProgress: (p: ExportProgress) => void): Promise<MixdownOutcome>;
 };
 
 export interface EngineHost {
@@ -358,6 +381,7 @@ export interface EngineHost {
    * makes a take (recording, import, auto-tune, pitch render, Produce): takes autosave
    * (AGENTS.md §11). Saving writes the whole song, so it also keeps unsaved mix changes. */
   readonly takes: TakeStore;
+  readonly exporter: Exporter;
   /** Sends a player command. Fire-and-forget: the UI never waits on it to draw. */
   send(command: PlayerCommand): Promise<void>;
   /** The transport now (one-off reads). */

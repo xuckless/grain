@@ -3,15 +3,14 @@
 
 use super::{add_take, edit_audio, fail, track_timeline, with_loaded, Engine};
 use anyhow::Context;
-use engine_core::chain::{ChainPreset, ChainSettings};
+use engine_core::chain::ChainPreset;
 use engine_core::edit::EditSource;
 use engine_core::generate::{self, GenerationTask, GeneratorEvent, GeneratorState};
 use engine_core::harmony::{self, Interval};
-use engine_core::produce::{self, ChainApplied, ChainPick, DenoiseOutcome};
+use engine_core::produce::{self, ChainPick};
 use engine_core::project::Project;
 use engine_core::score::ScoreSettings;
 use engine_core::take::{TakeAdded, TakeSource};
-use engine_native::denoise::{self, Denoiser};
 use engine_native::generate::{find_uv, Install};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -84,7 +83,7 @@ fn add(
     add_take(engine, from, audio, pitch, settings)
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     app: AppHandle,
     f: impl FnOnce(&Engine) -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, String> {
@@ -104,29 +103,6 @@ pub async fn chain_pick(
     blocking(app, move |engine| {
         let (project, audio) = source(engine, from)?;
         Ok(produce::pick(&project, &audio, preset))
-    })
-    .await
-}
-
-/// Renders a source through the vocal chain as a new take.
-#[tauri::command]
-pub async fn chain_apply(
-    app: AppHandle,
-    from: EditSource,
-    preset: ChainPreset,
-    chain: ChainSettings,
-    settings: ScoreSettings,
-) -> Result<ChainApplied, String> {
-    blocking(app, move |engine| {
-        let (project, audio) = source(engine, from)?;
-        let (out, report) = produce::render_chain(&project, &audio, chain);
-        let source = TakeSource::Chained {
-            from,
-            preset,
-            settings: chain.clamped(),
-        };
-        let added = add(engine, &project, source, &out, settings)?;
-        Ok(ChainApplied { added, report })
     })
     .await
 }
@@ -166,38 +142,6 @@ pub fn export_melody(
     })
     .map_err(fail)?;
     std::fs::write(path, bytes).map_err(fail)
-}
-
-/// Cleans a source up with DeepFilterNet3 as a new take.
-#[tauri::command]
-pub async fn denoise(
-    app: AppHandle,
-    from: EditSource,
-    settings: ScoreSettings,
-) -> Result<DenoiseOutcome, String> {
-    blocking(app, move |engine| {
-        let archive = engine
-            .models
-            .lock()
-            .expect("models lock")
-            .find(denoise::ARCHIVE);
-        let Some(archive) = archive else {
-            return Ok(DenoiseOutcome::NeedsModel {
-                model: denoise::MODEL.to_string(),
-            });
-        };
-        let (project, audio) = source(engine, from)?;
-        let out = Denoiser::load(&archive)?.run(&audio, project.sample_rate)?;
-        let source = TakeSource::Denoised {
-            from,
-            model: denoise::MODEL.to_string(),
-        };
-        let added = add(engine, &project, source, &out, settings)?;
-        Ok(DenoiseOutcome::Done {
-            added: Box::new(added),
-        })
-    })
-    .await
 }
 
 #[tauri::command(async)]

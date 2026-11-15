@@ -67,6 +67,15 @@ class PlayerProcessor extends AudioWorkletProcessor {
         }
         return;
       }
+      case "replaceAudio": {
+        if (this.state.kind !== "playing") return;
+        try {
+          this.state.output.player.replaceAudio(message.index, message.audio);
+        } catch (e) {
+          this.post({ kind: "rejected", message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
       case "capture": {
         if (this.state.kind !== "playing") return this.post({ kind: "rejected", message: "no song loaded" });
         try {

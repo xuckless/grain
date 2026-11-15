@@ -25,13 +25,12 @@ import type {
   TunePreview,
   EditUpdate,
   PitchEditView,
-  ChainApplied,
   ChainPick,
   GenerationRequest,
   Generator,
   GeneratorState,
 } from "@workstation/engine-api";
-import { melodyFileName } from "@workstation/engine-api";
+import { chainIsNeutral, melodyFileName } from "@workstation/engine-api";
 import init, { basicPitchSpec, countIn, generationQuery, measureLatency, monitorStatus, projectSummary, transcriptionMethod, WasmLive, WasmSeparator, WasmSong } from "engine-wasm";
 import { WebModels } from "./models";
 import { createRing, drain, ringViews, type Ring } from "./capture-ring";
@@ -90,6 +89,10 @@ const DRAIN_MS = 50;
 const PROBE_TAIL_MS = 1100;
 const MAX_LATENCY_MS = 1000;
 const LATENCY_KEY = "grain.latency.";
+const CLEAN_UNAVAILABLE = "Clean up runs DeepFilterNet in the desktop app; the web build has no runtime for it yet.";
+/** Frames mixed per animation frame while exporting (about 1.5 s of audio, a few ms of work). */
+const EXPORT_CHUNK = 1 << 16;
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** A live update with nothing sung yet. */
 function noLive(): LiveUpdate {
@@ -183,7 +186,34 @@ export async function createWebHost(): Promise<EngineHost> {
     ];
     post({ kind: "load", tracks, reference: project.analysis.reference_notes }, tracks.flatMap((t) => [t.left.buffer, t.right.buffer]));
     endMonitor();
+    // Takes with a processing chain start raw and switch to their render as each one finishes.
+    void (async () => {
+      for (const t of project.takes) {
+        if (chainIsNeutral(t.chain)) continue;
+        try {
+          await renderChain(song, project, t.id);
+        } catch (e) {
+          console.warn(`take ${t.id} plays unprocessed: ${errorText(e)}`);
+        }
+      }
+    })();
     return project;
+  }
+
+  /** Renders take `id`'s chain in the compute worker; the player and the song get the result. */
+  async function renderChain(song: WasmSong, project: Project, id: number): Promise<void> {
+    const take = project.takes.find((t) => t.id === id);
+    if (!take) throw new Error("no such take");
+    if (chainIsNeutral(take.chain)) {
+      song.setProcessed(id, undefined);
+      const audio = song.takeAudio(id);
+      post({ kind: "replaceAudio", index: project.tracks.length + project.takes.indexOf(take), audio }, [audio.buffer]);
+      return;
+    }
+    const out = await compute.run<Float32Array>({ kind: "chain", audio: song.takeAudio(id), project, take: id });
+    if (session.kind !== "loaded" || session.song !== song) return;
+    song.setProcessed(id, out);
+    post({ kind: "replaceAudio", index: project.tracks.length + project.takes.indexOf(take), audio: out }, [out.buffer]);
   }
 
   let mic: MicState = { kind: "closed" };
@@ -571,11 +601,6 @@ export async function createWebHost(): Promise<EngineHost> {
       async preview(take, settings) {
         return loadedSong().tunePreview(take, settings) as TunePreview;
       },
-      async apply(take, tune, settings) {
-        const song = loadedSong();
-        await nextFrame(); // let the UI show it's working before the render blocks
-        return keepTake(song, song.applyTune(take, tune, settings) as TakeAdded);
-      },
     },
     pitchEditor: {
       async open(source) {
@@ -589,11 +614,6 @@ export async function createWebHost(): Promise<EngineHost> {
       },
       async fromTune(take, settings) {
         return loadedSong().pitchFromTune(take, settings) as EditUpdate;
-      },
-      async render(source, settings) {
-        const song = loadedSong();
-        await nextFrame(); // let the UI show it's rendering before the render blocks
-        return keepTake(song, song.pitchRender(source, settings) as TakeAdded);
       },
     },
     models: {
@@ -635,13 +655,6 @@ export async function createWebHost(): Promise<EngineHost> {
         const [sampleRate, bpm] = song.chainContext();
         return compute.run<ChainPick>({ kind: "chainPick", audio: song.sourceAudio(source), sampleRate, bpm, preset });
       },
-      async chainApply(source, preset, chain, settings) {
-        const song = loadedSong();
-        await nextFrame(); // let the UI show it's working before the render blocks
-        const applied = song.chainApply(source, preset, chain, settings) as ChainApplied;
-        await keepTake(song, applied.added);
-        return applied;
-      },
       async harmony(source, interval, settings) {
         const song = loadedSong();
         await nextFrame();
@@ -651,10 +664,7 @@ export async function createWebHost(): Promise<EngineHost> {
         downloadFile(loadedSong().melodyMidi(source, interval), melodyFileName(source, interval), "audio/midi");
         return { kind: "saved" };
       },
-      denoise: {
-        kind: "unavailable",
-        reason: "Clean up runs DeepFilterNet in the desktop app; the web build has no runtime for it yet.",
-      },
+      denoise: { kind: "unavailable", reason: CLEAN_UNAVAILABLE },
       generator: remoteGenerator(loadedSong, keepTake),
     },
     takes: {
@@ -670,6 +680,43 @@ export async function createWebHost(): Promise<EngineHost> {
         const project = toPlayer(song);
         await persist();
         return project;
+      },
+      async setChain(id, chain) {
+        if (chain.clean.state === "Active") throw new Error(CLEAN_UNAVAILABLE);
+        const song = loadedSong();
+        const project = song.setChain(id, chain) as Project;
+        await renderChain(song, project, id);
+        await persist();
+        return { kind: "Rendered", project };
+      },
+      async setMaster(id) {
+        const project = loadedSong().setMaster(id ?? undefined) as Project;
+        await persist();
+        return project;
+      },
+    },
+    exporter: {
+      async formats() {
+        const reason = "The web build writes WAV only: browsers have no built-in MP3 encoder, and AAC needs an MP4 muxer this build doesn't ship.";
+        return [
+          { format: "Wav24", availability: { kind: "ready" } },
+          { format: "Mp3", availability: { kind: "unavailable", reason } },
+          { format: "M4a", availability: { kind: "unavailable", reason } },
+        ];
+      },
+      async run(request, name, onProgress) {
+        if (request.format !== "Wav24") throw new Error("The web build exports WAV only.");
+        const song = loadedSong();
+        song.exportBegin(request);
+        // A chunk per frame keeps the main thread inside its budget (AGENTS.md §10.1).
+        for (let done = 0; done < 1; ) {
+          done = song.exportStep(EXPORT_CHUNK);
+          onProgress({ kind: "Rendering", fraction: done });
+          await nextFrame();
+        }
+        onProgress({ kind: "Encoding" });
+        downloadFile(song.exportFinish(), `${name}.wav`, "audio/wav");
+        return { kind: "saved", path: `${name}.wav` };
       },
     },
     async send(command) {

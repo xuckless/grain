@@ -1,6 +1,6 @@
 // Desktop engine host: the Rust backend (engine-native) behind Tauri commands.
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -29,9 +29,11 @@ import type {
   WindowChrome,
   ExtractorOrigin,
   ExtractorUpdate,
-  ChainApplied,
+  ChainOutcome,
   ChainPick,
-  DenoiseOutcome,
+  ExportFormat,
+  ExportProgress,
+  FormatOffer,
   GeneratorState,
 } from "@workstation/engine-api";
 import { melodyFileName } from "@workstation/engine-api";
@@ -95,8 +97,18 @@ export async function createDesktopHost(): Promise<EngineHost> {
       list: () => invoke<ProjectSummary[]>("list_projects"),
       open: (id) => invoke<Project>("open_project", { id }),
       save: () => invoke("save_project"),
-      // The stem cache is the desktop's project store; archives are a web feature for now.
-      archive: { kind: "unavailable" },
+      archive: {
+        kind: "available",
+        async exportSong() {
+          const path = await save({ defaultPath: "Project.grain", filters: [{ name: "Grain project", extensions: ["grain"] }] });
+          if (path) await invoke("export_archive", { path });
+        },
+        async importArchive(): Promise<ImportOutcome> {
+          const path = await open({ multiple: false, filters: [{ name: "Grain project", extensions: ["grain"] }] });
+          if (typeof path !== "string") return { kind: "cancelled" };
+          return { kind: "imported", project: await invoke<Project>("import_archive", { path }) };
+        },
+      },
     },
     close: () => invoke("close_session"),
     urlImport:
@@ -139,14 +151,12 @@ export async function createDesktopHost(): Promise<EngineHost> {
       setMonitor: (mode) => invoke<MonitorStatus>("set_monitor", { mode }),
       setTune: (settings) => invoke("set_tune", { settings }),
       preview: (take, settings) => invoke<TunePreview>("tune_preview", { take, settings }),
-      apply: (take, tune, settings) => invoke<TakeAdded>("apply_tune", { take, tune, settings }),
     },
     pitchEditor: {
       open: (source) => invoke<PitchEditView>("pitch_open", { source }),
       apply: (edit, op) => invoke<EditUpdate>("pitch_apply", { edit, op }),
       set: (edit) => invoke<EditUpdate>("pitch_set", { edit }),
       fromTune: (take, settings) => invoke<EditUpdate>("pitch_from_tune", { take, settings }),
-      render: (source, settings) => invoke<TakeAdded>("pitch_render", { source, settings }),
     },
     models: {
       location: "the app's data folder",
@@ -175,7 +185,6 @@ export async function createDesktopHost(): Promise<EngineHost> {
     },
     producer: {
       chainPick: (from, preset) => invoke<ChainPick>("chain_pick", { from, preset }),
-      chainApply: (from, preset, chain, settings) => invoke<ChainApplied>("chain_apply", { from, preset, chain, settings }),
       harmony: (from, interval, settings) => invoke<TakeAdded>("harmony", { from, interval, settings }),
       async exportMelody(from, interval) {
         const path = await save({ defaultPath: melodyFileName(from, interval), filters: [{ name: "MIDI", extensions: ["mid"] }] });
@@ -183,10 +192,7 @@ export async function createDesktopHost(): Promise<EngineHost> {
         await invoke("export_melody", { from, interval, path });
         return { kind: "saved" };
       },
-      denoise: {
-        kind: "available",
-        run: (from, settings) => invoke<DenoiseOutcome>("denoise", { from, settings }),
-      },
+      denoise: { kind: "available", model: "deepfilternet3" },
       generator: {
         kind: "available",
         where: "local",
@@ -201,6 +207,23 @@ export async function createDesktopHost(): Promise<EngineHost> {
     takes: {
       rename: (id, name) => invoke<Project>("rename_take", { id, name }),
       remove: (id) => invoke<Project>("delete_take", { id }),
+      setChain: (id, chain) => invoke<ChainOutcome>("set_take_chain", { id, chain }),
+      setMaster: (id) => invoke<Project>("set_master", { id }),
+    },
+    exporter: {
+      async formats(): Promise<FormatOffer[]> {
+        const list = await invoke<[ExportFormat, string | null][]>("export_formats");
+        return list.map(([format, reason]) => ({ format, availability: reason ? { kind: "unavailable", reason } : { kind: "ready" } }));
+      },
+      async run(request, name, onProgress) {
+        const ext = { Wav24: "wav", Mp3: "mp3", M4a: "m4a" }[request.format];
+        const path = await save({ defaultPath: `${name}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+        if (!path) return { kind: "cancelled" };
+        const progress = new Channel<ExportProgress>();
+        progress.onmessage = onProgress;
+        await invoke("export_mix", { request, path, progress });
+        return { kind: "saved", path };
+      },
     },
     send(command) {
       // Commands run off the main thread (AGENTS.md §10.1); chaining keeps their order.

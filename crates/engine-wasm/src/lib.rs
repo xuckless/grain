@@ -3,10 +3,10 @@
 //! - the AudioWorklet: [`WasmPlayer`] (real-time mixing; no allocation per block).
 
 use engine_core::audio::StereoAudio;
-use engine_core::chain::ChainSettings;
 use engine_core::cue;
 use engine_core::drums;
 use engine_core::edit::{self, EditOp, EditSource};
+use engine_core::export::{self, ExportRequest, TrackRef};
 use engine_core::generate::{self, GenerationTask, GeneratorState};
 use engine_core::harmony::{self, Interval};
 use engine_core::live::LiveSession;
@@ -14,7 +14,8 @@ use engine_core::lyrics::{self, LyricsUpdate};
 use engine_core::melody::Note;
 use engine_core::midi::{self, Transcription, TranscriptionMethod};
 use engine_core::player::{MonitorStatus, Player, PlayerCommand, PlayerTrack};
-use engine_core::produce::{self, ChainApplied};
+use engine_core::process::{self, ChainCache};
+use engine_core::produce;
 use engine_core::project::{self, Project, SongAudio, SongSource, TrackSource, TrackedPitch};
 use engine_core::resample::resample;
 use engine_core::score::ScoreSettings;
@@ -24,6 +25,7 @@ use engine_core::wav;
 use engine_ml::basic_pitch;
 use engine_ml::demucs::{ModelSpec, Separator, SeparatorState};
 use engine_ml::models::{self, ModelState};
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 /// Largest block the worklet renders at once (Web Audio uses 128).
@@ -61,6 +63,24 @@ pub struct WasmSong {
     project: Project,
     audio: SongAudio,
     takes: Vec<Vec<f32>>,
+    /// Each take's audio through its processing chain (AGENTS.md §8.7), rendered by the compute
+    /// worker and handed back with `setProcessed`; `None`: the raw take is what plays.
+    processed: Vec<Option<Vec<f32>>>,
+    export: ExportJob,
+}
+
+/// A mixdown in progress (AGENTS.md §8.8), advanced a chunk per call so the main thread keeps
+/// its frames.
+enum ExportJob {
+    Idle,
+    Running {
+        include: Vec<u32>,
+        at: usize,
+        end: usize,
+        left: Vec<f32>,
+        right: Vec<f32>,
+        start: usize,
+    },
 }
 
 impl WasmSong {
@@ -77,6 +97,8 @@ impl WasmSong {
             ),
             audio,
             takes: Vec::new(),
+            processed: Vec::new(),
+            export: ExportJob::Idle,
         }
     }
 
@@ -90,6 +112,7 @@ impl WasmSong {
     ) -> Result<JsValue, JsError> {
         let id = take::add_take(&mut self.project, source, &timeline, pitch);
         self.takes.push(timeline);
+        self.processed.push(None);
         to_js(&TakeAdded {
             report: take::score_take(&self.project, id, settings).map_err(js_err)?,
             project: self.project.clone(),
@@ -146,6 +169,14 @@ impl WasmSong {
     }
 
     /// Timeline audio of take `id`.
+    fn take_index(&self, id: u32) -> Result<usize, JsError> {
+        self.project
+            .takes
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or_else(|| JsError::new("no such take"))
+    }
+
     fn timeline(&self, id: u32) -> Result<&[f32], JsError> {
         let i = self
             .project
@@ -256,6 +287,7 @@ impl WasmSong {
     pub fn delete_take(&mut self, id: u32) -> Result<JsValue, JsError> {
         let i = take::remove_take(&mut self.project, id).map_err(js_err)?;
         self.takes.remove(i);
+        self.processed.remove(i);
         to_js(&self.project)
     }
 
@@ -298,6 +330,106 @@ impl WasmSong {
         Ok(js_sys::Float32Array::from(self.timeline(id)?))
     }
 
+    /// Replaces take `id`'s processing chain (a `TakeChain`); returns the `Project`. The host
+    /// renders it in the compute worker and hands the result back with `setProcessed`.
+    #[wasm_bindgen(js_name = setChain)]
+    pub fn set_chain(&mut self, id: u32, chain: JsValue) -> Result<JsValue, JsError> {
+        process::set_chain(&mut self.project, id, from_js(chain)?).map_err(js_err)?;
+        to_js(&self.project)
+    }
+
+    /// Take `id`'s processed audio (`None`: it plays raw).
+    #[wasm_bindgen(js_name = setProcessed)]
+    pub fn set_processed(&mut self, id: u32, audio: Option<Vec<f32>>) -> Result<(), JsError> {
+        let i = self.take_index(id)?;
+        self.processed[i] = audio;
+        Ok(())
+    }
+
+    /// Stars take `id` as the master (`undefined` clears it); returns the `Project`.
+    #[wasm_bindgen(js_name = setMaster)]
+    pub fn set_master(&mut self, id: Option<u32>) -> Result<JsValue, JsError> {
+        process::set_master(&mut self.project, id).map_err(js_err)?;
+        to_js(&self.project)
+    }
+
+    /// Starts a mixdown of an `ExportRequest` (only its tracks and range are read here).
+    #[wasm_bindgen(js_name = exportBegin)]
+    pub fn export_begin(&mut self, request: JsValue) -> Result<(), JsError> {
+        let request: ExportRequest = from_js(request)?;
+        let length = self.project.frames as usize;
+        let (start, end) = export::range_frames(request.range, self.project.sample_rate, length);
+        self.export = ExportJob::Running {
+            include: request.tracks,
+            at: start,
+            end,
+            left: vec![0.0; end - start],
+            right: vec![0.0; end - start],
+            start,
+        };
+        Ok(())
+    }
+
+    /// Mixes the next `frames` of the running export; returns how far it is (0–1).
+    #[wasm_bindgen(js_name = exportStep)]
+    pub fn export_step(&mut self, frames: usize) -> Result<f32, JsError> {
+        let song = project::track_audio(&self.audio);
+        let tracks: Vec<TrackRef> = self
+            .project
+            .tracks
+            .iter()
+            .zip(&song)
+            .map(|(t, a)| TrackRef {
+                left: &a.left,
+                right: &a.right,
+                mix: t.mix,
+            })
+            .chain(self.project.takes.iter().enumerate().map(|(i, t)| {
+                let a = self.processed[i].as_deref().unwrap_or(&self.takes[i]);
+                TrackRef {
+                    left: a,
+                    right: a,
+                    mix: t.mix,
+                }
+            }))
+            .collect();
+        let ExportJob::Running {
+            include,
+            at,
+            end,
+            left,
+            right,
+            start,
+        } = &mut self.export
+        else {
+            return Err(JsError::new("no export is running"));
+        };
+        let k = frames.min(*end - *at);
+        let (a, b) = (*at - *start, *at - *start + k);
+        export::mix_chunk(&tracks, include, *at, &mut left[a..b], &mut right[a..b]);
+        *at += k;
+        Ok(if *end == *start {
+            1.0
+        } else {
+            (*at - *start) as f32 / (*end - *start) as f32
+        })
+    }
+
+    /// The finished export as a 24-bit WAV file.
+    #[wasm_bindgen(js_name = exportFinish)]
+    pub fn export_finish(&mut self) -> Result<js_sys::Uint8Array, JsError> {
+        match std::mem::replace(&mut self.export, ExportJob::Idle) {
+            ExportJob::Running { left, right, .. } => Ok(js_sys::Uint8Array::from(
+                &export::encode_wav24(&StereoAudio {
+                    sample_rate: self.project.sample_rate,
+                    left,
+                    right,
+                })[..],
+            )),
+            ExportJob::Idle => Err(JsError::new("no export is running")),
+        }
+    }
+
     /// Stores the auto-tune settings (a `TuneSettings`) so a save keeps them.
     #[wasm_bindgen(js_name = setTune)]
     pub fn set_tune(&mut self, settings: JsValue) -> Result<(), JsError> {
@@ -310,21 +442,6 @@ impl WasmSong {
     #[wasm_bindgen(js_name = tunePreview)]
     pub fn tune_preview(&self, id: u32, settings: JsValue) -> Result<JsValue, JsError> {
         to_js(&tune::preview(&self.project, id, from_js(settings)?).map_err(js_err)?)
-    }
-
-    /// Adds take `id` auto-tuned as a new take, "<take> (tuned)", and scores it. Returns a
-    /// `TakeAdded`.
-    #[wasm_bindgen(js_name = applyTune)]
-    pub fn apply_tune(
-        &mut self,
-        id: u32,
-        tune: JsValue,
-        settings: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let settings: ScoreSettings = from_js(settings)?;
-        let tuned =
-            tune::render(&self.project, id, self.timeline(id)?, from_js(tune)?).map_err(js_err)?;
-        self.add_tracked(TakeSource::Tuned { from: id }, tuned, settings)
     }
 
     /// basic-pitch's input for track `source` (a `TrackSource`): `count` windows of
@@ -414,17 +531,6 @@ impl WasmSong {
         to_js(&edit::seed_from_tune(&mut self.project, id, from_js(settings)?).map_err(js_err)?)
     }
 
-    /// Renders a source's edits as a new take, "<source> (edited)", and scores it. Returns a
-    /// `TakeAdded`.
-    #[wasm_bindgen(js_name = pitchRender)]
-    pub fn pitch_render(&mut self, source: JsValue, settings: JsValue) -> Result<JsValue, JsError> {
-        let source: EditSource = from_js(source)?;
-        let settings: ScoreSettings = from_js(settings)?;
-        let audio = self.edit_audio(source)?;
-        let edited = edit::render_source(&self.project, source, &audio).map_err(js_err)?;
-        self.add_tracked(TakeSource::Edited { from: source }, edited, settings)
-    }
-
     /// The audio a source is edited and produced from (for [`chain_pick_audio`] in a worker).
     #[wasm_bindgen(js_name = sourceAudio)]
     pub fn source_audio(&self, source: JsValue) -> Result<js_sys::Float32Array, JsError> {
@@ -440,28 +546,6 @@ impl WasmSong {
             f64::from(self.project.sample_rate),
             self.project.analysis.tempo.bpm,
         ]
-    }
-
-    /// Renders a source through the vocal chain as a new take; returns a `ChainApplied`.
-    #[wasm_bindgen(js_name = chainApply)]
-    pub fn chain_apply(
-        &mut self,
-        source: JsValue,
-        preset: JsValue,
-        chain: JsValue,
-        settings: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let from: EditSource = from_js(source)?;
-        let chain: ChainSettings = from_js(chain)?;
-        let audio = self.edit_audio(from)?;
-        let (out, report) = produce::render_chain(&self.project, &audio, chain);
-        let source = TakeSource::Chained {
-            from,
-            preset: from_js(preset)?,
-            settings: chain.clamped(),
-        };
-        let added: TakeAdded = from_js(self.add_tracked(source, out, from_js(settings)?)?)?;
-        to_js(&ChainApplied { added, report })
     }
 
     /// Sings a harmony line from a source's voice as a new track; returns a `TakeAdded`.
@@ -679,9 +763,11 @@ impl SongRestorer {
         }
         let audio = project::restore_audio(&mut self.project, self.tracks).map_err(js_err)?;
         Ok(WasmSong {
+            processed: vec![None; self.takes.len()],
             project: self.project,
             audio,
             takes: self.takes,
+            export: ExportJob::Idle,
         })
     }
 }
@@ -853,6 +939,55 @@ impl PlayerBuilder {
     }
 }
 
+/// The compute worker's chain renderer (AGENTS.md §8.7): renders a take through its chain off
+/// the main thread, keeping the per-step cache of the take last rendered.
+#[wasm_bindgen]
+pub struct ChainRenderer {
+    take: Option<u32>,
+    cache: ChainCache,
+}
+
+#[wasm_bindgen]
+impl ChainRenderer {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> ChainRenderer {
+        ChainRenderer {
+            take: None,
+            cache: ChainCache::default(),
+        }
+    }
+
+    /// Take `id` of `project` (a `Project`) through its chain, from its raw audio. Clean up
+    /// needs DeepFilterNet, which the web build has no runtime for: such a chain is refused.
+    pub fn render(
+        &mut self,
+        project: JsValue,
+        id: u32,
+        raw: Vec<f32>,
+    ) -> Result<js_sys::Float32Array, JsError> {
+        let project: Project = from_js(project)?;
+        if self.take != Some(id) {
+            self.cache = ChainCache::default();
+            self.take = Some(id);
+        }
+        let plan = process::plan(&project, id).map_err(js_err)?;
+        let raw: Arc<[f32]> = raw.into();
+        let out = self
+            .cache
+            .render(id, &raw, &plan, |stage, input| {
+                process::run_core_stage(&project, id, stage, input)
+            })
+            .map_err(js_err)?;
+        Ok(js_sys::Float32Array::from(&out[..]))
+    }
+}
+
+impl Default for ChainRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Real-time player for the AudioWorklet. JS reads the output through views on wasm memory
 /// at [`WasmPlayer::left_ptr`] / [`WasmPlayer::right_ptr`], and writes the microphone block
 /// for the monitor at [`WasmPlayer::input_ptr`], so a block never allocates.
@@ -889,6 +1024,16 @@ impl WasmPlayer {
                 mix: from_js(mix)?,
             })
             .map_err(|_| JsError::new("too many takes in one session"))
+    }
+
+    /// Swaps track `index`'s audio (a take re-rendered through its chain); its mix is kept.
+    /// Called between render quanta, so the old buffer is freed outside a render.
+    #[wasm_bindgen(js_name = replaceAudio)]
+    pub fn replace_audio(&mut self, index: usize, audio: Vec<f32>) -> Result<(), JsError> {
+        self.player
+            .replace_audio(index, audio.into())
+            .map(drop)
+            .ok_or_else(|| JsError::new("no such track"))
     }
 
     /// Renders `frames` (≤ 1024) samples into the output buffers. `with_input`: the

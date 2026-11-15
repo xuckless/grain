@@ -1,10 +1,14 @@
 // Messages between the main thread and the compute worker (compute-worker.ts).
 
-import type { ChainPreset } from "@workstation/engine-api";
+import type { ChainPreset, Project } from "@workstation/engine-api";
 
-export type ToCompute =
-  | { kind: "init"; module: WebAssembly.Module }
-  | { kind: "chainPick"; id: number; audio: Float32Array; sampleRate: number; bpm: number; preset: ChainPreset };
+/** Requests that carry audio (transferred, not copied). */
+export type ComputeRequest =
+  | { kind: "chainPick"; audio: Float32Array; sampleRate: number; bpm: number; preset: ChainPreset }
+  /** Take `take` of `project` through its processing chain, from its raw `audio` (AGENTS.md §8.7). */
+  | { kind: "chain"; audio: Float32Array; project: Project; take: number };
+
+export type ToCompute = { kind: "init"; module: WebAssembly.Module } | (ComputeRequest & { id: number });
 
 export type FromCompute = { kind: "done"; id: number; value: unknown } | { kind: "failed"; id: number; message: string };
 
@@ -32,7 +36,7 @@ export class Compute {
   }
 
   /** Runs a request; its audio buffer is transferred (not copied). */
-  run<T>(request: Omit<Extract<ToCompute, { kind: "chainPick" }>, "id">): Promise<T> {
+  run<T>(request: ComputeRequest): Promise<T> {
     const id = this.#next++;
     return new Promise<T>((resolve, reject) => {
       this.#pending.set(id, { resolve: resolve as (v: unknown) => void, reject });

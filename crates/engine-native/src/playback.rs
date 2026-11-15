@@ -37,7 +37,9 @@ enum MonitorFeed {
 
 pub struct Playback {
     commands: rtrb::Producer<PlayerCommand>,
-    tracks: rtrb::Producer<PlayerTrack>,
+    tracks: rtrb::Producer<TrackFeed>,
+    /// Audio the callback swapped out ([`Playback::replace_take`]), dropped here.
+    old_audio: rtrb::Consumer<Arc<[f32]>>,
     cues: rtrb::Consumer<StreamInstant>,
     transport: Arc<AtomicU64>,
     sample_rate: u32,
@@ -54,6 +56,15 @@ pub struct Playback {
     shutdown: mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
 }
+
+/// Track changes handed to the callback.
+enum TrackFeed {
+    Add(PlayerTrack),
+    Replace { index: usize, audio: Arc<[f32]> },
+}
+
+/// Swapped-out take audio waiting to be dropped off the audio thread.
+const OLD_AUDIO_CAPACITY: usize = 8;
 
 impl Playback {
     /// Opens the default output device and starts a stopped player with the song's tracks
@@ -97,7 +108,8 @@ impl Playback {
         let (mut retired_tx, retired) = rtrb::RingBuffer::<rtrb::Consumer<f32>>::new(4);
 
         let (commands, mut consumer) = rtrb::RingBuffer::new(COMMAND_CAPACITY);
-        let (track_tx, mut track_rx) = rtrb::RingBuffer::<PlayerTrack>::new(MAX_ADDED_TRACKS);
+        let (track_tx, mut track_rx) = rtrb::RingBuffer::<TrackFeed>::new(MAX_ADDED_TRACKS);
+        let (mut old_audio_tx, old_audio) = rtrb::RingBuffer::<Arc<[f32]>>::new(OLD_AUDIO_CAPACITY);
         let (mut cue_tx, cues) = rtrb::RingBuffer::<StreamInstant>::new(CUE_CAPACITY);
         let transport = Arc::new(AtomicU64::new(encode(Transport::Stopped)));
         let published = transport.clone();
@@ -122,9 +134,22 @@ impl Playback {
                         }
                     }
                 }
-                while let Ok(track) = track_rx.pop() {
-                    // The control side checks the reserve, and keeps a reference to the audio.
-                    let _ = player.add_track(track);
+                while let Ok(feed) = track_rx.pop() {
+                    match feed {
+                        // The control side checks the reserve, and keeps a reference to the audio.
+                        TrackFeed::Add(track) => {
+                            let _ = player.add_track(track);
+                        }
+                        TrackFeed::Replace { index, audio } => {
+                            if let Some(old) = player.replace_audio(index, audio) {
+                                // Drained before every replace, so there is room; if not,
+                                // leaking beats freeing on the audio thread.
+                                if let Err(rtrb::PushError::Full(old)) = old_audio_tx.push(old) {
+                                    std::mem::forget(old);
+                                }
+                            }
+                        }
+                    }
                 }
                 let before = player.transport();
                 while let Ok(command) = consumer.pop() {
@@ -187,6 +212,7 @@ impl Playback {
             added: Vec::new(),
             monitor,
             retired,
+            old_audio,
             monitor_latency,
             shutdown,
             thread: Some(thread),
@@ -202,7 +228,22 @@ impl Playback {
         let track = take::player_track(take, at_device.into());
         self.added.push(track.clone());
         self.tracks
-            .push(track)
+            .push(TrackFeed::Add(track))
+            .map_err(|_| anyhow::anyhow!("track queue full"))
+    }
+
+    /// Replaces player track `index`'s audio with `timeline` (project rate): a take
+    /// re-rendered through its processing chain (AGENTS.md §8.7). Its mix is kept.
+    pub fn replace_take(&mut self, index: usize, timeline: &[f32]) -> Result<()> {
+        while self.old_audio.pop().is_ok() {}
+        let at_device: Arc<[f32]> = resample(&[timeline], self.project_rate, self.sample_rate)?
+            .remove(0)
+            .into();
+        self.tracks
+            .push(TrackFeed::Replace {
+                index,
+                audio: at_device,
+            })
             .map_err(|_| anyhow::anyhow!("track queue full"))
     }
 

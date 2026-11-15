@@ -12,6 +12,8 @@ export type ToWorklet =
   | { kind: "command"; command: PlayerCommand }
   /** Adds a take as a player track. */
   | { kind: "addTrack"; track: TrackData }
+  /** Swaps player track `index`'s audio (a take re-rendered through its chain); mix kept. */
+  | { kind: "replaceAudio"; index: number; audio: Float32Array }
   /** Starts writing the microphone (the node's input) into `ring` and applies `command` (a
    * count-in or the calibration chirp) in the same render quantum, so the cue starts at
    * capture sample 0. */

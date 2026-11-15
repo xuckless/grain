@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["youtube"]
 # YouTube import through local yt-dlp + ffmpeg (AGENTS.md §4.1).
-youtube = ["dep:ingest"]
+youtube = []
 coreml = ["engine-native/coreml"]
 directml = ["engine-native/directml"]
 cuda = ["engine-native/cuda"]
@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 engine-core.workspace = true
 engine-native.workspace = true
 engine-ml.workspace = true
-ingest = { workspace = true, optional = true }
+ingest.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }

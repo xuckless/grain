@@ -2,6 +2,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod chain;
+mod export;
 #[cfg(feature = "youtube")]
 mod extractor;
 mod produce;
@@ -53,6 +55,8 @@ struct Loaded {
     playback: Playback,
     mic: Mic,
     monitor: Monitor,
+    /// The chain render cache of the take last edited (see [`chain::Rendered`]).
+    rendered: Option<chain::Rendered>,
 }
 
 /// The microphone held open for live monitoring (AGENTS.md §7 step 3); the player knows
@@ -182,7 +186,7 @@ fn import(
         },
     )?;
     drop(model);
-    start_session(&engine, cache_key, project, &audio, &takes)
+    start_session(&engine, cache_key, project, &audio, takes)
 }
 
 /// Makes `project` the loaded song and starts its playback stream.
@@ -191,18 +195,21 @@ fn start_session(
     cache_key: String,
     project: Project,
     audio: &SongAudio,
-    takes: &[Vec<f32>],
+    takes: Vec<Vec<f32>>,
 ) -> anyhow::Result<Project> {
+    // Takes play through their processing chains (AGENTS.md §8.7), rendered before locking.
+    let takes = chain::player_takes(engine, &project, takes);
     let mut session = engine.session.lock().expect("session lock");
     // Close the old stream before opening a new one.
     *session = Session::Empty;
-    let playback = Playback::start(&project, audio, takes)?;
+    let playback = Playback::start(&project, audio, &takes)?;
     *session = Session::Loaded(Box::new(Loaded {
         cache_key,
         project: project.clone(),
         playback,
         mic: Mic::Closed,
         monitor: Monitor::Off,
+        rendered: None,
     }));
     Ok(project)
 }
@@ -279,7 +286,7 @@ async fn open_project(app: AppHandle, id: String) -> Result<Project, String> {
                 project,
                 audio,
                 takes,
-            } => start_session(&engine, id, *project, &audio, &takes),
+            } => start_session(&engine, id, *project, &audio, takes),
             Lookup::Miss => anyhow::bail!("this project is no longer on disk"),
         }
     })
@@ -325,7 +332,7 @@ async fn delete_take(app: AppHandle, id: u32) -> Result<Project, String> {
                 project,
                 audio,
                 takes,
-            } => start_session(&engine, key, *project, &audio, &takes),
+            } => start_session(&engine, key, *project, &audio, takes),
             Lookup::Miss => anyhow::bail!("this project is no longer on disk"),
         }
     })
@@ -611,35 +618,6 @@ fn tune_preview(
     with_loaded(&engine, |l| Ok(tune::preview(&l.project, take, settings)?)).map_err(fail)
 }
 
-/// Renders a take auto-tuned (offline, high quality) as a new take, "<take> (tuned)", and
-/// scores it. The original take is kept.
-#[tauri::command]
-async fn apply_tune(
-    app: AppHandle,
-    take: u32,
-    tune: TuneSettings,
-    settings: ScoreSettings,
-) -> Result<TakeAdded, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let engine = app.state::<Engine>();
-        let (key, project) =
-            with_loaded(&engine, |l| Ok((l.cache_key.clone(), l.project.clone())))?;
-        let timeline = engine.cache.take_audio(&key, take)?;
-        let tuned = tune::render(&project, take, &timeline, tune)?;
-        let pitch = track_timeline(&engine, &project, &tuned)?;
-        add_take(
-            &engine,
-            TakeSource::Tuned { from: take },
-            &tuned,
-            pitch,
-            settings,
-        )
-    })
-    .await
-    .map_err(fail)?
-    .map_err(fail)
-}
-
 /// Mono timeline audio of a pitch-editor source.
 fn edit_audio(
     engine: &Engine,
@@ -690,33 +668,6 @@ fn pitch_from_tune(
     with_loaded(&engine, |l| {
         Ok(edit::seed_from_tune(&mut l.project, take, settings)?)
     })
-    .map_err(fail)
-}
-
-/// Renders a source's edits as a new take, "<source> (edited)", and scores it.
-#[tauri::command]
-async fn pitch_render(
-    app: AppHandle,
-    source: EditSource,
-    settings: ScoreSettings,
-) -> Result<TakeAdded, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let engine = app.state::<Engine>();
-        let (key, project) =
-            with_loaded(&engine, |l| Ok((l.cache_key.clone(), l.project.clone())))?;
-        let audio = edit_audio(&engine, &key, &project, source)?;
-        let edited = edit::render_source(&project, source, &audio)?;
-        let pitch = track_timeline(&engine, &project, &edited)?;
-        add_take(
-            &engine,
-            TakeSource::Edited { from: source },
-            &edited,
-            pitch,
-            settings,
-        )
-    })
-    .await
-    .map_err(fail)?
     .map_err(fail)
 }
 
@@ -1175,22 +1126,24 @@ fn main() {
             set_monitor,
             set_tune,
             tune_preview,
-            apply_tune,
             pitch_open,
             pitch_apply,
             pitch_set,
             pitch_from_tune,
-            pitch_render,
             models_list,
             model_download,
             model_delete,
             transcribe,
             export_midi,
             produce::chain_pick,
-            produce::chain_apply,
             produce::harmony,
             produce::export_melody,
-            produce::denoise,
+            chain::set_take_chain,
+            chain::set_master,
+            export::export_formats,
+            export::export_mix,
+            export::export_archive,
+            export::import_archive,
             produce::generator_state,
             produce::generator_install,
             produce::generator_uninstall,
