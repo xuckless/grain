@@ -1,10 +1,13 @@
 <script lang="ts" module>
+  import type { Snippet } from "svelte";
   /** One entry of a toolbar's ⋯ overflow menu: rare actions live here (AGENTS.md §8.6). */
   export type OverflowItem = { label: string; run: () => void; disabled?: string | null };
+  /** A control that gives way when the toolbar runs short of room: it moves into the ⋯ popover.
+   * `key` names it (stable across renders); `control` draws it, inline or in the popover. */
+  export type ToolbarItem = { key: string; control: Snippet };
 </script>
 
 <script lang="ts">
-  import type { Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import { enter, popover } from "./motion";
 
@@ -12,14 +15,20 @@
    * The session toolbar every view shares (AGENTS.md §8.6): the view's controls left to right by
    * how often they're used, then on the right an (i) popover holding every non-blocking hint and
    * a ⋯ menu for rare actions. Only blocking errors are shown inline by the view itself.
+   *
+   * `children` always stay in the bar. `items` follow them in priority order: when they don't all
+   * fit, the last ones move into the ⋯ popover until the rest do (a ResizeObserver measures; each
+   * item's width is remembered from when it was last inline).
    */
   let {
     children,
+    items = [],
     right,
     hints = [],
     overflow = [],
   }: {
     children: Snippet;
+    items?: readonly ToolbarItem[];
     /** Controls that belong at the right edge, before (i) and ⋯ (e.g. zoom). */
     right?: Snippet;
     hints?: readonly string[];
@@ -29,6 +38,45 @@
   type Open = { kind: "closed" } | { kind: "hints" } | { kind: "overflow" };
   let open = $state<Open>({ kind: "closed" });
   let root = $state<HTMLDivElement | undefined>();
+
+  /** Gap between controls in the bar, px (matches `.main`). */
+  const GAP = 12;
+  /** How many of `items` fit inline; the rest are in the ⋯ popover. Starts with all inline so
+   * every item is measured once. */
+  let inline = $state(Number.MAX_SAFE_INTEGER);
+  let main = $state<HTMLDivElement | undefined>();
+  let fixed = $state<HTMLDivElement | undefined>();
+  /** Each item's width when last inline, by key. Not reactive: only `fit` reads it. */
+  const widths = new Map<string, number>();
+  const shown = $derived(items.slice(0, inline));
+  const folded = $derived(items.slice(inline));
+
+  /** The largest prefix of `items` whose remembered widths fit beside the fixed controls. */
+  function fit() {
+    if (!main || !fixed) return;
+    for (const el of main.querySelectorAll<HTMLElement>(":scope > [data-item]")) widths.set(el.dataset.item!, el.offsetWidth);
+    let room = main.clientWidth - fixed.offsetWidth;
+    let n = 0;
+    for (const item of items) {
+      room -= GAP + (widths.get(item.key) ?? 0);
+      if (room < 0) break;
+      n++;
+    }
+    inline = n;
+  }
+
+  // Re-fit when the bar, the fixed controls or any inline item changes size, and when the items
+  // themselves change.
+  const observer = new ResizeObserver(() => fit());
+  const measured = (node: HTMLElement) => {
+    observer.observe(node);
+    return { destroy: () => observer.unobserve(node) };
+  };
+  $effect(() => {
+    void items;
+    fit();
+  });
+  $effect(() => () => observer.disconnect());
 
   const toggle = (kind: "hints" | "overflow") => (open = open.kind === kind ? { kind: "closed" } : { kind });
 
@@ -53,7 +101,12 @@
 </script>
 
 <div class="toolbar" role="toolbar" in:enter>
-  <div class="main">{@render children()}</div>
+  <div class="main" bind:this={main} use:measured>
+    <div class="fixed" bind:this={fixed} use:measured>{@render children()}</div>
+    {#each shown as item (item.key)}
+      <div class="item" data-item={item.key} use:measured>{@render item.control()}</div>
+    {/each}
+  </div>
   <div class="end" bind:this={root}>
     {@render right?.()}
     {#if hints.length > 0}
@@ -69,16 +122,25 @@
         {/if}
       </div>
     {/if}
-    {#if overflow.length > 0}
+    {#if overflow.length > 0 || folded.length > 0}
       <div class="anchor">
-        <button class="press icon quiet" aria-label="More actions" aria-haspopup="menu" aria-expanded={open.kind === "overflow"} onclick={() => toggle("overflow")}>
+        <button class="press icon quiet" aria-label="More actions" aria-haspopup="dialog" aria-expanded={open.kind === "overflow"} onclick={() => toggle("overflow")}>
           <Icon name="more" />
         </button>
         {#if open.kind === "overflow"}
-          <div class="pop menu" role="menu" transition:popover>
-            {#each overflow as item (item.label)}
-              <button class="item" role="menuitem" disabled={!!item.disabled} title={item.disabled ?? undefined} onclick={() => run(item)}>{item.label}</button>
-            {/each}
+          <div class="pop menu" role="dialog" aria-label="More" transition:popover>
+            {#if folded.length > 0}
+              <div class="folded" role="group" aria-label="More controls">
+                {#each folded as item (item.key)}{@render item.control()}{/each}
+              </div>
+            {/if}
+            {#if overflow.length > 0}
+              <div class="actions" role="menu">
+                {#each overflow as item (item.label)}
+                  <button class="action" role="menuitem" disabled={!!item.disabled} title={item.disabled ?? undefined} onclick={() => run(item)}>{item.label}</button>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -103,7 +165,13 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    flex-wrap: wrap;
+  }
+  .fixed,
+  .item {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
   .end {
     display: flex;
@@ -147,11 +215,27 @@
     margin: 0;
   }
   .menu {
-    width: 240px;
+    width: max-content;
+    min-width: 240px;
     padding: 6px;
-    gap: 0;
+    gap: 6px;
   }
-  .item {
+  .folded {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 8px 6px;
+  }
+  .folded + .actions {
+    border-top: 1px solid var(--c-surface);
+    padding-top: 6px;
+  }
+  .actions {
+    display: flex;
+    flex-direction: column;
+  }
+  .action {
     height: 40px;
     border: 0;
     border-radius: 8px;
@@ -161,10 +245,10 @@
     font-size: 15px;
     cursor: pointer;
   }
-  .item:hover:not(:disabled) {
+  .action:hover:not(:disabled) {
     background: var(--c-surface);
   }
-  .item:disabled {
+  .action:disabled {
     color: var(--c-disabled);
     cursor: default;
   }

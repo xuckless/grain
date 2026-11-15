@@ -103,10 +103,12 @@
       <h3>Microphone latency</h3>
       <div class="row">
         {#if latency}
-          <button class="press icon quiet" aria-label="{LATENCY_NUDGE_MS} ms less" disabled={busy} onclick={() => nudge(-LATENCY_NUDGE_MS)}>−</button>
-          <span class="value mono">{latency.ms.toFixed(0)} ms</span>
-          <button class="press icon quiet" aria-label="{LATENCY_NUDGE_MS} ms more" disabled={busy} onclick={() => nudge(LATENCY_NUDGE_MS)}>+</button>
-          <span class="muted">{describeLatency(latency)}</span>
+          <div class="stepper" role="group" aria-label="Microphone latency">
+            <button class="press step" aria-label="{LATENCY_NUDGE_MS} ms less" disabled={busy} onclick={() => nudge(-LATENCY_NUDGE_MS)}>−</button>
+            <span class="value mono">{latency.ms.toFixed(0)} ms</span>
+            <button class="press step" aria-label="{LATENCY_NUDGE_MS} ms more" disabled={busy} onclick={() => nudge(LATENCY_NUDGE_MS)}>+</button>
+          </div>
+          <span class="muted small">{describeLatency(latency)}</span>
         {/if}
         <span class="spacer"></span>
         <button class="press raised small-btn" onclick={calibrate} disabled={busy}>{calibration.kind === "measuring" ? "Listening…" : "Calibrate"}</button>
@@ -128,7 +130,7 @@
       <h3>Monitoring</h3>
       <div class="row">
         <Toggle checked={mode !== "Off"} label="Hear yourself live" onToggle={(on) => monitorTo(on ? (mode === "Dry" ? "Dry" : "Tuned") : "Off")} />
-        <Toggle checked={mode === "Tuned"} label="Tuned" onToggle={(on) => mode !== "Off" && monitorTo(on ? "Tuned" : "Dry")} />
+        <Toggle checked={mode === "Tuned"} label="Tuned" disabled={mode === "Off"} onToggle={(on) => monitorTo(on ? "Tuned" : "Dry")} />
       </div>
       <p class="muted">
         {#if session.monitor.kind === "on"}
@@ -178,15 +180,36 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 8px 12px;
     flex-wrap: wrap;
+  }
+  .small {
+    font-size: 13px;
   }
   .spacer {
     flex: 1;
   }
+  .stepper {
+    display: flex;
+    align-items: center;
+    height: 36px;
+    border-radius: 10px;
+    background: var(--c-surface);
+  }
+  .step {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    padding: 0;
+    font-size: 17px;
+  }
+  .step:hover:not(:disabled) {
+    background: var(--c-raised);
+  }
   .value {
-    min-width: 56px;
+    min-width: 48px;
     text-align: center;
+    font-size: 13px;
   }
   .small-btn {
     height: 36px;
@@ -202,7 +225,9 @@
     padding: 4px;
   }
   .seg {
-    flex: 1;
+    flex: 1 1 auto;
+    padding: 0 12px;
+    white-space: nowrap;
     height: 36px;
     border-radius: 8px;
     font-size: 13px;

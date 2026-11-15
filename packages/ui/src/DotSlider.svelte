@@ -5,7 +5,8 @@
    * A dot-grain slider (design: Components → Gain). While held, the thumb follows the pointer
    * directly (rule 14) and stretches along its travel (rule 5); dragged past either end it gives
    * with damped resistance and springs back on release (rule 19). A hidden range input carries
-   * keyboard and screen-reader access.
+   * keyboard and screen-reader access. `readout` is the value as shown to the right of the track
+   * (and read out to screen readers).
    */
   let {
     value,
@@ -92,9 +93,10 @@
   });
 </script>
 
-<div class="slider" style:width="{width}px">
+<div class="slider">
   <div
     class="track"
+    style:width="{width}px"
     bind:this={track}
     onpointerdown={down}
     onpointermove={update}
@@ -122,13 +124,26 @@
       oninput={(e) => onChange(Number(e.currentTarget.value))}
     />
   </div>
+  <span class="value mono" aria-hidden="true">{readout}</span>
 </div>
 
 <style>
   .slider {
     flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .value {
+    min-width: 6ch;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--c-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
   .track {
+    flex: none;
     position: relative;
     height: 44px;
     cursor: pointer;

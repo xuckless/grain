@@ -10,7 +10,8 @@ export const colour = {
   raised: "#17171B",
   text: "#F2F2F0",
   muted: "#9A9AA2",
-  disabled: "#5E5E66",
+  /** ≥ 4:1 on ground, surface and raised: dimmer than muted, still legible. */
+  disabled: "#7A7A82",
 } as const;
 
 export const stemHue: Record<Stem, string> = {

@@ -430,15 +430,41 @@
       <p class="muted">Sing a take in Karaoke, or import one in Score, to edit its notes here.</p>
     </div>
   {:else}
-    <Toolbar {hints} {overflow}>
-      <TakePicker {host} {session} />
-      <Menu label="Snap" value={snap} options={[{ id: "Scale", label: "Scale notes" }, { id: "Semitone", label: "Semitones" }]} onPick={(s) => (snap = s)} />
+    {#snippet toolMenu()}
       <Menu label="Tool" value={tool} options={[{ id: "Edit", label: "Move and stretch" }, { id: "Split", label: "Split notes" }]} onPick={(t) => (tool = t)} />
-      <button class="press primary" disabled={!edit} onclick={() => void run({ kind: "Correct", ids: targets, centre: 1, drift: 0.5 })}>Correct pitch</button>
-      <button class="press" disabled={!edit || project.analysis.reference_notes.length === 0} title="Move notes onto the original melody" onclick={snapToOriginal}>Snap to original</button>
-      <button class="press" disabled={!canMerge} onclick={() => void run({ kind: "Merge", id: chosen[0] })}>Merge</button>
-      <button class="press quiet" disabled={chosen.length === 0} onclick={() => void run({ kind: "Reset", ids: chosen })}>Reset</button>
-      <button class="press quiet" disabled={!edit || project.analysis.reference_notes.length === 0} title="Play the original vocal, then this take, over the selection" onclick={compare}>A/B original</button>
+    {/snippet}
+    {#snippet snapMenu()}
+      <Menu label="Snap" value={snap} options={[{ id: "Scale", label: "Scale notes" }, { id: "Semitone", label: "Semitones" }]} onPick={(s) => (snap = s)} />
+    {/snippet}
+    {#snippet correct()}
+      <button class="press primary small-button" disabled={!edit} onclick={() => void run({ kind: "Correct", ids: targets, centre: 1, drift: 0.5 })}>Correct pitch</button>
+    {/snippet}
+    {#snippet snapOriginal()}
+      <button class="press raised small-button" disabled={!edit || project.analysis.reference_notes.length === 0} title="Move notes onto the original melody" onclick={snapToOriginal}>Snap to original</button>
+    {/snippet}
+    {#snippet abOriginal()}
+      <button class="press quiet small-button" disabled={!edit || project.analysis.reference_notes.length === 0} title="Play the original vocal, then this take, over the selection" onclick={compare}>A/B original</button>
+    {/snippet}
+    {#snippet merge()}
+      <button class="press quiet small-button" disabled={!canMerge} onclick={() => void run({ kind: "Merge", id: chosen[0] })}>Merge</button>
+    {/snippet}
+    {#snippet reset()}
+      <button class="press quiet small-button" disabled={chosen.length === 0} onclick={() => void run({ kind: "Reset", ids: chosen })}>Reset</button>
+    {/snippet}
+    <Toolbar
+      {hints}
+      {overflow}
+      items={[
+        { key: "tool", control: toolMenu },
+        { key: "correct", control: correct },
+        { key: "snapOriginal", control: snapOriginal },
+        { key: "snap", control: snapMenu },
+        { key: "ab", control: abOriginal },
+        { key: "merge", control: merge },
+        { key: "reset", control: reset },
+      ]}
+    >
+      <TakePicker {host} {session} />
       {#snippet right()}<ZoomControls {session} />{/snippet}
     </Toolbar>
 

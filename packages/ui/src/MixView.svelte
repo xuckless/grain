@@ -281,9 +281,9 @@
 
   <div class="row track" in:enter={{ delay: detailDelay(0) }}>
     <div class="controls">
-      <span class="instrument" style:color={stemHue.Vocals} title="Reference vocal"><Icon name="mic" /></span>
+      <span class="instrument" style:color={stemHue.Vocals} title="Reference melody"><Icon name="melody" /></span>
       <span class="title">Reference</span>
-      <span class="muted small">{project.analysis.reference_notes.length} notes</span>
+      <span class="spacer"></span><span class="muted small">{project.analysis.reference_notes.length} notes</span>
     </div>
     <div class="lane-box">
       {#snippet refLane()}<canvas bind:this={refCanvas} use:reveal={revealKey} style:height="{LANE_H}px"></canvas>{/snippet}
@@ -413,7 +413,7 @@
     border-radius: 12px;
   }
   .controls {
-    width: 372px;
+    width: 284px;
     flex: none;
     display: flex;
     align-items: center;
@@ -449,14 +449,14 @@
     place-items: center;
     flex: none;
   }
+  /* The instrument icon names the row; the name stays for screen readers (and the icon's tooltip). */
   .title {
-    flex: 1;
-    min-width: 0;
-    font-size: 14px;
-    line-height: 20px;
-    white-space: nowrap;
+    position: absolute;
+    width: 1px;
+    height: 1px;
     overflow: hidden;
-    text-overflow: ellipsis;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .ms {
     color: var(--c-muted);

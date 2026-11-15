@@ -222,13 +222,13 @@
         {#key playing}<span class="glyph" transition:iconSwap><Icon name={playing ? "pause" : "play"} /></span>{/key}
       </button>
       <button class="press icon quiet" aria-label="Stop" disabled={snapshot.transport.kind === "Stopped"} onclick={stop}><Icon name="stop" /></button>
-      <span class="mono readout"><span use:clockText={formatTime}></span> <span class="muted">/ {formatTime(duration)}</span></span>
-      <span class="mono muted">{project.analysis.tempo.bpm.toFixed(0)} BPM</span>
-      {#if key}<span class="mono muted">{key.label}</span>{/if}
+      <span class="mono readout"><span use:clockText={formatTime}></span><span class="muted total">/ {formatTime(duration)}</span></span>
+      <span class="mono muted fact bpm">{project.analysis.tempo.bpm.toFixed(0)} BPM</span>
+      {#if key}<span class="mono muted fact key">{key.label}</span>{/if}
     {/snippet}
     {#snippet right()}
       <button class="press icon quiet" aria-label="Undo" title={lastDone ? `Undo ${describe(lastDone)} (⌘Z)` : "Nothing to undo"} disabled={!lastDone || travel.kind === "applying"} onclick={() => step("undo")}><Icon name="undo" /></button>
-      <button class="press icon quiet" aria-label="Redo" title={nextUndone ? `Redo ${describe(nextUndone)} (⇧⌘Z)` : "Nothing to redo"} disabled={!nextUndone || travel.kind === "applying"} onclick={() => step("redo")}><Icon name="redo" /></button>
+      <button class="press icon quiet redo" aria-label="Redo" title={nextUndone ? `Redo ${describe(nextUndone)} (⇧⌘Z)` : "Nothing to redo"} disabled={!nextUndone || travel.kind === "applying"} onclick={() => step("redo")}><Icon name="redo" /></button>
       <button class="press quiet save" title="Download and manage the AI models" onclick={onModels}>Models</button>
       <div class="anchor">
         <button class="press quiet save" data-export-trigger aria-expanded={panel.kind === "export"} title="Export a mixdown" onclick={() => togglePanel("export")}><Icon name="export" size={16} />Export…</button>
@@ -336,9 +336,40 @@
     grid-area: 1 / 1;
     display: flex;
   }
+  .readout,
+  .fact {
+    white-space: nowrap;
+  }
   .readout {
     margin-left: 8px;
-    white-space: nowrap;
+  }
+  .total {
+    margin-left: 1ch;
+  }
+  .fact {
+    margin-left: 4px;
+  }
+  .redo {
+    margin-right: 8px; /* edit history, then the song's own actions */
+  }
+  /* When the bar runs short of room, the song facts give way first, in this order (the window
+     buttons and every action keep their place): the key, the tempo, then the total time. Each
+     threshold leaves the title about 100 px beside the transport (362 px with everything) and
+     the actions (544 px). */
+  @container topbar (max-width: 1140px) {
+    .key {
+      display: none;
+    }
+  }
+  @container topbar (max-width: 1060px) {
+    .bpm {
+      display: none;
+    }
+  }
+  @container topbar (max-width: 1000px) {
+    .total {
+      display: none;
+    }
   }
   .save {
     height: 44px;
