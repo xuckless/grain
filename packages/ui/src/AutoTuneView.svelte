@@ -41,12 +41,10 @@
   const tune = $derived(project.tune);
   const hasMelody = $derived(project.analysis.reference_notes.length > 0);
 
-  /** A plain copy (the project is a reactive proxy, which hosts can't post or clone). */
-  const settings = (): TuneSettings => $state.snapshot(session.project.tune);
+  const settings = (): TuneSettings => session.project.tune;
 
   function update(patch: Partial<TuneSettings>) {
-    session.project.tune = { ...session.project.tune, ...patch };
-    if (session.save.kind === "clean") session.save = { kind: "dirty" };
+    session.adopt({ ...session.project, tune: { ...session.project.tune, ...patch } });
     void autotune.setTune(settings()).catch((e) => console.warn(errorMessage(e)));
   }
 
@@ -130,7 +128,7 @@
     seeding = { kind: "seeding" };
     try {
       await host.pitchEditor.fromTune(id, settings());
-      if (session.save.kind === "clean") session.save = { kind: "dirty" };
+      session.touch();
       session.pitchSource = { kind: "Take", id };
       session.view = "Pitch";
     } catch (e) {
@@ -150,13 +148,13 @@
 
   function hear(id: string) {
     listen = id === "song" ? { kind: "song" } : { kind: "take", take: Number(id) };
-    void runCommands(host, listenCommands($state.snapshot(session.project), listen));
+    void runCommands(host, listenCommands(session.project, listen));
   }
 
   // Leaving the view: the monitor goes off and the mix goes back to the song.
   $effect(() => () => {
     if (monitor.kind === "on" || monitor.kind === "switching") void autotune.setMonitor("Off").catch(() => undefined);
-    if (listen.kind !== "song") void runCommands(host, listenCommands($state.snapshot(session.project), { kind: "song" }));
+    if (listen.kind !== "song") void runCommands(host, listenCommands(session.project, { kind: "song" }));
   });
 </script>
 

@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { MixParams, Project, Track, TrackMode, TrackSource, Transcriber, TransportSnapshot } from "@workstation/engine-api";
   import DotSlider from "./DotSlider.svelte";
-  import { columnLevels, dot, dotBar, drawDotWave, fit, WAVE_STEP_PX } from "./grain";
+  import type { Action } from "svelte/action";
+  import { playhead } from "./clock";
+  import { cachedLevels, dot, dotBar, drawDotWave, fit, WAVE_STEP_PX } from "./grain";
   import { detailDelay, enter, reveal, rubberBand, springBack } from "./motion";
   import { laneRows, layerOf, type MidiJob } from "./models";
   import { errorMessage, formatDb, formatPan, transportSeconds } from "./state";
@@ -38,13 +40,12 @@
   /** Transcription jobs by track name. */
   let jobs = $state<Record<string, MidiJob>>({});
   const jobOf = (t: Track): MidiJob => jobs[t.name] ?? { kind: "idle" };
-  const midiCanvas: (HTMLCanvasElement | undefined)[] = $state([]);
 
   async function transcribe(t: Track) {
     if (jobOf(t).kind === "transcribing") return;
     jobs[t.name] = { kind: "transcribing" };
     try {
-      const out = await transcriber.transcribe($state.snapshot(t.source) as TrackSource);
+      const out = await transcriber.transcribe(t.source);
       switch (out.kind) {
         case "Done":
           jobs[t.name] = { kind: "idle" };
@@ -61,7 +62,7 @@
 
   async function exportMidi(t: Track) {
     try {
-      await transcriber.exportMidi($state.snapshot(t.source) as TrackSource);
+      await transcriber.exportMidi(t.source);
     } catch (e) {
       jobs[t.name] = { kind: "failed", message: errorMessage(e) };
     }
@@ -85,20 +86,18 @@
   let width = $state(0);
   let rulerCanvas = $state<HTMLCanvasElement | undefined>();
   let refCanvas = $state<HTMLCanvasElement | undefined>();
-  const live: (HTMLCanvasElement | undefined)[] = $state([]);
-  const grey: (HTMLCanvasElement | undefined)[] = $state([]);
+  /** Replays the lanes' reveal for a new song only (not on every project update). */
+  const revealKey = $derived(`${project.song.kind}:${project.frames}:${project.tracks.length}`);
 
   const duration = $derived(project.frames / project.sample_rate);
-  const playing = $derived(snapshot.transport.kind === "Playing");
   const anySolo = $derived(project.tracks.some((t) => t.mix.mode === "Soloed"));
-  const playhead = $derived.by(() => {
+  const position = $derived.by(() => {
     if (scrub.kind !== "idle") return scrub.seconds;
     return transportSeconds(snapshot);
   });
-  const headX = $derived((playhead / duration) * width + (scrub.kind === "idle" ? 0 : scrub.overshootPx));
   /** Tracks in display order; `index` stays the engine's track index for mix commands. */
   const rows = $derived(project.tracks.map((track, index) => ({ track, index })).sort((a, b) => displayRank(a.track.source) - displayRank(b.track.source)));
-  const levels = $derived(project.tracks.map((t) => columnLevels(t.peaks, Math.ceil(width / WAVE_STEP_PX))));
+  const columns = $derived(Math.ceil(width / WAVE_STEP_PX));
 
   function audible(t: Track): boolean {
     return t.mix.mode === "Soloed" || (t.mix.mode === "Normal" && !anySolo);
@@ -108,78 +107,82 @@
     return mode === target ? "Normal" : target;
   }
 
-  function drawPlayhead(c: CanvasRenderingContext2D, h: number) {
-    c.fillStyle = colour.text;
-    c.fillRect(Math.round(headX), 0, 2, h);
-  }
+  /** Playhead x in a lane: the clock (extrapolated per frame), or the scrub position while
+   * scrubbing; moved by transform only (AGENTS.md §10.1). */
+  const headX = (seconds: number): number => {
+    const s = scrub.kind === "idle" ? seconds : scrub.seconds;
+    return (s / duration) * width + (scrub.kind === "idle" ? 0 : scrub.overshootPx);
+  };
 
-  // Redraw lanes whenever what they show changes (the playhead moves every frame while playing).
+  // Lanes are drawn only when what they show changes (never per frame).
   $effect(() => {
-    if (width <= 0) return;
+    if (width <= 0 || !rulerCanvas) return;
+    const c = fit(rulerCanvas, width, RULER_H);
+    if (!c) return;
     const x = (s: number) => (s / duration) * width;
-
-    if (rulerCanvas) {
-      const c = fit(rulerCanvas, width, RULER_H);
-      if (c) {
-        const beats = project.analysis.tempo.beats;
-        const barPx = beats.length > 4 ? x(beats[4]) - x(beats[0]) : width;
-        const labelEvery = Math.max(1, 2 ** Math.ceil(Math.log2(56 / Math.max(1, barPx))));
-        c.font = '13px "Geist Mono Variable", monospace';
-        c.textBaseline = "top";
-        beats.forEach((b, i) => {
-          const bar = i % 4 === 0;
-          dot(c, x(b), RULER_H - 5, bar ? 1.4 : 0.8, bar ? colour.text : colour.muted);
-          if (bar && (i / 4) % labelEvery === 0) {
-            c.fillStyle = colour.muted;
-            c.fillText(String(i / 4 + 1), x(b) + 4, 2);
-          }
-        });
-        drawPlayhead(c, RULER_H);
-      }
-    }
-
-    if (refCanvas) {
-      const c = fit(refCanvas, width, LANE_H);
-      const notes = project.analysis.reference_notes;
-      if (c && notes.length > 0) {
-        const lo = Math.min(...notes.map((n) => n.midi)) - 1;
-        const hi = Math.max(...notes.map((n) => n.midi)) + 1;
-        const y = (m: number) => LANE_H - 8 - ((m - lo) / Math.max(1, hi - lo)) * (LANE_H - 16);
-        for (const n of notes) dotBar(c, x(n.start), Math.max(x(n.start), x(n.end)), y(n.midi), stemHue.Vocals, 0.9, 1, 3);
-      }
-      if (c) drawPlayhead(c, LANE_H);
-    }
-
-    project.tracks.forEach((t, i) => {
-      const canvas = midiCanvas[i];
-      const layer = layerOf(project, t.source);
-      if (!canvas || !layer) return;
-      const c = fit(canvas, width, MIDI_H);
-      if (!c) return;
-      const row = laneRows(layer);
-      const hue = trackHue(t.source);
-      for (const n of layer.notes) {
-        const y = 4 + row(n) * (MIDI_H - 8);
-        const x0 = x(n.start);
-        dotBar(c, x0, Math.max(x0, x(n.end)), y, hue, 0.6 + (n.velocity / 127) * 0.6, 1, 3);
-      }
-      drawPlayhead(c, MIDI_H);
-    });
-
-    project.tracks.forEach((t, i) => {
-      const head = playing ? headX : null;
-      for (const [canvas, col] of [
-        [live[i], trackHue(t.source)],
-        [grey[i], colour.disabled],
-      ] as const) {
-        if (!canvas) continue;
-        const c = fit(canvas, width, LANE_H);
-        if (!c) continue;
-        drawDotWave(c, width, LANE_H, levels[i], t.mix.gain, col, head);
-        drawPlayhead(c, LANE_H);
+    const beats = project.analysis.tempo.beats;
+    const barPx = beats.length > 4 ? x(beats[4]) - x(beats[0]) : width;
+    const labelEvery = Math.max(1, 2 ** Math.ceil(Math.log2(56 / Math.max(1, barPx))));
+    c.font = '13px "Geist Mono Variable", monospace';
+    c.textBaseline = "top";
+    beats.forEach((b, i) => {
+      const bar = i % 4 === 0;
+      dot(c, x(b), RULER_H - 5, bar ? 1.4 : 0.8, bar ? colour.text : colour.muted);
+      if (bar && (i / 4) % labelEvery === 0) {
+        c.fillStyle = colour.muted;
+        c.fillText(String(i / 4 + 1), x(b) + 4, 2);
       }
     });
   });
+
+  $effect(() => {
+    if (width <= 0 || !refCanvas) return;
+    const c = fit(refCanvas, width, LANE_H);
+    const notes = project.analysis.reference_notes;
+    if (!c || notes.length === 0) return;
+    const x = (s: number) => (s / duration) * width;
+    const lo = Math.min(...notes.map((n) => n.midi)) - 1;
+    const hi = Math.max(...notes.map((n) => n.midi)) + 1;
+    const y = (m: number) => LANE_H - 8 - ((m - lo) / Math.max(1, hi - lo)) * (LANE_H - 16);
+    for (const n of notes) dotBar(c, x(n.start), Math.max(x(n.start), x(n.end)), y(n.midi), stemHue.Vocals, 0.9, 1, 3);
+  });
+
+  type LaneArt = { width: number; draw: (c: CanvasRenderingContext2D) => void; key: unknown[] };
+  /** Draws a lane canvas once per distinct `key` (its data, size and colours), never per frame. */
+  const art: Action<HTMLCanvasElement, LaneArt> = (canvas, initial) => {
+    let key: unknown[] = [];
+    const draw = (l: LaneArt) => {
+      if (l.width <= 0 || (l.key.length === key.length && l.key.every((k, i) => k === key[i]))) return;
+      key = l.key;
+      const c = fit(canvas, l.width, canvas.clientHeight);
+      if (c) l.draw(c);
+    };
+    draw(initial);
+    return { update: draw };
+  };
+
+  const waveArt = (t: Track, col: string): LaneArt => {
+    const levels = cachedLevels(t.peaks, columns);
+    return { width, key: [levels, t.mix.gain, col, width], draw: (c) => drawDotWave(c, width, LANE_H, levels, t.mix.gain, col) };
+  };
+
+  const midiArt = (t: Track): LaneArt => {
+    const layer = layerOf(project, t.source);
+    return {
+      width,
+      key: [layer, width],
+      draw: (c) => {
+        if (!layer) return;
+        const x = (s: number) => (s / duration) * width;
+        const row = laneRows(layer);
+        const hue = trackHue(t.source);
+        for (const n of layer.notes) {
+          const x0 = x(n.start);
+          dotBar(c, x0, Math.max(x0, x(n.end)), 4 + row(n) * (MIDI_H - 8), hue, 0.6 + (n.velocity / 127) * 0.6, 1, 3);
+        }
+      },
+    };
+  };
 
   function scrubTo(event: PointerEvent) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -226,13 +229,14 @@
     aria-label={label}
     aria-valuemin={0}
     aria-valuemax={Math.round(duration)}
-    aria-valuenow={Math.round(playhead)}
+    aria-valuenow={Math.round(position)}
     onpointerdown={scrubStart}
     onpointermove={scrubMove}
     onpointerup={scrubEnd}
     onpointercancel={scrubEnd}
   >
     {@render content()}
+    <div class="playhead" use:playhead={headX} style:height="{height}px"></div>
   </div>
 {/snippet}
 
@@ -255,7 +259,7 @@
       <span class="muted small">{project.analysis.reference_source === "VocalStem" ? "Melody from the vocal stem" : "Melody from the full mix (no stems): expect errors"}</span>
     </div>
     <div class="lane-box">
-      {#snippet refLane()}<canvas bind:this={refCanvas} use:reveal={project} style:height="{LANE_H}px"></canvas>{/snippet}
+      {#snippet refLane()}<canvas bind:this={refCanvas} use:reveal={revealKey} style:height="{LANE_H}px"></canvas>{/snippet}
       {@render lane(refLane, LANE_H, "Reference vocal, playhead")}
     </div>
     <div class="readout mono muted">{project.analysis.reference_notes.length} notes</div>
@@ -313,8 +317,8 @@
       </div>
       <div class="lane-box">
         {#snippet trackLane()}
-          <canvas bind:this={live[i]} use:reveal={project} style:height="{LANE_H}px"></canvas>
-          <canvas class="mask" class:on={!audible(t)} bind:this={grey[i]} style:height="{LANE_H}px"></canvas>
+          <canvas use:reveal={revealKey} use:art={waveArt(t, trackHue(t.source))} style:height="{LANE_H}px"></canvas>
+          <canvas class="mask" class:on={!audible(t)} use:art={waveArt(t, colour.disabled)} style:height="{LANE_H}px"></canvas>
         {/snippet}
         {@render lane(trackLane, LANE_H, `${t.name} lane, playhead`)}
       </div>
@@ -332,7 +336,7 @@
           <button class="press quiet" onclick={() => exportMidi(t)}>Export .mid</button>
         </div>
         <div class="lane-box">
-          {#snippet midiLane()}<canvas bind:this={midiCanvas[i]} use:reveal={layer} style:height="{MIDI_H}px"></canvas>{/snippet}
+          {#snippet midiLane()}<canvas use:reveal={`${t.name}:${layer.notes.length}`} use:art={midiArt(t)} style:height="{MIDI_H}px"></canvas>{/snippet}
           {@render lane(midiLane, MIDI_H, `${t.name} MIDI lane, playhead`)}
         </div>
         <div class="readout"></div>

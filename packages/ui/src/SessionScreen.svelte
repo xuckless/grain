@@ -13,7 +13,8 @@
   import { services } from "./context";
   import { Orb } from "./grain";
   import { enter, iconSwap, popover, pulse, receiveShared, sendShared } from "./motion";
-  import { formatTime, songTitle, transportSeconds, viewsFor, type Session, type ViewId } from "./state";
+  import { clockText } from "./clock";
+  import { formatTime, songTitle, viewsFor, type Session, type ViewId } from "./state";
 
   let {
     host,
@@ -51,12 +52,10 @@
   const project = $derived(session.project);
   const title = $derived(songTitle(project));
   const duration = $derived(project.frames / project.sample_rate);
-  const position = $derived(transportSeconds(snapshot));
 
   /** The engine changed the project (a MIDI layer was added): show it; it's unsaved. */
   function adopt(next: Project) {
-    session.project = next;
-    if (session.save.kind === "clean") session.save = { kind: "dirty" };
+    session.adopt(next);
   }
   const playing = $derived(snapshot.transport.kind === "Playing");
   const key = $derived(project.analysis.keys[0]);
@@ -122,7 +121,7 @@
         {#key playing}<span class="glyph" transition:iconSwap><Icon name={playing ? "pause" : "play"} /></span>{/key}
       </button>
       <button class="press icon quiet" aria-label="Stop" disabled={snapshot.transport.kind === "Stopped"} onclick={() => onCommand({ kind: "Stop" })}><Icon name="stop" /></button>
-      <span class="mono readout">{formatTime(position)} <span class="muted">/ {formatTime(duration)}</span></span>
+      <span class="mono readout"><span use:clockText={formatTime}></span> <span class="muted">/ {formatTime(duration)}</span></span>
       <span class="mono muted">{project.analysis.tempo.bpm.toFixed(0)} BPM</span>
       {#if key}<span class="mono muted">{key.label}</span>{/if}
     {/snippet}

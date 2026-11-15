@@ -152,6 +152,14 @@ export function takeTrack(project: Project, id: number): number {
   return project.tracks.length + project.takes.findIndex((t) => t.id === id);
 }
 
+/** The project with player track `track`'s mix set (song tracks first, then takes). */
+export function withMix(project: Project, track: number, params: MixParams): Project {
+  const n = project.tracks.length;
+  if (track < n) return { ...project, tracks: project.tracks.map((t, i) => (i === track ? { ...t, mix: params } : t)) };
+  const k = track - n;
+  return { ...project, takes: project.takes.map((t, i) => (i === k ? { ...t, mix: params } : t)) };
+}
+
 /** Copies `params`: project state may be a reactive proxy, which hosts can't post or clone. */
 export function setMix(track: number, params: MixParams): PlayerCommand {
   return { kind: "SetMix", track, params: { mode: params.mode, gain: params.gain, pan: params.pan } };

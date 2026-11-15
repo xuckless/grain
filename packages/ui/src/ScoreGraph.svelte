@@ -2,7 +2,7 @@
   import type { FrameComparison, NoteResult, Project, ScoreReport } from "@workstation/engine-api";
   import { frameFeedback, noteFeedback } from "./feedback";
   import { dot, dotBar, fit } from "./grain";
-  import { reveal } from "./motion";
+  import { identity, reveal } from "./motion";
   import { colour, feedback } from "./theme";
 
   /**
@@ -79,7 +79,7 @@
 
 <div class="graph" bind:clientWidth={width}>
   <button class="canvas-button" onclick={click} aria-label="Pitch graph: click a note to hear the original, then your take">
-    <canvas bind:this={canvas} use:reveal={report} style:height="{height}px"></canvas>
+    <canvas bind:this={canvas} use:reveal={identity(report)} style:height="{height}px"></canvas>
   </button>
   <div class="legend">
     <span><i style:background={feedback.hit}></i>Hit</span>

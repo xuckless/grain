@@ -24,6 +24,7 @@
   import { currentLine, sungFraction } from "./lyrics";
   import { enter } from "./motion";
   import { applyTake, armTake, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
+  import { clock } from "./clock";
   import { errorMessage, formatTime, transportSeconds, type Session } from "./state";
   import { beatsLeft } from "./takes";
 
@@ -48,14 +49,9 @@
   const run = (commands: PlayerCommand[]) => runCommands(host, commands);
 
   // ---- Song clock -----------------------------------------------------------------------------
-  // The transport is polled once per frame; between polls a playing song is extrapolated so the
-  // lane scrolls smoothly (never more than a poll's worth ahead).
+  // The lane scrolls with the shared clock (pushed transport, extrapolated per frame).
 
-  let base = { seconds: 0, at: 0, playing: false };
-  $effect(() => {
-    base = { seconds: transportSeconds(snapshot), at: performance.now(), playing: snapshot.transport.kind === "Playing" };
-  });
-  const clock = (now: number) => base.seconds + (base.playing ? Math.min(0.1, Math.max(0, (now - base.at) / 1000)) : 0);
+  const songClock = (now: number) => clock.seconds(now);
   const seconds = $derived(transportSeconds(snapshot));
 
   // ---- Performance ----------------------------------------------------------------------------
@@ -65,7 +61,7 @@
   // svelte-ignore state_referenced_locally
   let performance_ = newPerformance(notes);
   // svelte-ignore state_referenced_locally
-  const trail = new PitchTrail(notes, clock, 0.3);
+  const trail = new PitchTrail(notes, songClock, 0.3);
   let shown = $state({ score: 0, streak: 0, best: 0, takes: 0 });
   let lane = $state<HTMLElement | undefined>();
   /** Last reference note sung against, so octave folding holds between notes. */

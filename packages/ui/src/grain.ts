@@ -7,6 +7,7 @@ import type { Action } from "svelte/action";
 import type { Note } from "@workstation/engine-api";
 import type { Feedback } from "./feedback";
 import { colour, feedback, spectrum, stemHue } from "./theme";
+import { onFrame } from "./clock";
 import { dur, reducedMotion } from "./motion";
 
 export type Ctx = CanvasRenderingContext2D;
@@ -14,6 +15,8 @@ export type Ctx = CanvasRenderingContext2D;
 /** One animated drawing, redrawn every frame on a cleared canvas sized `w`×`h` CSS px. */
 export interface Behaviour {
   draw(c: Ctx, w: number, h: number, t: number, now: number): void;
+  /** Whether it has nothing to show right now (the canvas is left cleared, no frames drawn). */
+  idle?(now: number): boolean;
 }
 
 export function dot(c: Ctx, x: number, y: number, r: number, col: string): void {
@@ -21,6 +24,13 @@ export function dot(c: Ctx, x: number, y: number, r: number, col: string): void 
   c.beginPath();
   c.arc(x, y, r, 0, Math.PI * 2);
   c.fill();
+}
+
+/** Adds a dot to the current path; fill many in one go (`c.beginPath()` … `c.fill()`): one
+ * fill per colour instead of per dot is most of a busy canvas's frame time. */
+export function dotPath(c: Ctx, x: number, y: number, r: number): void {
+  c.moveTo(x + r, y);
+  c.arc(x, y, r, 0, Math.PI * 2);
 }
 
 /** A horizontal bar of dots from `x0` to `x1` centred on `y` (`rows` dots tall). */
@@ -70,20 +80,33 @@ export function fit(canvas: HTMLCanvasElement, w: number, h: number): Ctx | null
  */
 export const grain: Action<HTMLCanvasElement, Behaviour> = (canvas, initial) => {
   let behaviour = initial;
-  let raf = 0;
-  const tick = (ts: number) => {
+  /** Off screen (scrolled away, or a hidden view): no frames are drawn (AGENTS.md §10.1). */
+  let visible = true;
+  let cleared = false;
+  const seen = new IntersectionObserver((entries) => {
+    for (const e of entries) visible = e.isIntersecting;
+  });
+  seen.observe(canvas);
+  const stop = onFrame((ts) => {
+    if (!visible) return;
+    const now = performance.now();
     const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (behaviour.idle?.(now)) {
+      if (!cleared) fit(canvas, w, h);
+      cleared = true;
+      return;
+    }
+    cleared = false;
     const c = w > 0 && h > 0 ? fit(canvas, w, h) : null;
-    if (c) behaviour.draw(c, w, h, reducedMotion() ? 0 : ts / 1000, performance.now());
-    raf = requestAnimationFrame(tick);
-  };
-  raf = requestAnimationFrame(tick);
+    if (c) behaviour.draw(c, w, h, reducedMotion() ? 0 : ts / 1000, now);
+  });
   return {
     update(next) {
       behaviour = next;
     },
     destroy() {
-      cancelAnimationFrame(raf);
+      stop();
+      seen.disconnect();
     },
   };
 };
@@ -194,13 +217,16 @@ export class Terrain implements Behaviour {
     const columns = Math.ceil(w / 4) + 1;
     const lowest = new Array<number>(columns).fill(0);
     layers.forEach((L, li) => {
+      c.fillStyle = L.col;
+      c.beginPath();
       for (let i = 0; i < columns; i++) {
         const x = i * 4;
         const y = sy * (L.base + L.amp * Math.sin(x * L.f + t * L.sp + li) * Math.cos(x * L.f * 0.43 - t * L.sp * 0.7) + 6 * Math.sin(x * 0.09 + t + li));
         const thick = 5 + Math.round(3 + 3 * Math.sin(x * 0.05 + li + t * 0.3));
-        for (let k = 0; k < thick; k++) dot(c, x + (k % 2) * 2, y + k * 3.6 * sy, 1.25 - (k / thick) * 0.6, L.col);
+        for (let k = 0; k < thick; k++) dotPath(c, x + (k % 2) * 2, y + k * 3.6 * sy, 1.25 - (k / thick) * 0.6);
         lowest[i] = Math.max(lowest[i], y + thick * 3.6 * sy);
       }
+      c.fill();
     });
     if (!reducedMotion() && Math.random() < 0.5 * (w / 405)) {
       const i = Math.floor(Math.random() * columns);
@@ -307,6 +333,10 @@ export class Burst implements Behaviour {
   fireAt(el: Element): void {
     const r = el.getBoundingClientRect();
     this.fire(r.left + r.width / 2, r.top + r.height / 2);
+  }
+
+  idle(): boolean {
+    return this.rings.length === 0 && this.parts.length === 0;
   }
 
   draw(c: Ctx, _w: number, h: number, _t: number, now: number): void {
@@ -534,18 +564,29 @@ export function columnLevels(peaks: readonly number[], columns: number): Float32
   return out;
 }
 
-/**
- * Dot waveform: each column is a vertical run of dots whose count follows its level.
- * Dots within ~24 px of `headX` swell while playing.
- */
-export function drawDotWave(c: Ctx, w: number, h: number, levels: Float32Array, gain: number, col: string, headX: number | null): void {
+const levelCache = new WeakMap<readonly number[], { columns: number; levels: Float32Array }>();
+
+/** [`columnLevels`], memoized per peaks array: a track's peaks never change, so resizing is the
+ * only thing that recomputes them (not every project update). */
+export function cachedLevels(peaks: readonly number[], columns: number): Float32Array {
+  const hit = levelCache.get(peaks);
+  if (hit && hit.columns === columns) return hit.levels;
+  const levels = columnLevels(peaks, columns);
+  levelCache.set(peaks, { columns, levels });
+  return levels;
+}
+
+/** Dot waveform: each column is a vertical run of dots whose count follows its level. */
+export function drawDotWave(c: Ctx, w: number, h: number, levels: Float32Array, gain: number, col: string): void {
   const mid = h / 2, maxDots = Math.max(1, Math.floor((h / 2 - 3) / 4.6));
+  c.fillStyle = col;
+  c.beginPath();
   for (let i = 0; i < levels.length; i++) {
     const x = i * WAVE_STEP_PX + WAVE_STEP_PX / 2;
     if (x > w) break;
     const amp = Math.min(1, levels[i] * gain * 1.4);
     const n = Math.max(0, Math.round(amp * maxDots));
-    const near = headX === null ? 0 : Math.max(0, 1 - Math.abs(x - headX) / 24);
-    for (let k = -n; k <= n; k++) dot(c, x, mid + k * 4.6, 1.25 + near * 0.9 - (Math.abs(k) / (n + 1)) * 0.35, col);
+    for (let k = -n; k <= n; k++) dotPath(c, x, mid + k * 4.6, 1.25 - (Math.abs(k) / (n + 1)) * 0.35);
   }
+  c.fill();
 }

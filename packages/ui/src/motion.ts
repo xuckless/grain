@@ -204,8 +204,11 @@ export const pulse: Action<HTMLElement, unknown> = (node, trigger) => {
   };
 };
 
-/** Rule 17: clip-path wipe (left → right) when `trigger` is first set or changes. */
-export const reveal: Action<HTMLElement, unknown> = (node, trigger) => {
+/** Rule 17: clip-path wipe (left → right) when `trigger` is first set or changes.
+ * `trigger` must be a primitive (a string or number key): Svelte deep-reads object action
+ * parameters on every update, which costs milliseconds on a project or report (AGENTS.md §10.1).
+ * For "replay when this object is replaced", pass `identity(obj)`. */
+export const reveal: Action<HTMLElement, string | number | null> = (node, trigger) => {
   const run = () => {
     const frames = reducedMotion() ? [{ opacity: 0 }, { opacity: 1 }] : [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0 0 0)" }];
     node.animate(frames, { duration: dur.reveal, easing: cssCurve(curves.io) });
@@ -221,6 +224,17 @@ export const reveal: Action<HTMLElement, unknown> = (node, trigger) => {
     },
   };
 };
+
+const identities = new WeakMap<object, number>();
+let nextIdentity = 1;
+
+/** A number unique to `o` (for primitive action keys, see `reveal`). */
+export function identity(o: object | null): number {
+  if (o === null) return 0;
+  let id = identities.get(o);
+  if (id === undefined) identities.set(o, (id = nextIdentity++));
+  return id;
+}
 
 /** Rule 5: knob stretch for a pointer moving `velocityPx` per event, capped at 12%. */
 export function knobStretch(velocityPx: number): number {

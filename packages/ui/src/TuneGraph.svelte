@@ -2,7 +2,7 @@
   import type { TunePreview } from "@workstation/engine-api";
   import { pitchRange, targetRuns } from "./autotune";
   import { dot, dotBar, fit } from "./grain";
-  import { reveal } from "./motion";
+  import { identity, reveal } from "./motion";
   import { colour, stemHue } from "./theme";
 
   /**
@@ -56,7 +56,7 @@
 <div class="graph" bind:clientWidth={width}>
   {#if span}
     <button class="canvas-button" onclick={click} aria-label="Pitch before and after auto-tune: click to play from there">
-      <canvas bind:this={canvas} use:reveal={preview} style:height="{HEIGHT}px"></canvas>
+      <canvas bind:this={canvas} use:reveal={identity(preview)} style:height="{HEIGHT}px"></canvas>
     </button>
     <div class="legend">
       <span><i style:background={colour.muted}></i>As sung</span>

@@ -1,8 +1,8 @@
 // Every app-level UI state is declared here (AGENTS.md ground rules 1–2). Component-local
 // states (menus, sliders, toasts) are declared as unions in their components.
 
-import type { ImportStage, Project, ScoreReport, ScoreSettings, TransportSnapshot, EditSource } from "@workstation/engine-api";
-import type { Backing } from "./takes";
+import type { ImportStage, Project, ScoreReport, TransportSnapshot } from "@workstation/engine-api";
+import type { Session } from "./session.svelte";
 
 /** Import progress: `Starting` until the host reports its first engine stage. */
 export type ImportProgress = { kind: "Starting" } | ImportStage;
@@ -33,20 +33,13 @@ export const VIEWS: readonly ViewDef[] = [
   { id: "Produce", label: "Produce", availability: { kind: "ready" } },
 ];
 
-/** `settings`: difficulty and octave folding, shared by Score and Karaoke. `backing`: what the
- * singer hears while recording, `null` until they pick one (the song's default applies). */
 /** The views for a song: Karaoke needs a reference melody to sing against. */
 export function viewsFor(project: Project): readonly ViewDef[] {
   if (project.analysis.reference_notes.length > 0) return VIEWS;
   return VIEWS.map((v) => (v.id === "Karaoke" ? { ...v, availability: { kind: "unavailable", reason: "No vocal melody was found in this song to sing along to." } } : v));
 }
 
-/** `pitchSource`: what the Pitch view edits (null: its default, the newest take). */
-export type Session = { project: Project; score: ScoreState; save: SaveState; view: ViewId; settings: ScoreSettings; backing: Backing | null; pitchSource: EditSource | null };
-
-export function newSession(project: Project): Session {
-  return { project, score: { kind: "none" }, save: { kind: "clean" }, view: "Mix", settings: { difficulty: "Medium", octave: "Fold" }, backing: null, pitchSource: null };
-}
+export type { Session } from "./session.svelte";
 
 /** Song position (seconds) of the playhead. A count-in holds its start position; the
  * calibration chirp plays outside the song, at 0. */

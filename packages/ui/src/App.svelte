@@ -8,7 +8,10 @@
   import { provideServices, type ToastTone } from "./context";
   import { Burst } from "./grain";
   import { enter, installMotionTokens } from "./motion";
-  import { errorMessage, newSession, type AppState, type Session, type ViewId } from "./state";
+  import { clock } from "./clock";
+  import { Session } from "./session.svelte";
+  import { errorMessage, type AppState, type ViewId } from "./state";
+  import { withMix } from "./takes";
   import { installTheme } from "./theme";
 
   let { host }: { host: EngineHost } = $props();
@@ -16,7 +19,7 @@
   installTheme();
 
   let app = $state<AppState>({ kind: "home", job: { kind: "idle" }, resume: { kind: "none" } });
-  let snapshot = $state<TransportSnapshot>({ transport: { kind: "Stopped" }, sample_rate: 44100 });
+  let snapshot = $state.raw<TransportSnapshot>({ transport: { kind: "Stopped" }, sample_rate: 44100 });
   let toast = $state<Toast | null>(null);
   /** The model manager, shown over either screen. */
   let modelsPanel = $state<{ kind: "closed" } | { kind: "open" }>({ kind: "closed" });
@@ -46,7 +49,7 @@
       });
       switch (outcome.kind) {
         case "imported":
-          enterSession(newSession(outcome.project));
+          enterSession(new Session(outcome.project));
           showToast("Stems ready");
           requestAnimationFrame(() => burst.fire(window.innerWidth / 2, 96));
           break;
@@ -70,7 +73,7 @@
     const store = host.projects;
     app = { kind: "home", job: { kind: "opening" }, resume: { kind: "none" } };
     try {
-      enterSession(newSession(await store.open(id)));
+      enterSession(new Session(await store.open(id)));
     } catch (e) {
       app = { kind: "home", job: { kind: "failed", message: errorMessage(e) }, resume: { kind: "none" } };
     }
@@ -109,15 +112,23 @@
     }
   }
 
+  /** Mix changes waiting for the next frame: a fader drag sends at most one per track per frame. */
+  const pendingMix = new Map<number, MixParams>();
+  let mixFrame = 0;
+
   function setMix(track: number, params: MixParams) {
     if (app.kind !== "session") return;
+    const session = app.session;
     // Song tracks first, then takes (the player's order).
-    const p = app.session.project;
-    const target = track < p.tracks.length ? p.tracks[track] : p.takes[track - p.tracks.length];
-    if (!target) return;
-    target.mix = params;
-    if (app.session.save.kind === "clean") app.session.save = { kind: "dirty" };
-    void send({ kind: "SetMix", track, params });
+    if (track >= session.project.tracks.length + session.project.takes.length) return;
+    session.adopt(withMix(session.project, track, params));
+    pendingMix.set(track, { mode: params.mode, gain: params.gain, pan: params.pan });
+    if (mixFrame === 0)
+      mixFrame = requestAnimationFrame(() => {
+        mixFrame = 0;
+        for (const [t, p] of pendingMix) void send({ kind: "SetMix", track: t, params: p });
+        pendingMix.clear();
+      });
   }
 
   function setView(view: ViewId) {
@@ -126,23 +137,14 @@
 
   $effect(() => installMotionTokens());
 
-  // Poll the engine's transport once per animation frame while a song is loaded.
+  // The engine pushes the transport (no per-frame polling, AGENTS.md §10.1); the clock
+  // extrapolates the playhead between pushes for anything drawn per frame.
   $effect(() => {
     if (!loaded) return;
-    let alive = true;
-    const tick = async () => {
-      if (!alive) return;
-      try {
-        snapshot = await host.transport();
-      } catch (e) {
-        console.warn(errorMessage(e));
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => {
-      alive = false;
-    };
+    return host.subscribeTransport((s) => {
+      clock.update(s);
+      snapshot = s;
+    });
   });
 </script>
 
@@ -205,6 +207,16 @@
   :global(*) {
     scrollbar-width: thin;
     scrollbar-color: var(--c-raised) transparent;
+  }
+  /* A playhead over a canvas lane, moved by `use:playhead` (transform only). */
+  :global(.playhead) {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 2px;
+    background: var(--c-text);
+    pointer-events: none;
+    will-change: transform;
   }
   :global(button) {
     font: inherit;

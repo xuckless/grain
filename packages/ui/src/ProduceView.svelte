@@ -73,10 +73,7 @@
   /** Shows a new take or track; sung takes (cleaned, chained) are also scored in the Score tab. */
   function adopt(added: TakeAdded, sung: boolean) {
     if (sung) applyTake(session, added);
-    else {
-      session.project = added.project;
-      if (session.save.kind === "clean") session.save = { kind: "dirty" };
-    }
+    else session.adopt(added.project);
   }
 
   /** Runs one job: `work` resolves with what to tell the job. */

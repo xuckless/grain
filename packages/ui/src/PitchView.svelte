@@ -37,7 +37,8 @@
     type Window,
   } from "./pitch";
   import { applyTake, runCommands } from "./recorder";
-  import { errorMessage, transportSeconds, type Session } from "./state";
+  import { playhead } from "./clock";
+  import { errorMessage, type Session } from "./state";
   import { colour, stemHue } from "./theme";
 
   /**
@@ -100,7 +101,7 @@
   let notice = $state<Notice>({ kind: "none" });
 
   function dirty() {
-    if (session.save.kind === "clean") session.save = { kind: "dirty" };
+    session.touch();
   }
 
   /** Applies one edit through the engine and records it for undo (`key` coalesces a slider). */
@@ -173,11 +174,11 @@
 
   function hear(id: string) {
     listen = id === "song" ? { kind: "song" } : { kind: "take", take: Number(id) };
-    void runCommands(host, listenCommands($state.snapshot(session.project), listen));
+    void runCommands(host, listenCommands(session.project, listen));
   }
 
   $effect(() => () => {
-    if (listen.kind !== "song") void runCommands(host, listenCommands($state.snapshot(session.project), { kind: "song" }));
+    if (listen.kind !== "song") void runCommands(host, listenCommands(session.project, { kind: "song" }));
   });
 
   // ---- Canvas ---------------------------------------------------------------------------------
@@ -241,13 +242,13 @@
       }
     }
 
-    // Playhead.
-    const head = x(transportSeconds(snapshot));
-    if (head >= 0 && head <= width) {
-      c.fillStyle = colour.text;
-      c.fillRect(Math.round(head), 0, 1.5, HEIGHT);
-    }
   });
+
+  /** The playhead, moved per frame by transform (never a redraw of the roll). */
+  const headAt = (seconds: number): number | null => {
+    const px = x(seconds);
+    return px >= 0 && px <= width ? px : null;
+  };
 
   function local(e: PointerEvent | WheelEvent): { px: number; py: number } {
     const r = surface!.getBoundingClientRect();
@@ -429,6 +430,7 @@
         onpointercancel={() => (drag = { kind: "idle" })}
       >
         <canvas bind:this={canvas} use:reveal={sid} style:height="{HEIGHT}px"></canvas>
+        <div class="playhead" use:playhead={headAt} style:height="{HEIGHT}px"></div>
       </div>
 
       <div class="readout mono muted">

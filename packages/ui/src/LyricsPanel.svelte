@@ -32,8 +32,7 @@
 
   async function store(update: LyricsUpdate) {
     const stored = await host.setLyrics(update);
-    session.project.lyrics = stored;
-    if (session.save.kind === "clean") session.save = { kind: "dirty" };
+    session.adopt({ ...session.project, lyrics: stored });
     event({ kind: "stored", lyrics: stored });
   }
 

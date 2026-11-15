@@ -57,9 +57,8 @@ export async function cancelTake(host: EngineHost, project: Project): Promise<vo
 
 /** A take was added: it becomes the shown, scored take and the song has unsaved changes. */
 export function applyTake(session: Session, added: TakeAdded): void {
-  session.project = added.project;
+  session.adopt(added.project);
   session.score = { kind: "scored", take: added.take, report: added.report };
-  if (session.save.kind === "clean") session.save = { kind: "dirty" };
 }
 
 /** Runs `step` once per animation frame (awaiting it) until the returned function is called. */
