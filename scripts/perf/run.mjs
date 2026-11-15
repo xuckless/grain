@@ -6,7 +6,7 @@
 //
 // Imports the song in headless Chrome with the frame-rate limit off, so each frame's time is
 // the work it took (not the display's vsync), then runs the scenarios below and prints
-// frame-time p50/p95/max, long tasks (> 50 ms) and main-thread → audio-thread messages per
+// frame-time p50/p95/p99/max, long tasks (> 50 ms) and main-thread → audio-thread messages per
 // second (the web build's stand-in for desktop IPC). Env: CHROME (browser path), DPR (device
 // pixel ratio, default 2), SOFTWARE=1 (software raster).
 import { chromium } from "playwright-core";
@@ -103,6 +103,35 @@ async function sweep(box, ms) {
   await page.mouse.up();
 }
 
+/** Turns a knob: drags the pointer up and down from its centre for `ms`. */
+async function turn(box, ms) {
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  const t0 = Date.now();
+  let i = 0;
+  while (Date.now() - t0 < ms) {
+    await page.mouse.move(x, y - Math.sin(i++ / 12) * 70);
+    await page.waitForTimeout(8);
+  }
+  await page.mouse.up();
+}
+
+/** The first track's gain control and how to drag it: the rotary knob (role slider, vertical),
+ * or, on builds before it, the fader's hidden range input (horizontal). */
+async function gainControl() {
+  const knob = page.locator("svg[role=slider][aria-label$=' gain']").first();
+  if (await knob.count()) {
+    const box = await knob.boundingBox();
+    return { drag: (ms) => turn(box, ms) };
+  }
+  const box = await page.locator("input[aria-label$=' gain']").first().evaluate((el) => {
+    const r = el.closest(".slider").getBoundingClientRect();
+    return { x: r.x, y: r.y, width: r.width, height: r.height };
+  });
+  return { drag: (ms) => sweep(box, ms) };
+}
+
 /** Pauses the song if it's playing. */
 async function pause() {
   const button = page.getByRole("button", { name: "Pause", exact: true });
@@ -121,15 +150,12 @@ try {
   await page.waitForTimeout(2000);
 
   await measure("mix idle", async () => {}, 3000);
-  const gain = await page.locator("input[aria-label$=' gain']").first().evaluate((el) => {
-    const r = el.closest(".slider").getBoundingClientRect();
-    return { x: r.x, y: r.y, width: r.width, height: r.height };
-  });
-  await measure("mix gain drag", () => sweep(gain, 4000), 0);
-  const play = page.getByRole("button", { name: "Play", exact: true });
+  const gain = await gainControl();
+  await measure("mix gain drag", () => gain.drag(4000), 0);
+  const play = page.getByRole("button", { name: "Play", exact: true }).first();
   await measure("mix playback", () => play.click(), 4000);
-  await measure("mix drag while playing", () => sweep(gain, 3000), 0);
-  const lane = await page.locator(".lane").nth(2).boundingBox();
+  await measure("mix drag while playing", () => gain.drag(3000), 0);
+  const lane = await page.locator(".mix .lane").nth(2).boundingBox();
   await measure("mix scrub", () => sweep(lane, 3000), 0);
   await pause();
 
@@ -145,9 +171,22 @@ try {
     await page.waitForTimeout(800);
     await measure(`${t} idle`, async () => {}, 2000);
   }
+  // The pitch editor works on a take: import one when the song has none (TAKE, default
+  // samples/my.m4a).
   await page.getByRole("tab", { name: "Pitch" }).click();
   await page.waitForTimeout(800);
-  await measure("Pitch playback", () => page.getByRole("button", { name: "Play", exact: true }).click(), 3000);
+  if (!(await page.locator(".roll").count())) {
+    await page.getByRole("tab", { name: "Score" }).click();
+    const picker = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Import a take…" }).click();
+    await (await picker).setFiles(resolve(process.env.TAKE ?? "samples/my.m4a"));
+    await page.locator(".overall").waitFor({ timeout: 300_000 });
+    await page.getByRole("tab", { name: "Pitch" }).click();
+    await page.locator(".roll").waitFor({ timeout: 60_000 });
+    await page.waitForTimeout(800);
+  }
+  await measure("Pitch playback", () => page.getByRole("button", { name: "Play", exact: true }).first().click(), 3000);
   await pause();
   const roll = await page.locator(".roll").boundingBox();
   const middle = { x: roll.x + roll.width * 0.3, y: roll.y, width: roll.width * 0.4, height: roll.height };

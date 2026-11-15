@@ -106,6 +106,10 @@
     </span>
     <button class="press primary go" disabled={running || chosen.length === 0} onclick={run}>{running ? "Exporting" : "Export"}</button>
   </div>
+  {#if host.projects.kind === "available" && host.projects.archive.kind === "available"}
+    {@const archive = host.projects.archive}
+    <button class="press quiet project" disabled={running} title="This song, its stems and takes as one .grain file" onclick={() => archive.exportSong().catch((e) => (job = { kind: "failed", message: errorMessage(e) }))}>Project file (.grain)…</button>
+  {/if}
   {#if job.kind === "rendering"}<div class="bar" style:transform="scaleX({job.fraction})"></div>{/if}
 </div>
 
@@ -174,6 +178,12 @@
   .go {
     height: 40px;
     padding: 0 18px;
+    border-radius: 10px;
+  }
+  .project {
+    align-self: flex-start;
+    height: 36px;
+    padding: 0 12px;
     border-radius: 10px;
   }
   .bar {

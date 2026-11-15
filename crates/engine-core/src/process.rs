@@ -415,8 +415,12 @@ mod tests {
         let mut json: serde_json::Value = serde_json::to_value(&p).unwrap();
         json.as_object_mut().unwrap().remove("master_take");
         json["takes"][0].as_object_mut().unwrap().remove("chain");
+        // A copy made by the old "Apply" (a tuned take) stays a plain sung take of its own.
+        json["takes"][0]["source"] = serde_json::json!({ "kind": "Tuned", "from": 7 });
         let back: Project = serde_json::from_value(json).unwrap();
         assert!(back.takes[0].chain.is_neutral());
+        assert!(back.takes[0].source.is_sung());
         assert_eq!(back.master_take, None);
+        assert_eq!(master(&back), Some(back.takes[0].id));
     }
 }

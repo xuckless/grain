@@ -207,6 +207,7 @@ docs/research/     # longer notes, benchmarks, model evaluations
 5. **Per-note metrics** (using the reference note segmentation): mean cents error, % of note duration hit, onset timing error (ms), pitch stability (standard deviation of cents within the note, excluding detected vibrato), vibrato rate and extent (fit a 4–8 Hz sinusoid to detrended f0).
 6. **Scores (0–100):** pitch accuracy, timing, stability, and coverage (% of reference voiced time the user also sang). The overall score is a weighted sum, with the weights in a config file. Keep the formulas documented and deterministic; never use an ML "vibe score".
 7. **Visualization:** reference notes drawn as bars on a piano-roll background, the user's f0 as a line colored by error (green, yellow, red), a cents-error strip below, and per-section score cards. Clicking a note plays that section of both takes A/B.
+8. **What is scored (as built):** the **raw take**, never its processing chain (§8.7): a score measures the singing, so pitch edits or auto-tune can't raise it. The Score view scores the take picked in its toolbar (the ★ master by default) and re-scores when the pick, difficulty or octave folding changes. It no longer records: takes are sung in Karaoke or imported from Score's ⋯ menu.
 
 ---
 
@@ -252,7 +253,8 @@ Convert the reference f0 track into discrete notes, in the style of UltraStar or
   - Latency: frames are placed on the song timeline with the stored round-trip latency already removed. The trail head shows up to one YIN window (46 ms) plus a UI frame behind the playhead, within the 80 ms target, because it's drawn where it was sung rather than at the playhead.
 - **Lane** (`KaraokeView.svelte`, `grain.ts` `PitchTrail`, the one class also used by the Score preview): the y-axis is semitones over the song's note range ±2, and the trail is folded to the octave of the note being sung when octave folding is on. Grains are placed at their song time and scroll with the notes. A note fills hit, near or miss (`feedback.ts`, the same thresholds as the Score graph) once the song passes it; hits burst and add to the streak. The running score is the share of the reference's voiced frames sung in tune (`inTune` = hit / (hit + miss + reference only)).
 - **Session** (`karaoke.ts`): Idle → CountIn → Singing ⇄ Paused → Finished, plus Failed. Each uninterrupted run (count-in to Pause or Finish) is recorded, saved as a take and scored offline (`microphone.finish`), so pausing never loses singing and the takes show in Score. Resume counts in again from the paused position. Finish during a count-in drops that empty run. Leaving the view mid-run finishes it.
-- **Shared with Score:** `SettingsControls` (difficulty and octave, kept on the session), `RecordingSetup` (the backing choice, latency nudge and calibration), and the `recorder.ts` arm/finish/cancel helpers.
+- **Shared with Score:** `SettingsControls` (difficulty and octave, kept on the session) and the `recorder.ts` arm/finish/cancel helpers. The backing is `BackingMenu` in Karaoke's toolbar; latency and calibration moved to ⚙ Settings (§8.6).
+- **Seeking and loops (redesign):** drag the lane (8 s of song across it; dragging left moves later), click the ruler under it, or click a lyric line. Sing starts **2 s** before the playhead (the pre-roll). Loop: the toolbar's Loop button marks A, then B (`Session.loop`, at least 0.5 s); while singing, passing B pauses (saving that pass as its own take) and counts in again from A − pre-roll. The loop is also Export's Loop range. The lyrics offset nudge stays in the lyrics panel under the lane (not in the toolbar): it edits the lyrics, and one place for it is enough.
 
 ---
 
@@ -296,14 +298,15 @@ Offline, note-based editing of a **monophonic** vocal (the user's take or the vo
   - `stretch::warp` (WSOLA, 23 ms Hann frames, ±¼-frame search) re-times only the changed stretch and copies the rest bit-for-bit, with 10 ms crossfades.
   - The curves are moved onto the output timeline, then `shift::shift_curves` (the M3 phase vocoder with a per-frame formant curve) runs only on spans with a non-zero curve (±100 ms), with 20 ms crossfades.
   - **Accuracy:** a +2 st note lands within 5 ¢ (the test passes); the untouched note is **bit-identical**.
-  - The result is a new take, `TakeSource::Edited { from }`, "<source> (edited)", re-tracked and scored like a tuned take.
-- **Hosts:** `PitchEditor` (`open` / `apply` / `set` / `fromTune` / `render`) over shared project-level helpers (`edit::open`, `apply_op`, `store`, `seed_from_tune`, `render_source`). Desktop decodes just the take or the vocal stem (`StemCache::track_audio`); web uses the song it holds.
+  - The result is the take's **Pitch edits** chain step (§8.7), not a new take. (Projects from before the redesign may hold `TakeSource::Edited` copies; they load as plain takes.)
+- **Hosts:** `PitchEditor` (`open` / `apply` / `set` / `fromTune`) over shared project-level helpers (`edit::open`, `apply_op`, `store`, `seed_from_tune`). Desktop decodes just the take (`StemCache::take_audio`); web uses the song it holds.
 - **UI** (`PitchView.svelte`, state in `pitch.ts`):
-  - **State machines:** `Loading` (Loading | Ready | Failed); `Selection` (None | Notes); `Drag`: Idle | Pressing (direction undecided until 5 px) | Pitch | Time | Stretch | Panning (with rubber band, rule 19). While held, the blob follows the pointer directly (rule 14); the engine applies the op on release. `RenderState`: Idle | Rendering | Rendered | Failed.
-  - **Undo/redo:** `History` keeps snapshots of the edit list (100 steps; a slider drag coalesces into one step by key); `set` hands a restored list back to the engine.
-  - **Drawing:** blobs are dots along the note line, rows by loudness (`edit::amplitude`), with scale rows from the engine's `scale_mask`.
-  - **Keys:** ⌘Z/⇧⌘Z (and ⌘Y), ⌘A, Delete/Backspace resets the selected notes (it doesn't remove them, so the audio isn't cut), Esc.
-  - **Source:** the newest original take by default, else the vocal stem; the source stays selected after rendering.
+  - **State machines:** `Loading` (Loading | Ready | Failed); `Selection` (None | Notes); `Drag`: Idle | Pressing (direction undecided until 5 px) | Pitch | Time | Stretch | Panning (with rubber band, rule 19). While held, the blob follows the pointer directly (rule 14); the engine applies the op on release. Applying the step is a `ChainJob` (§8.7).
+  - **Undo/redo:** every edit is a `PitchEdit` command in the session history (§8.6; a slider drag coalesces into one step by key). Undo hands the restored list to the engine with `set`, bumps `Session.pitchRevision` so the view reloads it, and re-renders the take when its Pitch edits step is on.
+  - **Drawing:** blobs are dots along the note line, rows by loudness (`edit::amplitude`), with scale rows from the engine's `scale_mask`; the original melody (the reference notes) as faint **ghost notes** behind; each note's offset from the nearest semitone as a **cents badge** (shown when the note is ≥ 28 px wide).
+  - **Toolbar (all tools):** take picker, Snap, Tool, Correct pitch, **Snap to original** (each target note moves, unsnapped, onto the reference note under its middle; one undo step), Merge, Reset, **A/B original** (the vocal stem, then the take, over the selection or the visible span, voice only). Apply edits / Update take and the On toggle sit at the bottom. The roll's time window and the shared viewport follow each other.
+  - **Keys:** ⌘A, Delete/Backspace resets the selected notes (it doesn't remove them, so the audio isn't cut), Esc. ⌘Z/⇧⌘Z are the session's.
+  - **Source:** the selected take (the ★ master by default). The vocal stem is no longer an edit source: its edits had nowhere to go once edits stopped making copies.
 - **M3's editable correction curve:** Auto-tune's "Edit curve…" calls `edit::from_tune`. It seeds the take's edit list with each note's centre moved to the target auto-tune would pull most of its frames to (× mix) and the formant setting, then opens it in the Pitch view. One mechanism, no second curve editor. Retune speed and humanize aren't carried over: in the editor, glides and drift take their place.
 
 ### 7.2 As built (M3)
@@ -320,12 +323,12 @@ Offline, note-based editing of a **monophonic** vocal (the user's take or the vo
   - **Envelope:** the cepstrum finds the pitch period, and the envelope is the log-magnitude running maximum over one harmonic spacing, smoothed. This passes through the harmonic peaks. A plain liftered cepstrum averaged peaks with valleys and was 2× worse in the formant test.
   - **Accuracy:** ±1/±3/−12 st within 0.02 ¢, +12 st −3.7 ¢. Formant error 1.8 dB (resampling: 7.9 dB). A +3 then −3 st round trip: formant error 2.6 dB, log-spectral distance 2.6 dB. About 190× faster than real time (release).
   - **Why not Signalsmith or Rubber Band:** Signalsmith Stretch is C++; it would need a C++ toolchain in the wasm32 build, and it time-stretches rather than taking a per-frame pitch curve. Rubber Band is native-only. Ours is pure Rust on the existing STFT, so desktop and web run the same shifter, and M4's editor can drive it with any curve.
-- **Tuned takes:** "Apply to take" renders `tune::render` (correction curve → shifter → dry/wet) and adds a new take with `TakeSource::Tuned { from }`, named "<take> (tuned)". It is re-tracked with the project's tracker, scored, saved like any take (desktop: cache `take-<id>.wav`, read back with `StemCache::take_audio`; web: in the `.grain`), and the original is untouched.
+- **Applying auto-tune:** "Apply to take" sets the take's **Auto-tune** chain step to the current settings (§8.7). The step renders `tune::render_track` (correction curve → shifter → dry/wet) following the take's pitch, or its pitch after the pitch edits when that step is on. Nothing is copied; the raw take is kept (desktop: cache `take-<id>.wav`; web: in the `.grain`). Older projects' `TakeSource::Tuned` copies load as plain takes.
 - **View** (`AutoTuneView.svelte`, `TuneGraph.svelte`, `autotune.ts`):
-  - Controls: Key (the analysis's keys, Chromatic, or Custom notes on a one-octave keyboard), Pull to (scale or melody), Retune, Humanize, Formant, Mix, and the monitor toggles with the headphones hint.
-  - Monitor state: Off → Switching → On(status) | Failed(message). Leaving the view turns it off.
-  - Take picker, Apply state Idle → Applying → Applied | Failed, and a "Hear" A/B (the song, the original take, or the tuned take in place of the vocal; `listenCommands`).
-  - The graph shows the sung pitch, target notes and corrected pitch from `preview` before rendering.
+  - Toolbar: take picker, Key (the analysis's keys, Chromatic, or Custom notes on a one-octave keyboard), Pull to (scale or melody), Monitor and Tuned toggles, zoom. The headphones warning and the monitor's latency are in (i); Edit curve and Remove are in ⋯. Below: Retune, Humanize, Formant, Mix.
+  - Monitor state: Off → Switching → On(status) | Failed(message), held on the session and shared with ⚙ Settings (`autotune.switchMonitor`); it stays on across views (singing in Karaoke while monitoring).
+  - Apply at the bottom centre (Apply to take → Applied, or Update take when the settings differ), with the step's On toggle beside it; a `ChainJob` tracks the render.
+  - The graph shows the sung pitch, target notes and corrected pitch from `preview` on the shared timeline viewport.
 
 ---
 
@@ -345,13 +348,14 @@ Generated audio always lands as **new, non-destructive tracks** and never overwr
 
 ### 8.1 As built (M5)
 
-A **Produce** session view works on a *source* (a take or the vocal stem, the pitch editor's
-`EditSource`). Every result is a new take with a `TakeSource` that records how it was made:
-`Denoised { from, model }`, `Chained { from, preset, settings }`, `Harmony { from, interval }`,
-`Generated { request }` (task, prompt, seed, model, bpm, key). Sung results (cleaned, chained)
-start muted and are scored like any take; harmony and generated tracks start audible with level and
-pan defaults (`TakeSource::is_sung`). The view lists everything it made with play/level/pan. The
-host contract is `EngineHost.producer`.
+A **Produce** session view works on the selected take (the ★ master by default; the vocal stem
+when the song has no take, for harmony and generation only), as stacked cards. **Clean up** and the
+**vocal chain** are steps of the take's processing chain (§8.7): applied in place, with an On
+toggle and Remove, undoable. **Harmony** and **Generate** make new tracks with a `TakeSource` that
+records how they were made: `Harmony { from, interval }`, `Generated { request }` (task, prompt,
+seed, model, bpm, key); they start audible with level and pan defaults (`TakeSource::is_sung`), and
+the view lists them with play/level/pan. Older projects' `Denoised`/`Chained` copies load as
+plain takes. The host contract is `EngineHost.producer` plus `TakeStore.setChain`.
 
 - **Denoise (DeepFilterNet3).** `deep-filter-rt` 0.2.0 (DeepFilterNet's own inference code,
   MIT OR Apache-2.0) is vendored in `third_party/` with two changes (its `NOTICE.md`): the embedded
@@ -459,6 +463,112 @@ All durations, easings and transitions live in **one** module, `packages/ui/src/
 
 ---
 
+## 8.6 Layout system (mandatory for all session views)
+
+Every session view is built from the same three parts, so the views read as one app:
+
+- **Toolbar** (`Toolbar.svelte`): the view's controls left to right by how often they're used
+  (the take picker first wherever a view works on a take), then at the right edge an optional
+  `right` snippet (zoom), the **(i)** popover and the **⋯** menu. Every **non-blocking** message
+  (tips, the headphones warning, why a default is what it is, a monitor's latency) is a line in
+  (i); only blocking errors show inline. Rare actions (Import a take, Edit curve, Remove, MIDI
+  exports) are ⋯ items, each with a disabled reason when it can't run. (i) and ⋯ are one
+  explicit `Open` state (Closed | Hints | Overflow).
+- **Bottom action** (`BottomAction.svelte`): the view's one primary action, centred and sticky at
+  the bottom (`.cta`), with an optional `side` snippet for its companions (Pause/Finish, a
+  step's On toggle). Score: ▶ Play take. Karaoke: ● Sing / Pause (Finish beside). Auto-tune:
+  Apply to take. Pitch: Apply edits to take. Mix and Produce have none (Produce's cards each
+  carry their own apply).
+- **⚙ Settings** (`SettingsPanel.svelte`, from the top bar): playback mode, microphone latency
+  with calibration (§9), and live monitoring. Calibration exists only here; `Session.mic`
+  (Free | Recording | Calibrating) keeps calibration and recording apart.
+- **The take picker** (`TakePicker.svelte`): `Session.take` (`null` = the ★ master) and the star
+  that makes the picked take the master (`TakeStore.setMaster`, undoable).
+- **Shared timeline viewport** (`viewport.ts`, `Session.viewport`): one `View { start, span,
+  overshoot }` for Mix, Auto-tune and Pitch, so a zoom carries across views. ⌘/Ctrl-scroll or a
+  trackpad pinch zooms around the pointer, horizontal (or ⇧) scroll pans, `ZoomControls` zoom
+  out/in/fit. The shortest span is 2 s; panning past either end gives by `rubberBand` up to 6% of
+  the span and springs back 120 ms after the last wheel event (rule 19). The Pitch roll keeps its
+  own pitch range and syncs its time window both ways. The Karaoke lane keeps its fixed 8 s
+  scrolling window (it follows the playhead; a zoom there would hide the notes being sung), and
+  Score's graph shows the whole take.
+- **Undo** (`history.ts`, `Session.history`): one session-wide ⌘Z / ⇧⌘Z of explicit commands, each
+  with both states: `Mix` (gain, pan, mute/solo; a knob turn is one command, recorded on release),
+  `Master`, `Rename`, `PitchEdit` (a slider drag is one step by key) and `Chain` (a step applied,
+  updated, bypassed or removed). Undo applies the `before` state through the host without
+  recording; a new command drops the redo future; 200 steps; the history isn't saved with the
+  project. The top bar's undo/redo buttons say what they'd undo.
+- **Playback modes** (`listen.ts` `ListenMode`, `Session.playback`): Voice only, Voice + instrumental
+  (default), Voice + full mix (the song's vocal at its own mix level). The quiet **guide vocal**
+  (−10 dB) exists only as a recording backing in Karaoke: it is never in takes, playback modes or
+  exports (tested).
+- **Mix rows:** instrument icon in the stem hue (inline stroke SVGs in `Icon.svelte`, never emoji),
+  the name, mute (speaker with a slash) and solo (headphones) icon buttons, gain and pan
+  **dot-grain rotary knobs** (`Knob.svelte`, `knob.ts`: 270° sweep, 160 px of vertical drag for the
+  whole range, ⇧ ten times finer, arrows 2.5% (⇧ 0.5%), double-click resets to 0 dB / C, the value
+  shows while turning or hovering; gain uses the fader law −60…+6 dB), and a MIDI icon. A knob
+  keeps its own position while turned and sends at most one change per frame (rAF). Rows share
+  the window's height (lanes 44–132 px).
+
+## 8.7 The master take and its processing chain
+
+A take keeps its **raw recording untouched** and carries one `TakeChain` (`engine-core::process`)
+of four steps in a **fixed order**: Pitch edits → Auto-tune → Clean up → Vocal chain (pitch before
+tuning so the tuner follows the edited pitch; cleaning before colouring). A fixed order is the
+simplest that serves singing; reordering isn't offered. Each step is `Step<T>`: Unset | Active(params)
+| Bypassed(params) (bypass keeps the parameters). The Pitch edits step's list stays in
+`Project.pitch_edits`; the others hold their settings (`TuneSettings`, `CleanStep { model }`,
+`VocalStep { preset, settings }`).
+
+- **Rendering:** `process::plan` lists the active stages; `ChainCache::render` runs them from the
+  raw take, keyed per stage by a fingerprint of the take id, the raw length and every earlier
+  stage's parameters, so changing step 3 re-renders steps 3–4 only (tested, with a fresh copy of
+  the raw audio, as hosts decode it). Hosts render **off the UI thread**: desktop in Tauri's
+  blocking pool with the session lock held only to read and to swap the result in; web in the
+  compute worker (`ChainRenderer`). Each keeps the cache of **one take**, the one last edited, so
+  memory stays at a few copies of one take. Clean up is native-only (DeepFilterNet); the web
+  refuses it with the reason.
+- **What plays:** the player plays the processed take. A changed chain swaps the take's player
+  audio in place (`Player::replace_audio`; desktop through the track feed ring, old buffers
+  dropped off the audio thread; web through the worklet). At session start desktop renders every
+  non-neutral chain before the stream opens (opening a song with chains takes their render time);
+  web starts raw and swaps each take in as its render finishes. A chain that can't render (its
+  model was deleted) plays raw with a warning.
+- **Master:** `Project.master_take` (the ★), else the newest sung take (`process::master`; harmony
+  and generated tracks can't be masters; a deleted star falls back). Views and export default to it.
+- **What is never done any more:** "(tuned)", "(edited)", "(cleaned)", "(chained)" copies. Old
+  projects load with every chain unset and no star; their derived takes stay as plain takes with
+  their names (tested). Harmony and Generate still create tracks.
+- **Contract:** `TakeStore.setChain(id, chain) → ChainOutcome` (Rendered(project) | NeedsModel),
+  `TakeStore.setMaster(id | null)`; both save at once like every take change. The UI goes through
+  `chain.ts` `commitChain` (one `ChainJob`: Idle | Rendering | NeedsModel | Failed per view).
+
+## 8.8 Export
+
+**Export…** in the top bar opens `ExportDialog.svelte`: a checklist of player tracks
+(`exporting.ts` `exportTracks`: ticked as heard now by mute and solo, the ★ master take ticked,
+other sung takes unticked, the separated vocal stem never offered), the format, and the range (the
+song, or Karaoke's loop). States: Idle → Rendering(fraction) → Encoding → Done(path) | Failed, one
+export at a time (`exportNext`, tested).
+
+- **Mixdown** (`engine-core::export`): `mix_chunk` runs the player's own mixing law
+  (`player::mix_block`, shared with the audio callback) over borrowed track audio, with the checklist
+  as the selection (solo ignored) and the player's ±1 clip; `encode_wav24` writes 24-bit stereo
+  PCM. Takes go through their full chains. Tested against a hand-computed gain/pan sum, a loop
+  range, and WAV decode-back.
+- **Desktop:** `export_mix` renders in the blocking pool with progress on a Tauri `Channel`; MP3
+  (libmp3lame 320 kbps) and M4A (AAC 256 kbps) are encoded from a temporary WAV by ffmpeg, found
+  next to the executable (the bundled sidecar) or on `PATH` + Homebrew dirs (`ingest::find_tool`);
+  without ffmpeg those formats are Unavailable with the reason. A test decodes every available
+  format back with symphonia and checks length and level.
+- **Web:** WAV-24 only; MP3 and M4A are Unavailable ("browsers have no built-in MP3 encoder, and AAC
+  needs an MP4 muxer this build doesn't ship"). The mixdown runs on the main thread in 65,536-frame
+  chunks, one per animation frame (a few ms each), instead of copying every stem into the worker.
+- **Project archive:** the `.grain` file (§12) on both hosts: desktop `export_archive` /
+  `import_archive` (`engine-core::archive`, the same layout the web streams from `store.ts`; an
+  imported archive becomes a stem-cache entry). The Export dialog's "Project file (.grain)…" button
+  writes it; Home opens one.
+
 ## 9. Real-time audio rules (non-negotiable)
 
 On the audio thread (cpal callback / AudioWorklet `process()`):
@@ -540,6 +650,7 @@ Keep this table current: update the Status column whenever a milestone moves.
 | **M3** F4 auto-tune | Live PSOLA auto-tune, then the offline high-quality shifter | ✅ done (see §7.2) |
 | **M4** quality + pitch editor | Melodyne-style pitch editor (§7.1), basic-pitch MIDI layers, model manager with opt-in NC downloads | ✅ done (see §7.1.1, §4.3, §10) |
 | **M5** F5 AI production | DeepFilterNet + vocal chain, then the ACE-Step local sidecar | ✅ done (see §8.1; de-reverb deferred) |
+| **UX** redesign | Layout system (toolbar, (i), ⋯, bottom action, ⚙ Settings, shared viewport), compact Mix, master take + processing chain, session undo, playback modes, Export | ✅ done (see §8.6–§8.8; leftovers below) |
 
 ### Milestone details
 
@@ -644,10 +755,18 @@ Keep this table current: update the Status column whenever a milestone moves.
   drum transcription is a simple classifier.
 - **Produce:** the M5 list above (ACE-Step untested with real weights, `uv` not bundled, no web or
   live denoise, de-reverb deferred).
-- **UI performance:** the web's chain render, harmony and pitch render still run on the main
-  thread (they're explicit jobs with a working state, not interactions); one tab switch (opening a
+- **UI performance:** the web's processing chain renders in the compute worker; harmony still
+  runs on the main thread (an explicit job with a working state, not an interaction); one tab switch (opening a
   view's wasm data) still measures a ~90 ms long task; desktop IPC was not profiled in the running
   app (the push and coalescing remove per-frame invokes by construction).
+- **UX redesign leftovers:** Score's graph and the Karaoke lane aren't on the shared viewport (by
+  choice, §8.6); comparing a take with its own raw recording (A/B of the chain) isn't offered, only
+  against the original vocal; opening a desktop song renders every processed take before playback
+  starts; "Snap to original" is one engine call per note; the undo history isn't saved; the
+  `.grain` layout is written in two places (desktop Rust `engine-core::archive`, web TypeScript
+  `store.ts`, which streams per channel for the frame budget), pinned by one round-trip test on the
+  Rust side only; the web export mixes on the main thread in chunks; the redesigned views were
+  checked in the web build only (no desktop UI run during development).
 - **Design/licensing:** the Geist Pixel font's licence is unverified (README); the UI design pass
   row stays "in progress"; minimum web hardware (§12) is undecided.
 
@@ -655,5 +774,5 @@ Keep this table current: update the Status column whenever a milestone moves.
 
 ## 12. Open decisions
 
-- [x] Project archive format (web): one `.grain` file per project, which is also the OPFS record. 8-byte magic `GRAINv1\n`, u32 LE header length, a JSON header `{ "project": Project }`, then 16-bit little-endian PCM channels of `project.frames` samples in project order (each track's left then right channel, then each take). No dependencies, readable one channel at a time; FLAC compression can come later as `GRAINv2`. Desktop keeps the stem cache (WAV + `project.json`).
+- [x] Project archive format (web; desktop exports and opens the same file since the redesign, §8.8): one `.grain` file per project, which is also the OPFS record. 8-byte magic `GRAINv1\n`, u32 LE header length, a JSON header `{ "project": Project }`, then 16-bit little-endian PCM channels of `project.frames` samples in project order (each track's left then right channel, then each take). No dependencies, readable one channel at a time; FLAC compression can come later as `GRAINv2`. Desktop keeps the stem cache (WAV + `project.json`).
 - [ ] Minimum hardware for the web build (WebGPU required, or a WASM-only slow path)?
