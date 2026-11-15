@@ -307,13 +307,17 @@
 </script>
 
 <section class="karaoke">
-  <Toolbar {hints}>
-    <BackingMenu {session} disabled={live} />
-    <TakePicker {host} {session} />
-    <SettingsControls {session} disabled={live} />
-    <button class="press" class:loop-on={loop !== null || marking.kind === "a"} disabled={live} title={loop ? "Clear the loop" : marking.kind === "a" ? "Set B here" : "Set A here"} onclick={markLoop}>
+  {#snippet loopButton()}
+    <button class="press quiet small-button loop" class:loop-on={loop !== null || marking.kind === "a"} disabled={live} title={loop ? "Clear the loop" : marking.kind === "a" ? "Set B here" : "Set A here"} onclick={markLoop}>
       <Icon name="loop" />{loop ? `${formatTime(loop.start)}–${formatTime(loop.end)}` : marking.kind === "a" ? "Set B" : "Loop"}
     </button>
+  {/snippet}
+  {#snippet rules()}
+    <SettingsControls {session} disabled={live} />
+  {/snippet}
+  <Toolbar {hints} items={[{ key: "loop", control: loopButton }, { key: "rules", control: rules }]}>
+    <BackingMenu {session} disabled={live} />
+    <TakePicker {host} {session} />
   </Toolbar>
 
   <div class="lane" bind:this={lane} role="slider" tabindex="-1" aria-label="Drag to move through the song" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(seconds)} onpointerdown={laneDown} onpointermove={laneMove} onpointerup={laneUp} onpointercancel={laneUp}>
@@ -431,6 +435,12 @@
     background: var(--c-near);
     opacity: 0.35;
     z-index: 1;
+  }
+  .loop {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
   }
   .loop-on {
     color: var(--c-near);

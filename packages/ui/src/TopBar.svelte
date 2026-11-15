@@ -37,7 +37,11 @@
     box-sizing: border-box;
     padding-right: 16px;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    /* The transport sits centred while the sides have room; the right side never shrinks below
+       its actions (the title ellipsizes instead), so nothing overlaps. Views hide optional
+       readouts with `@container topbar` queries. */
+    grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
+    container: topbar / inline-size;
     align-items: center;
     gap: 16px;
     background: var(--c-ground);

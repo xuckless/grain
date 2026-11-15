@@ -473,7 +473,15 @@ Every session view is built from the same three parts, so the views read as one 
   (tips, the headphones warning, why a default is what it is, a monitor's latency) is a line in
   (i); only blocking errors show inline. Rare actions (Import a take, Edit curve, Remove, MIDI
   exports) are ⋯ items, each with a disabled reason when it can't run. (i) and ⋯ are one
-  explicit `Open` state (Closed | Hints | Overflow).
+  explicit `Open` state (Closed | Hints | Overflow). The toolbar never wraps or clips: `children`
+  always stay (the take picker, Karaoke's backing); the view's other controls are `items`
+  (`{ key, control }` snippets) in priority order, and when they don't fit (a ResizeObserver
+  measures) the last ones move into the ⋯ popover, above its actions, until the rest do.
+- **Top bar**: actions keep their place at every width; the song facts give way first (key,
+  tempo, then total time, by `@container topbar` queries) and the title ellipsizes.
+- **Disabled controls** keep their shape and dim their label to `--c-disabled`, which holds
+  4:1 or better on ground, surface and raised. Switches sit on a translucent-white track, so the
+  off state reads on any background.
 - **Bottom action** (`BottomAction.svelte`): the view's one primary action, centred and sticky at
   the bottom (`.cta`), with an optional `side` snippet for its companions (Pause/Finish, a
   step's On toggle). Score: ▶ Play take. Karaoke: ● Sing / Pause (Finish beside). Auto-tune:

@@ -30,7 +30,7 @@
   {:else if name === "save"}
     <path d="M10 3.5v9M6 8.8l4 4 4-4M4.5 16h11"></path>
   {:else if name === "gear"}
-    <circle cx="10" cy="10" r="2.6"></circle><path d="M10 2.8v2.1M10 15.1v2.1M2.8 10h2.1M15.1 10h2.1M4.9 4.9l1.5 1.5M13.6 13.6l1.5 1.5M4.9 15.1l1.5-1.5M13.6 6.4l1.5-1.5"></path>
+    <path d="M8.58 4.69L8.84 2.69L11.16 2.69L11.42 4.69A5.5 5.5 0 0 1 12.75 5.24L14.35 4.01L15.99 5.65L14.76 7.25A5.5 5.5 0 0 1 15.31 8.58L17.31 8.84L17.31 11.16L15.31 11.42A5.5 5.5 0 0 1 14.76 12.75L15.99 14.35L14.35 15.99L12.75 14.76A5.5 5.5 0 0 1 11.42 15.31L11.16 17.31L8.84 17.31L8.58 15.31A5.5 5.5 0 0 1 7.25 14.76L5.65 15.99L4.01 14.35L5.24 12.75A5.5 5.5 0 0 1 4.69 11.42L2.69 11.16L2.69 8.84L4.69 8.58A5.5 5.5 0 0 1 5.24 7.25L4.01 5.65L5.65 4.01L7.25 5.24A5.5 5.5 0 0 1 8.58 4.69Z"></path><circle cx="10" cy="10" r="2.3"></circle>
   {:else if name === "more"}
     <circle cx="4.5" cy="10" r="1.2" fill="currentColor" stroke="none"></circle><circle cx="10" cy="10" r="1.2" fill="currentColor" stroke="none"></circle><circle cx="15.5" cy="10" r="1.2" fill="currentColor" stroke="none"></circle>
   {:else if name === "star" || name === "starFilled"}

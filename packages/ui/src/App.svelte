@@ -226,10 +226,15 @@
     cursor: pointer;
     background: none;
   }
+  /* A disabled button keeps its shape (quiet stays quiet, raised stays raised) and dims its
+     label to --c-disabled, which holds 4:1 or better against ground, surface and raised. Only a
+     filled white button changes ground, or its dimmed label would sit on white. */
   :global(button:disabled) {
     cursor: default;
-    background: var(--c-surface) !important;
     color: var(--c-disabled) !important;
+  }
+  :global(.primary:disabled) {
+    background: var(--c-raised) !important;
   }
   :global(button:focus-visible),
   :global(input:focus-visible) {

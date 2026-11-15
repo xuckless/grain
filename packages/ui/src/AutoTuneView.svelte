@@ -109,14 +109,22 @@
 </script>
 
 <section class="autotune">
-  <Toolbar {hints} {overflow}>
-    <TakePicker {host} {session} />
+  {#snippet keyMenu()}
     <Menu label="Key" value={scaleId(project, tune.scale)} options={scaleChoices(project)} onPick={(id) => update({ scale: pickScale(id, project, tune.scale) })} />
-    {#if hasMelody}
-      <Menu label="Pull to" value={tune.mode} options={modes} onPick={(m) => update({ mode: m })} />
-    {/if}
+  {/snippet}
+  {#snippet pullMenu()}
+    <Menu label="Pull to" value={tune.mode} options={modes} onPick={(m) => update({ mode: m })} />
+  {/snippet}
+  {#snippet monitorToggles()}
     <Toggle checked={mode !== "Off"} label="Monitor" onToggle={(on) => monitorTo(on ? (mode === "Dry" ? "Dry" : "Tuned") : "Off")} />
-    <Toggle checked={mode === "Tuned"} label="Tuned" onToggle={(on) => mode !== "Off" && monitorTo(on ? "Tuned" : "Dry")} />
+    <Toggle checked={mode === "Tuned"} label="Tuned" disabled={mode === "Off"} onToggle={(on) => monitorTo(on ? "Tuned" : "Dry")} />
+  {/snippet}
+  <Toolbar
+    {hints}
+    {overflow}
+    items={[{ key: "key", control: keyMenu }, ...(hasMelody ? [{ key: "pull", control: pullMenu }] : []), { key: "monitor", control: monitorToggles }]}
+  >
+    <TakePicker {host} {session} />
     {#snippet right()}<ZoomControls {session} />{/snippet}
   </Toolbar>
 
@@ -143,19 +151,19 @@
   <div class="sliders">
     <label class="slider">
       <span class="label">Retune speed</span>
-      <DotSlider value={tune.retune_ms} min={0} max={400} step={5} width={200} label="Retune speed" readout={formatRetune(tune.retune_ms)} onChange={(v) => update({ retune_ms: v })} />
+      <DotSlider value={tune.retune_ms} min={0} max={400} step={5} width={160} label="Retune speed" readout={formatRetune(tune.retune_ms)} onChange={(v) => update({ retune_ms: v })} />
     </label>
     <label class="slider">
       <span class="label">Humanize</span>
-      <DotSlider value={tune.humanize} min={0} max={1} step={0.01} width={200} label="Humanize" readout={formatPercent(tune.humanize)} onChange={(v) => update({ humanize: v })} />
+      <DotSlider value={tune.humanize} min={0} max={1} step={0.01} width={160} label="Humanize" readout={formatPercent(tune.humanize)} onChange={(v) => update({ humanize: v })} />
     </label>
     <label class="slider">
       <span class="label">Formant</span>
-      <DotSlider value={tune.formant_semitones} min={-5} max={5} step={0.1} width={200} label="Formant shift" readout={formatSemitones(tune.formant_semitones)} onChange={(v) => update({ formant_semitones: v })} />
+      <DotSlider value={tune.formant_semitones} min={-5} max={5} step={0.1} width={160} label="Formant shift" readout={formatSemitones(tune.formant_semitones)} onChange={(v) => update({ formant_semitones: v })} />
     </label>
     <label class="slider">
       <span class="label">Mix</span>
-      <DotSlider value={tune.mix} min={0} max={1} step={0.01} width={200} label="Dry/wet mix" readout={formatPercent(tune.mix)} onChange={(v) => update({ mix: v })} />
+      <DotSlider value={tune.mix} min={0} max={1} step={0.01} width={160} label="Dry/wet mix" readout={formatPercent(tune.mix)} onChange={(v) => update({ mix: v })} />
     </label>
   </div>
 

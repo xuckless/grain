@@ -138,10 +138,14 @@
 </script>
 
 <section class="score">
-  <Toolbar {hints} {overflow}>
-    <TakePicker {host} {session} />
+  {#snippet playMenu()}
     <Menu label="Play" value={session.playback} options={LISTEN_MODES} onPick={(m) => (session.playback = m)} />
+  {/snippet}
+  {#snippet rules()}
     <SettingsControls {session} onChange={settingsChanged} />
+  {/snippet}
+  <Toolbar {hints} {overflow} items={[{ key: "play", control: playMenu }, { key: "rules", control: rules }]}>
+    <TakePicker {host} {session} />
   </Toolbar>
 
   <!-- Score states crossfade with overlap (rule 16). -->

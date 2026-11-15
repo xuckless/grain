@@ -1,8 +1,13 @@
 <script lang="ts">
   import { dur, KNOB_MAX_STRETCH, reducedMotion } from "./motion";
 
-  /** A switch (design: Components → Toggle): the fill wipes in with a mask, the knob stretches as it moves. */
-  let { checked, label, onToggle }: { checked: boolean; label: string; onToggle: (next: boolean) => void } = $props();
+  /**
+   * A switch (design: Components → Toggle): the fill wipes in with a mask, the knob stretches as it
+   * moves. The off track is a translucent white over whatever it sits on, so it reads on the
+   * ground, a surface toolbar and a raised popover alike (a solid raised track vanishes on raised).
+   * `disabled`: the switch has no effect right now (say why in a nearby hint).
+   */
+  let { checked, label, onToggle, disabled = false }: { checked: boolean; label: string; onToggle: (next: boolean) => void; disabled?: boolean } = $props();
 
   let knob = $state<HTMLSpanElement | undefined>();
 
@@ -15,8 +20,8 @@
   }
 </script>
 
-<div class="row">
-  <button class="press switch" class:on={checked} role="switch" aria-checked={checked} aria-label={label} onclick={toggle}>
+<div class="row" class:off={disabled}>
+  <button class="press switch" class:on={checked} role="switch" aria-checked={checked} aria-label={label} {disabled} onclick={toggle}>
     <span class="fill" aria-hidden="true"></span>
     <span class="knob" aria-hidden="true"><span class="inner" bind:this={knob}></span></span>
   </button>
@@ -28,13 +33,17 @@
     display: flex;
     align-items: center;
     gap: 14px;
+    white-space: nowrap;
+  }
+  .row.off {
+    color: var(--c-disabled);
   }
   .switch {
     position: relative;
     width: 52px;
     height: 30px;
     border-radius: 8px;
-    background: var(--c-raised);
+    background: rgb(242 242 240 / 0.12);
     padding: 0;
     flex: none;
   }
@@ -77,5 +86,11 @@
   }
   .on .inner {
     background: var(--c-ground);
+  }
+  .switch:disabled .fill {
+    background: var(--c-disabled);
+  }
+  .switch:disabled:not(.on) .inner {
+    background: var(--c-disabled);
   }
 </style>
