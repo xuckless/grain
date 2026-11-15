@@ -198,6 +198,10 @@ export async function createDesktopHost(): Promise<EngineHost> {
           withGeneratorStates(onState, () => invoke<TakeAdded>("generate", { task, prompt, seed, settings })),
       },
     },
+    takes: {
+      rename: (id, name) => invoke<Project>("rename_take", { id, name }),
+      remove: (id) => invoke<Project>("delete_take", { id }),
+    },
     send(command) {
       // Commands run off the main thread (AGENTS.md §10.1); chaining keeps their order.
       const sent = sendQueue.then(() => invoke<void>("player", { command }));

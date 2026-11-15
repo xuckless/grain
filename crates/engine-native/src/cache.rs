@@ -110,6 +110,14 @@ impl StemCache {
         )
     }
 
+    /// Deletes a take's audio (after `save_project` wrote a manifest without it).
+    pub fn remove_take(&self, key: &str, id: u32) -> Result<()> {
+        match std::fs::remove_file(self.dir(key).join(take_file(id))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
     /// Writes stems first and the manifest last, so a partial entry is never a hit.
     pub fn store(&self, key: &str, project: &Project, audio: &SongAudio) -> Result<()> {
         let dir = self.dir(key);
@@ -172,5 +180,81 @@ fn file_name(source: &TrackSource) -> String {
     match source {
         TrackSource::Mix => "mix.wav".to_string(),
         TrackSource::Stem { stem } => format!("{stem:?}.wav").to_lowercase(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_core::project::{SongSource, TrackedPitch};
+    use engine_core::take::{self, TakeSource};
+
+    const SR: u32 = 16_000;
+
+    fn sine(hz: f32, seconds: f32) -> Vec<f32> {
+        (0..(seconds * SR as f32) as usize)
+            .map(|i| 0.3 * (std::f32::consts::TAU * hz * i as f32 / SR as f32).sin())
+            .collect()
+    }
+
+    /// Takes autosave (AGENTS.md §11): what the hosts write after adding, renaming and deleting
+    /// takes is what a reopened song has.
+    #[test]
+    fn takes_survive_a_reopen_through_add_rename_and_delete() {
+        let root = std::env::temp_dir().join(format!("grain-cache-test-{}", std::process::id()));
+        let cache = StemCache::new(root.clone());
+        let vocal = sine(220.0, 2.0);
+        let audio = SongAudio::Unseparated {
+            mix: StereoAudio {
+                sample_rate: SR,
+                left: vocal.clone(),
+                right: vocal.clone(),
+            },
+        };
+        let mut project = project::build(
+            SongSource::File {
+                name: "song".into(),
+            },
+            &audio,
+            TrackedPitch::yin(&vocal, SR),
+        );
+        let key = "song";
+        cache.store(key, &project, &audio).unwrap();
+        let add = |project: &mut Project, hz: f32| {
+            let timeline = sine(hz, 2.0);
+            let pitch = TrackedPitch::yin(&timeline, SR);
+            let id = take::add_take(
+                project,
+                TakeSource::Recorded { latency_ms: 0.0 },
+                &timeline,
+                pitch,
+            );
+            cache.store_take(key, id, &timeline, SR).unwrap();
+            cache.save_project(key, project).unwrap();
+            id
+        };
+        let a = add(&mut project, 220.0);
+        let b = add(&mut project, 330.0);
+        take::rename_take(&mut project, b, "Chorus").unwrap();
+        cache.save_project(key, &project).unwrap();
+        take::remove_take(&mut project, a).unwrap();
+        cache.save_project(key, &project).unwrap();
+        cache.remove_take(key, a).unwrap();
+
+        let Lookup::Hit {
+            project: reopened,
+            takes,
+            ..
+        } = cache.lookup(key).unwrap()
+        else {
+            panic!("the song should be on disk");
+        };
+        assert_eq!(reopened.takes.len(), 1);
+        assert_eq!(reopened.takes[0].id, b);
+        assert_eq!(reopened.takes[0].name, "Chorus");
+        assert_eq!(takes.len(), 1);
+        assert_eq!(takes[0].len(), project.frames as usize);
+        assert!(!root.join(key).join(take_file(a)).exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

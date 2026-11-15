@@ -162,6 +162,14 @@ export async function createWebHost(): Promise<EngineHost> {
 
   /** Makes `song` the loaded song: its tracks, then its takes, go to the player. */
   function load(song: WasmSong, id: string | null = null): Project {
+    const project = toPlayer(song);
+    if (session.kind === "loaded" && session.song !== song) session.song.free();
+    session = { kind: "loaded", song, id };
+    return project;
+  }
+
+  /** Hands every track and take of `song` to a fresh player (its monitor starts off). */
+  function toPlayer(song: WasmSong): Project {
     const project = song.project() as Project;
     const tracks: TrackData[] = [
       ...project.tracks.map((t, i) => {
@@ -174,10 +182,7 @@ export async function createWebHost(): Promise<EngineHost> {
       }),
     ];
     post({ kind: "load", tracks, reference: project.analysis.reference_notes }, tracks.flatMap((t) => [t.left.buffer, t.right.buffer]));
-    // The new player starts with its monitor off.
     endMonitor();
-    if (session.kind === "loaded") session.song.free();
-    session = { kind: "loaded", song, id };
     return project;
   }
 
@@ -332,13 +337,21 @@ export async function createWebHost(): Promise<EngineHost> {
     if (snapshot.transport.kind !== "Stopped") post({ kind: "command", command: { kind: "Stop" } });
   }
 
-  /** Adds a scored take's audio to the player. */
-  function playTake(song: WasmSong, added: TakeAdded): TakeAdded {
+  /** A take was just made: it joins the player and the song is saved (takes autosave). */
+  async function keepTake(song: WasmSong, added: TakeAdded): Promise<TakeAdded> {
     const audio = song.takeAudio(added.take);
     const take = added.project.takes.find((t) => t.id === added.take)!;
     const right = new Float32Array(audio);
     post({ kind: "addTrack", track: { left: audio, right, mix: take.mix } }, [audio.buffer, right.buffer]);
+    await persist();
     return added;
+  }
+
+  /** Saves the loaded song to OPFS (a no-op where OPFS is unavailable). */
+  async function persist(): Promise<void> {
+    if (session.kind !== "loaded" || opfs.kind !== "available") return;
+    session.id ??= crypto.randomUUID();
+    await store.save(opfs.dir, session.id, session.song);
   }
 
   const opfs = await store.openOpfs();
@@ -353,8 +366,7 @@ export async function createWebHost(): Promise<EngineHost> {
           },
           async save() {
             if (session.kind !== "loaded") throw new Error("Load a song first.");
-            session.id ??= crypto.randomUUID();
-            await store.save(opfs.dir, session.id, session.song);
+            await persist();
           },
           archive: {
             kind: "available",
@@ -448,7 +460,7 @@ export async function createWebHost(): Promise<EngineHost> {
             const songZero = r.countInSeconds + latency.ms / 1000 - r.fromSeconds;
             const song = loadedSong();
             const added = song.addRecordedTake(capture, context.sampleRate, songZero, latency.ms, settings) as TakeAdded;
-            return playTake(song, added);
+            return keepTake(song, added);
           },
           async cancel() {
             if (mic.kind !== "recording") return;
@@ -526,7 +538,7 @@ export async function createWebHost(): Promise<EngineHost> {
     if (!file) return { kind: "cancelled" };
     const [left, right] = await decode(context, file);
     const added = song.addFileTake(file.name, left, right, settings) as TakeAdded;
-    return { kind: "scored", added: playTake(song, added) };
+    return { kind: "scored", added: await keepTake(song, added) };
   }
 
   return {
@@ -562,7 +574,7 @@ export async function createWebHost(): Promise<EngineHost> {
       async apply(take, tune, settings) {
         const song = loadedSong();
         await nextFrame(); // let the UI show it's working before the render blocks
-        return playTake(song, song.applyTune(take, tune, settings) as TakeAdded);
+        return keepTake(song, song.applyTune(take, tune, settings) as TakeAdded);
       },
     },
     pitchEditor: {
@@ -581,7 +593,7 @@ export async function createWebHost(): Promise<EngineHost> {
       async render(source, settings) {
         const song = loadedSong();
         await nextFrame(); // let the UI show it's rendering before the render blocks
-        return playTake(song, song.pitchRender(source, settings) as TakeAdded);
+        return keepTake(song, song.pitchRender(source, settings) as TakeAdded);
       },
     },
     models: {
@@ -627,13 +639,13 @@ export async function createWebHost(): Promise<EngineHost> {
         const song = loadedSong();
         await nextFrame(); // let the UI show it's working before the render blocks
         const applied = song.chainApply(source, preset, chain, settings) as ChainApplied;
-        playTake(song, applied.added);
+        await keepTake(song, applied.added);
         return applied;
       },
       async harmony(source, interval, settings) {
         const song = loadedSong();
         await nextFrame();
-        return playTake(song, song.harmony(source, interval, settings) as TakeAdded);
+        return keepTake(song, song.harmony(source, interval, settings) as TakeAdded);
       },
       async exportMelody(source, interval) {
         downloadFile(loadedSong().melodyMidi(source, interval), melodyFileName(source, interval), "audio/midi");
@@ -643,7 +655,22 @@ export async function createWebHost(): Promise<EngineHost> {
         kind: "unavailable",
         reason: "Clean up runs DeepFilterNet in the desktop app; the web build has no runtime for it yet.",
       },
-      generator: remoteGenerator(loadedSong, playTake),
+      generator: remoteGenerator(loadedSong, keepTake),
+    },
+    takes: {
+      async rename(id, name) {
+        const project = loadedSong().renameTake(id, name) as Project;
+        await persist();
+        return project;
+      },
+      async remove(id) {
+        const song = loadedSong();
+        await stopPlayback();
+        song.deleteTake(id);
+        const project = toPlayer(song);
+        await persist();
+        return project;
+      },
     },
     async send(command) {
       await context.resume();
@@ -675,7 +702,7 @@ function downloadFile(bytes: Uint8Array, name: string, type: string) {
 /** ACE-Step on the web: only through a backend configured at build time
  * (`VITE_GRAIN_GENERATION_URL`, `VITE_GRAIN_GENERATION_TOKEN`; the same HTTP contract as the
  * desktop sidecar, services/ml-sidecar/grain_sidecar/server.py). */
-function remoteGenerator(loadedSong: () => WasmSong, play: (song: WasmSong, added: TakeAdded) => TakeAdded): Generator {
+function remoteGenerator(loadedSong: () => WasmSong, play: (song: WasmSong, added: TakeAdded) => Promise<TakeAdded>): Generator {
   const url = import.meta.env.VITE_GRAIN_GENERATION_URL as string | undefined;
   const token = import.meta.env.VITE_GRAIN_GENERATION_TOKEN as string | undefined;
   if (!url || !token) {

@@ -95,7 +95,11 @@ export async function save(dir: FileSystemDirectoryHandle, id: string, song: Was
   const handle = await dir.getFileHandle(id + EXT, { create: true });
   const writable = await handle.createWritable();
   try {
-    await writable.write(archive(song));
+    // One channel per write: converting the whole song at once would hold the main thread
+    // for a long task (AGENTS.md §10.1); each await lets frames through.
+    const project = song.project() as Project;
+    await writable.write(header(project));
+    for (const channel of channels(song, project)) await writable.write(pcm16(channel));
     await writable.close();
   } catch (e) {
     await writable.abort();

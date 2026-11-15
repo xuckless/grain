@@ -243,6 +243,22 @@ impl WasmSong {
     }
 
     /// Sets the song's lyrics (a `LyricsUpdate`); returns the timed `ProjectLyrics`.
+    /// Renames take `id`; returns the `Project`.
+    #[wasm_bindgen(js_name = renameTake)]
+    pub fn rename_take(&mut self, id: u32, name: &str) -> Result<JsValue, JsError> {
+        take::rename_take(&mut self.project, id, name).map_err(js_err)?;
+        to_js(&self.project)
+    }
+
+    /// Deletes take `id` and its audio; returns the `Project`. The player's tracks are indexed
+    /// by position, so the host reloads them.
+    #[wasm_bindgen(js_name = deleteTake)]
+    pub fn delete_take(&mut self, id: u32) -> Result<JsValue, JsError> {
+        let i = take::remove_take(&mut self.project, id).map_err(js_err)?;
+        self.takes.remove(i);
+        to_js(&self.project)
+    }
+
     #[wasm_bindgen(js_name = setLyrics)]
     pub fn set_lyrics(&mut self, update: JsValue) -> Result<JsValue, JsError> {
         let update: LyricsUpdate = from_js(update)?;

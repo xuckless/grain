@@ -326,6 +326,12 @@ export function melodyFileName(source: EditSource, interval: Interval | null): s
 }
 
 /** Everything the UI may ask of an engine host. Each host shows its own file pickers. */
+export type TakeStore = {
+  rename(id: number, name: string): Promise<Project>;
+  /** Deletes take `id` and its audio. The player is rebuilt without it, so playback stops. */
+  remove(id: number): Promise<Project>;
+};
+
 export interface EngineHost {
   readonly chrome: WindowChrome;
   readonly urlImport: UrlImport;
@@ -348,6 +354,10 @@ export interface EngineHost {
   setLyrics(update: LyricsUpdate): Promise<ProjectLyrics>;
   /** Re-scores take `id` of the loaded song (difficulty or octave changed, or picked again). */
   scoreRecorded(id: number, settings: ScoreSettings): Promise<ScoreReport>;
+  /** Renaming and deleting takes. Every take change is saved at once, as is every call that
+   * makes a take (recording, import, auto-tune, pitch render, Produce): takes autosave
+   * (AGENTS.md §11). Saving writes the whole song, so it also keeps unsaved mix changes. */
+  readonly takes: TakeStore;
   /** Sends a player command. Fire-and-forget: the UI never waits on it to draw. */
   send(command: PlayerCommand): Promise<void>;
   /** The transport now (one-off reads). */

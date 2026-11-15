@@ -268,6 +268,35 @@ pub fn player_track(take: &Take, timeline: Arc<[f32]>) -> PlayerTrack {
     }
 }
 
+/// Renames take `id` (blank names are refused: the take keeps its name).
+pub fn rename_take(project: &mut Project, id: u32, name: &str) -> Result<(), TakeError> {
+    let take = project
+        .takes
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or(TakeError::Unknown(id))?;
+    let name = name.trim();
+    if !name.is_empty() {
+        take.name = name.to_owned();
+    }
+    Ok(())
+}
+
+/// Removes take `id` and its pitch-editor list. Returns the index it had in `project.takes`
+/// (the player's track order: song tracks, then takes). Takes made from it keep their audio.
+pub fn remove_take(project: &mut Project, id: u32) -> Result<usize, TakeError> {
+    let i = project
+        .takes
+        .iter()
+        .position(|t| t.id == id)
+        .ok_or(TakeError::Unknown(id))?;
+    project.takes.remove(i);
+    project
+        .pitch_edits
+        .retain(|e| e.source != EditSource::Take { id });
+    Ok(i)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +342,44 @@ mod tests {
             difficulty: Difficulty::Medium,
             octave: OctaveMode::Fold,
         }
+    }
+
+    #[test]
+    fn takes_are_renamed_and_removed_with_their_edits() {
+        let mut project = song();
+        let audio = melody(4.0);
+        let recorded = TakeSource::Recorded { latency_ms: 0.0 };
+        let a = add_take(
+            &mut project,
+            recorded.clone(),
+            &audio,
+            TrackedPitch::yin(&audio, SR),
+        );
+        let b = add_take(
+            &mut project,
+            recorded,
+            &audio,
+            TrackedPitch::yin(&audio, SR),
+        );
+        rename_take(&mut project, b, "  Chorus  ").unwrap();
+        rename_take(&mut project, a, "   ").unwrap();
+        assert_eq!(project.takes[1].name, "Chorus");
+        assert_eq!(project.takes[0].name, format!("Take {a}"));
+        let edit = crate::edit::edit_of(&project, EditSource::Take { id: a }).unwrap();
+        crate::edit::store(&mut project, edit).unwrap();
+        assert_eq!(project.pitch_edits.len(), 1);
+        assert_eq!(remove_take(&mut project, a).unwrap(), 0);
+        assert_eq!(project.takes.len(), 1);
+        assert_eq!(project.takes[0].id, b);
+        assert!(project.pitch_edits.is_empty());
+        assert!(matches!(
+            remove_take(&mut project, a),
+            Err(TakeError::Unknown(_))
+        ));
+        assert!(matches!(
+            rename_take(&mut project, a, "x"),
+            Err(TakeError::Unknown(_))
+        ));
     }
 
     #[test]

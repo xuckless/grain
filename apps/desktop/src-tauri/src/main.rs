@@ -247,6 +247,8 @@ fn add_take(
             .store_take(&l.cache_key, id, timeline, l.project.sample_rate)?;
         let added = l.project.takes.last().expect("just added");
         l.playback.add_take(added, timeline)?;
+        // Takes are saved the moment they exist (AGENTS.md §11, autosave).
+        engine.cache.save_project(&l.cache_key, &l.project)?;
         Ok(TakeAdded {
             report: take::score_take(&l.project, id, settings)?,
             project: l.project.clone(),
@@ -292,6 +294,43 @@ fn save_project(engine: State<Engine>) -> Result<(), String> {
     with_loaded(&engine, |l| {
         engine.cache.save_project(&l.cache_key, &l.project)
     })
+    .map_err(fail)
+}
+
+/// Renames a take; saved at once like every take change. Returns the project.
+#[tauri::command(async)]
+fn rename_take(engine: State<Engine>, id: u32, name: String) -> Result<Project, String> {
+    with_loaded(&engine, |l| {
+        take::rename_take(&mut l.project, id, &name)?;
+        engine.cache.save_project(&l.cache_key, &l.project)?;
+        Ok(l.project.clone())
+    })
+    .map_err(fail)
+}
+
+/// Deletes a take and its audio, saved at once. The player is rebuilt without it (its tracks
+/// are indexed by position), so playback stops. Returns the project.
+#[tauri::command]
+async fn delete_take(app: AppHandle, id: u32) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = app.state::<Engine>();
+        let key = with_loaded(&engine, |l| {
+            take::remove_take(&mut l.project, id)?;
+            engine.cache.save_project(&l.cache_key, &l.project)?;
+            Ok(l.cache_key.clone())
+        })?;
+        engine.cache.remove_take(&key, id)?;
+        match engine.cache.lookup(&key)? {
+            Lookup::Hit {
+                project,
+                audio,
+                takes,
+            } => start_session(&engine, key, *project, &audio, &takes),
+            Lookup::Miss => anyhow::bail!("this project is no longer on disk"),
+        }
+    })
+    .await
+    .map_err(fail)?
     .map_err(fail)
 }
 
@@ -1112,6 +1151,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            rename_take,
+            delete_take,
             import_file,
             separation_offer,
             url_import,
