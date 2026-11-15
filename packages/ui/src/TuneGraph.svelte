@@ -4,38 +4,37 @@
   import { dot, dotBar, fit } from "./grain";
   import { identity, reveal } from "./motion";
   import { colour, stemHue } from "./theme";
+  import { timeToX, viewportGestures, xToTime, type View } from "./viewport";
 
   /**
    * What auto-tune does to a take, before it is rendered: the pitch as sung (grey grains, the
    * design's Pitch trail), the notes it is pulled to (dotted bars), and the pitch after
-   * correction (vocal-hue grains). Drawn over the stretch of the song the take covers; click
-   * to play from there.
+   * correction (vocal-hue grains). Drawn over the shared timeline viewport (⌘-scroll or pinch
+   * to zoom, AGENTS.md §8.6); click to play from there.
    */
-  let { preview, onSeek }: { preview: TunePreview; onSeek: (seconds: number) => void } = $props();
+  let {
+    preview,
+    view,
+    duration,
+    onView,
+    onSeek,
+  }: { preview: TunePreview; view: View; duration: number; onView: (v: View) => void; onSeek: (seconds: number) => void } = $props();
 
   const HEIGHT = 280;
-  /** Seconds shown either side of the take's voiced stretch. */
-  const PAD_SECONDS = 1;
 
   let canvas = $state<HTMLCanvasElement | undefined>();
   let width = $state(0);
 
-  /** The song-time window drawn: the take's voiced frames, padded. */
-  const span = $derived.by(() => {
-    const voiced = preview.sung.flatMap((m, i) => (m === null ? [] : [i]));
-    if (voiced.length === 0) return null;
-    const hop = preview.hop_seconds;
-    return { from: Math.max(0, voiced[0] * hop - PAD_SECONDS), to: voiced[voiced.length - 1] * hop + PAD_SECONDS };
-  });
+  const voiced = $derived(preview.sung.some((m) => m !== null));
 
   $effect(() => {
     if (!canvas || width <= 0) return;
     const c = fit(canvas, width, HEIGHT);
     const range = pitchRange(preview);
-    if (!c || !range || !span) return;
+    if (!c || !range || !voiced) return;
     const { lo, hi } = range;
     const hop = preview.hop_seconds;
-    const x = (seconds: number) => ((seconds - span.from) / (span.to - span.from)) * width;
+    const x = (seconds: number) => timeToX(view, seconds, width);
     const y = (midi: number) => HEIGHT - 8 - ((midi - lo) / (hi - lo)) * (HEIGHT - 16);
     const rows = Math.max(1, Math.floor((HEIGHT - 16) / (hi - lo) / 4));
 
@@ -47,14 +46,13 @@
   });
 
   function click(event: MouseEvent) {
-    if (!span) return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    onSeek(span.from + ((event.clientX - rect.left) / rect.width) * (span.to - span.from));
+    onSeek(Math.max(0, xToTime(view, event.clientX - rect.left, rect.width)));
   }
 </script>
 
-<div class="graph" bind:clientWidth={width}>
-  {#if span}
+<div class="graph" bind:clientWidth={width} use:viewportGestures={{ get: () => view, set: onView, duration }}>
+  {#if voiced}
     <button class="canvas-button" onclick={click} aria-label="Pitch before and after auto-tune: click to play from there">
       <canvas bind:this={canvas} use:reveal={identity(preview)} style:height="{HEIGHT}px"></canvas>
     </button>

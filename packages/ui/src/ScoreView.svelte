@@ -1,28 +1,31 @@
 <script lang="ts">
-  import type { EngineHost, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
+  import type { EngineHost, TransportSnapshot } from "@workstation/engine-api";
+  import BottomAction from "./BottomAction.svelte";
   import Grain from "./Grain.svelte";
+  import Icon from "./Icon.svelte";
   import Menu from "./Menu.svelte";
-  import RecordingSetup from "./RecordingSetup.svelte";
   import SettingsControls from "./SettingsControls.svelte";
   import ScoreGraph from "./ScoreGraph.svelte";
-  import { services } from "./context";
-  import { Breath, dotMeter, fit, PitchTrail } from "./grain";
-  import { celebrate, detailDelay, dur, enter } from "./motion";
-  import { applyTake, armTake, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
-  import { errorMessage, type Session } from "./state";
-  import { beatsLeft, isCapturing, observeRecording, recordingNext, type Recording, type RecordingEvent } from "./takes";
+  import TakePicker from "./TakePicker.svelte";
+  import Toolbar, { type OverflowItem } from "./Toolbar.svelte";
   import Takes from "./Takes.svelte";
-  import { listener } from "./context";
-  import { noteSpan, sungTakes } from "./listen";
-  import { colour, stemHue } from "./theme";
+  import { selectedTakeId } from "./chain";
+  import { listener, services } from "./context";
+  import { Breath, PitchTrail } from "./grain";
+  import { celebrate, detailDelay, dur, enter } from "./motion";
+  import { applyTake } from "./recorder";
+  import { errorMessage, type Session } from "./state";
+  import { isListening, LISTEN_MODES, noteSpan } from "./listen";
   import { pitchFeedback } from "./feedback";
   import { noteAt } from "./karaoke";
 
   /**
-   * The Score view. Before a take: the reference melody plays as a pitch trail (design:
-   * Particles → Pitch trail). Recording: the count-in, then Breath listening with an input meter.
-   * While scoring: Breath. Scored: the score reveal (the one celebratory moment, rule 13) with a
-   * hit burst, detail cards settling in (rule 6), and the graph, whose notes play A/B.
+   * The Score view (AGENTS.md §5, §8.6): the score of the selected take (the ★ master unless
+   * another is picked; takes are sung in Karaoke or imported from ⋯). Before a score: the
+   * reference melody plays as a pitch trail (design: Particles → Pitch trail). While scoring:
+   * Breath. Scored: the score reveal (the one celebratory moment, rule 13) with a hit burst,
+   * detail cards settling in (rule 6), and the graph, whose notes play A/B. Scores measure the
+   * singing: the raw take, before its processing chain.
    */
   let {
     host,
@@ -37,9 +40,6 @@
   } = $props();
 
   const { burst } = services();
-  // The host is fixed for the app's lifetime.
-  // svelte-ignore state_referenced_locally
-  const mic = host.microphone;
 
   /** Copied: the session's settings are a reactive proxy, which hosts can't post or clone. */
   const settings = () => ({ ...session.settings });
@@ -67,125 +67,57 @@
   const listening = new Breath();
   listening.intensity = 1;
 
-  // ---- Commands -------------------------------------------------------------------------------
+  // ---- Scoring the selected take --------------------------------------------------------------
 
-  const run = (commands: PlayerCommand[]) => runCommands(host, commands);
+  const take = $derived(selectedTakeId(project, session.take));
 
-  async function rescore(take: number) {
+  async function rescore(id: number) {
     session.score = { kind: "scoring" };
     try {
-      session.score = { kind: "scored", take, report: await host.scoreRecorded(take, settings()) };
+      session.score = { kind: "scored", take: id, report: await host.scoreRecorded(id, settings()) };
     } catch (e) {
       session.score = { kind: "failed", message: errorMessage(e) };
     }
   }
+
+  // The score follows the take picker.
+  $effect(() => {
+    const id = take;
+    const s = session.score;
+    if (id === null || s.kind === "scoring" || (s.kind === "scored" && s.take === id)) return;
+    void rescore(id);
+  });
 
   function settingsChanged() {
     if (score.kind === "scored") void rescore(score.take);
   }
 
   async function importTake() {
-    await stopAudition();
+    listen({ kind: "stop" });
     const before = session.score;
     session.score = { kind: "scoring" };
     try {
       const outcome = await host.scoreTake(settings());
-      if (outcome.kind === "scored") applyTake(session, outcome.added);
-      else session.score = before;
+      if (outcome.kind === "scored") {
+        applyTake(session, outcome.added);
+        session.take = outcome.added.take;
+      } else session.score = before;
     } catch (e) {
       session.score = { kind: "failed", message: errorMessage(e) };
     }
   }
 
-  // ---- Recording ------------------------------------------------------------------------------
-
-  let recording = $state<Recording>({ kind: "idle" });
-  let level = $state(0);
-
-  function recordingEvent(e: RecordingEvent): boolean {
-    const next = recordingNext(recording, e);
-    if (!next) return false;
-    recording = next;
-    return true;
-  }
-
-  async function record() {
-    if (mic.kind !== "available" || !recordingEvent({ kind: "arm" })) return;
-    await stopAudition();
-    try {
-      await armTake(host, project, effectiveBacking(session));
-    } catch (e) {
-      recordingEvent({ kind: "fail", message: errorMessage(e) });
-    }
-  }
-
-  async function stopRecording() {
-    if (mic.kind !== "available" || !recordingEvent({ kind: "stop" })) return;
-    session.score = { kind: "scoring" };
-    try {
-      const added = await finishTake(host, project, settings());
-      applyTake(session, added);
-      recordingEvent({ kind: "captured", take: added.take });
-    } catch (e) {
-      session.score = { kind: "failed", message: errorMessage(e) };
-      recordingEvent({ kind: "fail", message: errorMessage(e) });
-    }
-  }
-
-  async function cancelRecording() {
-    if (mic.kind !== "available" || !recordingEvent({ kind: "cancel" })) return;
-    await cancelTake(host, project);
-  }
-
-  // The transport ends the count-in, and stopping the song (or its end) stops the take.
-  $effect(() => {
-    const e = observeRecording(recording, snapshot.transport);
-    if (!e) return;
-    if (e.kind === "stop") void stopRecording();
-    else recordingEvent(e);
-  });
-
-  // Input level while the microphone is open.
-  $effect(() => {
-    if (!isCapturing(recording) || mic.kind !== "available") return;
-    const stop = eachFrame(async () => {
-      level = await mic.level().catch(() => 0);
-      listening.intensity = 0.35 + 0.65 * Math.min(1, level * 4);
-    });
-    return () => {
-      stop();
-      level = 0;
-      listening.intensity = 1;
-    };
-  });
-
-  let meter = $state<HTMLCanvasElement | undefined>();
-  const METER_W = 240;
-  const METER_H = 12;
-  $effect(() => {
-    if (!meter) return;
-    const c = fit(meter, METER_W, METER_H);
-    if (c) dotMeter(c, METER_W, METER_H, level, stemHue.Vocals, colour.disabled);
-  });
-
-  const beats = $derived(beatsLeft(snapshot.transport, project.analysis.tempo.bpm, snapshot.sample_rate));
-
-  let calibrating = $state(false);
-
-  // ---- A/B audition (the app's listen machine: the original's note, then the take's) ---------
+  // ---- Listening (the app's listen machine) ----------------------------------------------------
 
   const listen = listener();
-  /** Recording or calibrating takes the player: whatever is being heard stops first. */
-  async function stopAudition() {
-    listen({ kind: "stop" });
-  }
   const auditioning = $derived(session.listening.kind !== "idle" && session.listening.span !== null ? session.listening.item.kind : null);
+  const playingTake = $derived(take !== null && session.listening.kind === "playing" && isListening(session.listening, { kind: "Take", id: take }));
 
-  // ---- Takes ----------------------------------------------------------------------------------
-
-  /** "" until a take is picked (a reopened song shows no score yet). */
-  const takes = $derived([...(score.kind === "scored" ? [] : [{ id: "", label: "Pick a take" }]), ...sungTakes(project).map((t) => ({ id: String(t.id), label: t.name }))]);
-  const shown = $derived(score.kind === "scored" ? String(score.take) : "");
+  function playTake() {
+    if (take === null) return;
+    if (playingTake) listen({ kind: "pause" });
+    else listen({ kind: "play", items: [{ kind: "Take", id: take }], mode: session.playback });
+  }
 
   let overall = $state<HTMLElement | undefined>();
   // Burst once as the score lands.
@@ -196,57 +128,27 @@
     return () => clearTimeout(t);
   });
 
-  const busy = $derived(isCapturing(recording) || score.kind === "scoring" || calibrating);
-  const stage = $derived(isCapturing(recording) ? "recording" : score.kind);
+  const busy = $derived(score.kind === "scoring");
+  const stage = $derived(score.kind);
+  const overflow = $derived<OverflowItem[]>([{ label: "Import a take…", run: importTake, disabled: busy ? "Scoring" : notes.length === 0 ? "No vocal melody was found in this song" : null }]);
+  const hints = [
+    "Scores measure your singing: the take as recorded, before its pitch edits, auto-tune and production.",
+    "Click a note in the graph to hear the original, then your take, over that note.",
+  ];
 </script>
 
 <section class="score">
-  <div class="controls">
+  <Toolbar {hints} {overflow}>
+    <TakePicker {host} {session} />
+    <Menu label="Play" value={session.playback} options={LISTEN_MODES} onPick={(m) => (session.playback = m)} />
     <SettingsControls {session} onChange={settingsChanged} />
-    {#if takes.length > (score.kind === "scored" ? 0 : 1)}
-      <Menu label="Take" value={shown} options={takes} onPick={(id) => id !== "" && !busy && void rescore(Number(id))} />
-    {/if}
-    <span class="spacer"></span>
-    <button class="press raised big" onclick={importTake} disabled={busy || notes.length === 0}>Import take…</button>
-    {#if isCapturing(recording)}
-      <button class="press raised big" onclick={cancelRecording} disabled={recording.kind === "stopping"}>Cancel</button>
-      <button class="press primary big" onclick={stopRecording} disabled={recording.kind === "stopping"}>Stop</button>
-    {:else}
-      <button
-        class="press primary big"
-        onclick={record}
-        disabled={busy || notes.length === 0 || mic.kind !== "available"}
-        title={mic.kind === "unavailable" ? mic.reason : notes.length === 0 ? "No vocal melody was found in this song" : undefined}
-      >
-        Record a take
-      </button>
-    {/if}
-  </div>
-
-  <div class="setup">
-    <RecordingSetup {host} {session} busy={isCapturing(recording) || score.kind === "scoring"} bind:calibrating beforeCalibrate={stopAudition} />
-  </div>
+  </Toolbar>
 
   <!-- Score states crossfade with overlap (rule 16). -->
   <div class="stage">
     {#key stage}
       <div class="layer" transition:enter>
-        {#if stage === "recording"}
-          <Grain behaviour={listening} style="width: 100%; height: 280px" label="Listening" />
-          <div class="caption">
-            {#if recording.kind === "countIn"}
-              <strong class="pixel countdown">{beats || ""}</strong>
-              <p class="muted">Count-in: sing from the next bar.</p>
-            {:else if recording.kind === "stopping"}
-              <p class="muted">Lining your take up with the song</p>
-            {:else}
-              <h2>Recording</h2>
-              <p class="muted">Sing along. Stop when you're done, or let the song finish.</p>
-            {/if}
-            <canvas bind:this={meter} class="meter" style:width="{METER_W}px" style:height="{METER_H}px" aria-label="Input level"></canvas>
-            <p class="muted">Use headphones, so the backing doesn't bleed into your take.</p>
-          </div>
-        {:else if stage === "none"}
+        {#if stage === "none"}
           {#if notes.length > 0}
             <Grain behaviour={trail} style="width: 100%; height: 280px" label="The reference melody as a moving pitch trail" />
           {/if}
@@ -254,7 +156,7 @@
             <h2>Sing it back</h2>
             <p class="muted">
               {notes.length > 0
-                ? "This is the melody you'll be scored against. Record a take over the song, or import one, to see where you were sharp, flat, early or late."
+                ? "This is the melody you'll be scored against. Sing a take in Karaoke, or import one from ⋯, to see where you were sharp, flat, early or late."
                 : "No vocal melody was found in this song, so there's nothing to score against."}
             </p>
           </div>
@@ -296,7 +198,7 @@
           <ScoreGraph
             {project}
             report={score.report}
-            onNote={(start, end) => listen({ kind: "play", items: [{ kind: "VocalStem" }, { kind: "Take", id: score.take }], mode: "Solo", span: noteSpan(start, end) })}
+            onNote={(start, end) => listen({ kind: "play", items: [{ kind: "VocalStem" }, { kind: "Take", id: score.take }], mode: "Voice", span: noteSpan(start, end) })}
             onSeek={(seconds) => onSeek(Math.floor(seconds * snapshot.sample_rate))}
           />
           {#if auditioning}
@@ -307,8 +209,12 @@
     {/key}
   </div>
 
-  {#if !isCapturing(recording)}
-    <Takes {host} {session} onUse={(id) => !busy && void rescore(id)} empty="Record a take or import one: it's kept with the song." />
+  <Takes {host} {session} onUse={(id) => !busy && (session.take = id)} empty="Sing a take in Karaoke or import one: it's kept with the song." />
+
+  {#if take !== null}
+    <BottomAction>
+      <button class="press cta" onclick={playTake}><Icon name={playingTake ? "pause" : "play"} />{playingTake ? "Pause" : "Play take"}</button>
+    </BottomAction>
   {/if}
 </section>
 
@@ -317,18 +223,6 @@
     display: flex;
     flex-direction: column;
     gap: 32px;
-  }
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    flex-wrap: wrap;
-  }
-  .setup {
-    margin-top: -12px;
-  }
-  .spacer {
-    flex: 1;
   }
   .stage {
     display: grid;
@@ -345,15 +239,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-  .countdown {
-    font-size: 64px;
-    line-height: 64px;
-    font-weight: 400;
-    min-height: 64px;
-  }
-  .meter {
-    display: block;
   }
   h2 {
     margin: 0;

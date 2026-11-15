@@ -1,52 +1,52 @@
 <script lang="ts">
-  import type { EditOp, EditSource, EngineHost, PitchEdit, PitchEditView, TransportSnapshot } from "@workstation/engine-api";
+  import type { EditOp, EditSource, EngineHost, PitchEdit, PitchEditView, TakeChain, TransportSnapshot } from "@workstation/engine-api";
+  import BottomAction from "./BottomAction.svelte";
   import DotSlider from "./DotSlider.svelte";
   import Menu from "./Menu.svelte";
+  import TakePicker from "./TakePicker.svelte";
+  import Toggle from "./Toggle.svelte";
+  import Toolbar, { type OverflowItem } from "./Toolbar.svelte";
+  import ZoomControls from "./ZoomControls.svelte";
   import { formatPercent, formatSemitones } from "./autotune";
-  import Takes from "./Takes.svelte";
+  import { commitChain, selectedTakeId, takeById, withActive, withBypass, type ChainJob } from "./chain";
+  import { listener } from "./context";
+  import { noteSpan } from "./listen";
   import { dot, fit } from "./grain";
   import { enter, reveal, rubberBand, springBack } from "./motion";
   import {
     advance,
     clamp,
-    commit,
     decideDrag,
-    defaultSource,
     dragged,
     formatShift,
-    historyOf,
     hitTest,
     initialWindow,
     inScale,
     pan,
-    redo,
     select,
     selectAll,
     selectedIds,
     sourceFromId,
     sourceId,
-    sourceOptions,
     targetIds,
-    undo,
     zoom,
     type Drag,
-    type History,
     type Loading,
-    type RenderState,
     type Selection,
     type Window,
   } from "./pitch";
-  import { applyTake } from "./recorder";
   import { playhead } from "./clock";
   import { errorMessage, type Session } from "./state";
-  import { colour, stemHue } from "./theme";
+  import { colour } from "./theme";
 
   /**
-   * The Pitch view (AGENTS.md §7.1): a Melodyne-style editor for one take or the vocal stem.
-   * Notes are dot-grain blobs on a piano roll, sized by loudness, with the pitch line over them.
-   * Drag a note up or down (snapped; ⌥ for free cents), left or right (timing), or by an edge
-   * (stretch). The tools reshape the selected notes, or all of them when none is selected. The
-   * edits are kept with the song and rendered into a new take, so nothing is overwritten.
+   * The Pitch view (AGENTS.md §7.1, §8.6): a Melodyne-style editor for the selected take (the ★
+   * master unless another is picked). Notes are dot-grain blobs on a piano roll, sized by
+   * loudness, with the pitch line over them, each with its offset in cents, and the original
+   * melody as ghost notes behind. Drag a note up or down (snapped; ⌥ for free cents), left or
+   * right (timing), or by an edge (stretch). The tools (all in the toolbar) reshape the selected
+   * notes, or all of them when none is selected. Apply puts the edits on the take's Pitch edits
+   * step (§8.7); every edit is one ⌘Z step of the session history.
    */
   let {
     host,
@@ -67,19 +67,21 @@
 
   const project = $derived(session.project);
   const duration = $derived(project.frames / project.sample_rate);
-  const source = $derived(session.pitchSource ?? defaultSource(project));
+  const take = $derived(selectedTakeId(project, session.take));
+  const source = $derived<EditSource | null>(take === null ? null : { kind: "Take", id: take });
   const sid = $derived(source === null ? null : sourceId(source));
-  const hue = $derived(source?.kind === "Take" ? colour.text : stemHue.Vocals);
+  const hue = colour.text;
 
   // ---- Loading a source -----------------------------------------------------------------------
 
-  type Loaded = { view: PitchEditView; history: History; edited: (number | null)[]; mask: number };
+  type Loaded = { view: PitchEditView; edit: PitchEdit; edited: (number | null)[]; mask: number };
   let loading = $state<Loading<Loaded>>({ kind: "loading" });
   let win = $state<Window>({ from: 0, to: 1, lo: 48, hi: 72 });
   let selection = $state<Selection>({ kind: "none" });
 
   $effect(() => {
     const id = sid;
+    void session.pitchRevision; // an undo or redo changed the list: reload it
     if (id === null) return;
     const s = sourceFromId(id);
     loading = { kind: "loading" };
@@ -87,15 +89,18 @@
     editor.open(s).then(
       (view) => {
         if (sid !== id) return;
-        loading = { kind: "ready", value: { view, history: historyOf(view.edit), edited: view.edited, mask: view.scale_mask } };
-        win = initialWindow(view.edit, duration);
+        loading = { kind: "ready", value: { view, edit: view.edit, edited: view.edited, mask: view.scale_mask } };
+        // Time follows the shared viewport; the pitch range fits the notes.
+        const fitted = initialWindow(view.edit, duration);
+        const v = session.viewport;
+        win = { ...fitted, from: v.start, to: v.start + v.span };
       },
       (e) => sid === id && (loading = { kind: "failed", message: errorMessage(e) }),
     );
   });
 
   const ready = $derived(loading.kind === "ready" ? loading.value : null);
-  const edit = $derived(ready?.history.present ?? null);
+  const edit = $derived(ready?.edit ?? null);
 
   type Notice = { kind: "none" } | { kind: "error"; message: string };
   let notice = $state<Notice>({ kind: "none" });
@@ -104,14 +109,16 @@
     session.touch();
   }
 
-  /** Applies one edit through the engine and records it for undo (`key` coalesces a slider). */
+  /** Applies one edit through the engine and records it in the session history (`key`
+   * coalesces a slider drag into one step). */
   async function run(op: EditOp, key: string | null = null) {
-    if (loading.kind !== "ready") return;
-    const before = loading.value;
+    if (loading.kind !== "ready" || !source) return;
+    const before = $state.snapshot(loading.value.edit) as PitchEdit;
     try {
-      const u = await editor.apply($state.snapshot(before.history.present) as PitchEdit, op);
+      const u = await editor.apply(before, op);
       if (loading.kind !== "ready") return;
-      loading = { kind: "ready", value: { ...loading.value, history: commit(loading.value.history, u.edit, key), edited: u.edited, mask: u.scale_mask } };
+      loading = { kind: "ready", value: { ...loading.value, edit: u.edit, edited: u.edited, mask: u.scale_mask } };
+      session.record({ kind: "PitchEdit", source: $state.snapshot(source) as EditSource, before, after: u.edit, key });
       notice = { kind: "none" };
       dirty();
     } catch (e) {
@@ -119,18 +126,17 @@
     }
   }
 
-  /** Moves through history (undo/redo): the engine keeps the restored list. */
-  async function travel(next: History | null) {
-    if (!next || loading.kind !== "ready") return;
-    try {
-      const u = await editor.set($state.snapshot(next.present) as PitchEdit);
-      if (loading.kind !== "ready") return;
-      loading = { kind: "ready", value: { ...loading.value, history: next, edited: u.edited, mask: u.scale_mask } };
-      dirty();
-    } catch (e) {
-      notice = { kind: "error", message: errorMessage(e) };
-    }
-  }
+  // The shared viewport follows the roll's time window.
+  $effect(() => {
+    const { from, to } = win;
+    const v = session.viewport;
+    if (Math.abs(v.start - from) > 1e-6 || Math.abs(v.span - (to - from)) > 1e-6) session.viewport = { start: from, span: to - from, overshoot: 0 };
+  });
+  // …and the roll follows it when the zoom controls change it.
+  $effect(() => {
+    const v = session.viewport;
+    if (Math.abs(v.start - win.from) > 1e-6 || Math.abs(v.span - (win.to - win.from)) > 1e-6) win = { ...win, from: v.start, to: v.start + v.span };
+  });
 
   // ---- Controls -------------------------------------------------------------------------------
 
@@ -146,21 +152,38 @@
   const chosen = $derived(edit ? selectedIds(selection, edit) : []);
   const canMerge = $derived(edit !== null && chosen.length === 1 && edit.notes.findIndex((n) => n.id === chosen[0]) < edit.notes.length - 1);
 
-  // ---- Rendering and listening ----------------------------------------------------------------
+  // ---- The take's Pitch edits step and listening -----------------------------------------------
 
-  let render = $state<RenderState>({ kind: "idle" });
+  const chain = $derived(takeById(project, take)?.chain ?? null);
+  const step = $derived(chain?.pitch ?? { state: "Unset" as const });
+  let job = $state<ChainJob>({ kind: "idle" });
 
-  async function renderTake() {
-    if (source === null || render.kind === "rendering") return;
-    render = { kind: "rendering" };
-    // Keep editing this source: the new take would otherwise become the default.
-    session.pitchSource = source;
-    try {
-      const added = await editor.render(source, $state.snapshot(session.settings));
-      applyTake(session, added);
-      render = { kind: "rendered", take: added.take };
-    } catch (e) {
-      render = { kind: "failed", message: errorMessage(e) };
+  async function change(next: (c: TakeChain) => TakeChain) {
+    if (take === null || !chain || job.kind === "rendering") return;
+    job = { kind: "rendering", take, step: "pitch" };
+    job = await commitChain(host, session, session.project, take, next($state.snapshot(chain) as TakeChain), "pitch");
+  }
+
+  const listen = listener();
+
+  /** A/B: the original vocal, then the take, over the selected notes (or what's in view). */
+  function compare() {
+    if (take === null || !edit) return;
+    const notes = edit.notes.filter((n) => chosen.includes(n.id));
+    const span = notes.length > 0 ? noteSpan(Math.min(...notes.map((n) => n.out_start)), Math.max(...notes.map((n) => n.out_end))) : { start: win.from, end: win.to };
+    listen({ kind: "play", items: [{ kind: "VocalStem" }, { kind: "Take", id: take }], mode: "Voice", span });
+  }
+
+  /** Snap to original: each target note moves to the original melody's note under its middle. */
+  async function snapToOriginal() {
+    if (!edit) return;
+    const melody = project.analysis.reference_notes;
+    for (const id of targets) {
+      const n = edit.notes.find((m) => m.id === id);
+      if (!n) continue;
+      const mid = (n.out_start + n.out_end) / 2;
+      const ref = melody.find((r) => r.start <= mid && mid < r.end);
+      if (ref && Math.abs(ref.midi - n.pitch) > 0.005) await run({ kind: "MovePitch", ids: [id], semitones: ref.midi - n.pitch, snap: "Free" }, `original:${targets.join()}`);
     }
   }
 
@@ -196,6 +219,12 @@
       for (let gx = 4; gx < width; gx += 10) dot(c, gx, y(m), 0.7, col);
     }
 
+    // The original melody: ghost notes behind everything.
+    for (const r of project.analysis.reference_notes) {
+      if (r.end < win.from || r.start > win.to) continue;
+      for (let gx = x(r.start); gx <= x(r.end); gx += 5) dot(c, gx, y(r.midi), 0.9, colour.raised);
+    }
+
     // The pitch as sung: faint grains.
     const a = Math.max(0, Math.floor(win.from / hop)), b = Math.min(view.sung.length, Math.ceil(win.to / hop));
     for (let i = a; i < b; i++) {
@@ -216,6 +245,16 @@
         const rows = Math.max(0, Math.round(amp * BLOB_ROWS));
         for (let r = -rows; r <= rows; r++) dot(c, x(t), y(d.pitch) + r * 3.2, 1.3 - Math.abs(r) * 0.15, col);
       }
+    }
+
+    // Each note's offset from the nearest semitone, in cents.
+    c.font = '11px "Geist Mono Variable", monospace';
+    c.fillStyle = colour.muted;
+    c.textBaseline = "bottom";
+    for (const n of edit.notes) {
+      if (n.out_end < win.from || n.out_start > win.to || x(n.out_end) - x(n.out_start) < 28) continue;
+      const cents = Math.round((n.pitch - Math.round(n.pitch)) * 100);
+      c.fillText(cents === 0 ? "0¢" : `${cents > 0 ? "+" : "−"}${Math.abs(cents)}¢`, x(n.out_start), y(n.pitch) - 9);
     }
 
     // The pitch after the edits.
@@ -350,20 +389,14 @@
     return () => el.removeEventListener("wheel", wheel);
   });
 
-  // Keys: ⌘Z / ⇧⌘Z undo and redo, ⌘A selects all, Delete resets the selected notes (never
-  // removes them), Escape clears the selection.
+  // Keys: ⌘A selects all, Delete resets the selected notes (never removes them), Escape clears
+  // the selection. ⌘Z / ⇧⌘Z are the session's (history.ts).
   $effect(() => {
     const keys = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || !ready || !edit) return;
       const mod = e.metaKey || e.ctrlKey;
       const k = e.key.toLowerCase();
-      if (mod && k === "z") {
-        e.preventDefault();
-        void travel(e.shiftKey ? redo(ready.history) : undo(ready.history));
-      } else if (mod && k === "y") {
-        e.preventDefault();
-        void travel(redo(ready.history));
-      } else if (mod && k === "a") {
+      if (mod && k === "a") {
         e.preventDefault();
         selection = selectAll(edit);
       } else if ((e.key === "Delete" || e.key === "Backspace") && chosen.length > 0) {
@@ -377,24 +410,31 @@
     return () => window.removeEventListener("keydown", keys);
   });
 
-  const sources = $derived(sourceOptions(project));
+  const hints = [
+    "Drag a note up or down to change its pitch (⌥ for free cents), sideways to move it, by an edge to stretch it. Ghost notes are the original melody.",
+    "Tools work on the selected notes, or on all of them when none is selected. Apply puts the edits on the take itself; switch them off or ⌘Z any time.",
+  ];
+  const overflow = $derived<OverflowItem[]>([{ label: "Reset all notes", run: () => edit && void run({ kind: "Reset", ids: edit.notes.map((n) => n.id) }), disabled: edit ? null : "Nothing to reset" }]);
 </script>
 
 <section class="pitch">
   {#if source === null}
     <div class="caption">
       <h2>Nothing to edit yet</h2>
-      <p class="muted">Record or import a take in the Score tab, or import a song with a vocal, to edit its notes here.</p>
+      <p class="muted">Sing a take in Karaoke, or import one in Score, to edit its notes here.</p>
     </div>
   {:else}
-    <div class="controls">
-      <Menu label="Source" value={sid ?? ""} options={sources} onPick={(id) => (session.pitchSource = sourceFromId(id))} />
+    <Toolbar {hints} {overflow}>
+      <TakePicker {host} {session} />
       <Menu label="Snap" value={snap} options={[{ id: "Scale", label: "Scale notes" }, { id: "Semitone", label: "Semitones" }]} onPick={(s) => (snap = s)} />
       <Menu label="Tool" value={tool} options={[{ id: "Edit", label: "Move and stretch" }, { id: "Split", label: "Split notes" }]} onPick={(t) => (tool = t)} />
-      <span class="spacer"></span>
-      <button class="press quiet" disabled={!ready || ready.history.past.length === 0} onclick={() => ready && void travel(undo(ready.history))}>Undo</button>
-      <button class="press quiet" disabled={!ready || ready.history.future.length === 0} onclick={() => ready && void travel(redo(ready.history))}>Redo</button>
-    </div>
+      <button class="press primary" disabled={!edit} onclick={() => void run({ kind: "Correct", ids: targets, centre: 1, drift: 0.5 })}>Correct pitch</button>
+      <button class="press" disabled={!edit || project.analysis.reference_notes.length === 0} title="Move notes onto the original melody" onclick={snapToOriginal}>Snap to original</button>
+      <button class="press" disabled={!canMerge} onclick={() => void run({ kind: "Merge", id: chosen[0] })}>Merge</button>
+      <button class="press quiet" disabled={chosen.length === 0} onclick={() => void run({ kind: "Reset", ids: chosen })}>Reset</button>
+      <button class="press quiet" disabled={!edit || project.analysis.reference_notes.length === 0} title="Play the original vocal, then this take, over the selection" onclick={compare}>A/B original</button>
+      {#snippet right()}<ZoomControls {session} />{/snippet}
+    </Toolbar>
 
     {#if loading.kind === "loading"}
       <p class="muted">Finding the notes</p>
@@ -425,12 +465,6 @@
         {/if}
       </div>
 
-      <div class="tools" in:enter={{ detail: true }}>
-        <button class="press primary" onclick={() => void run({ kind: "Correct", ids: targets, centre: 1, drift: 0.5 })}>Correct pitch</button>
-        <button class="press" disabled={!canMerge} onclick={() => void run({ kind: "Merge", id: chosen[0] })}>Merge with next</button>
-        <button class="press quiet" disabled={chosen.length === 0} onclick={() => void run({ kind: "Reset", ids: chosen })}>Reset</button>
-      </div>
-
       <div class="sliders">
         <label class="slider">
           <span class="label">Pitch centre</span>
@@ -454,23 +488,26 @@
         </label>
       </div>
 
-      <div class="controls">
-        <button class="press primary big" onclick={renderTake} disabled={render.kind === "rendering"}>
-          {render.kind === "rendering" ? "Rendering the edits" : "Render as a take"}
-        </button>
-      </div>
-      {#if render.kind === "rendered"}
-        {@const id = render.take}
-        <p class="muted" in:enter>Added “{project.takes.find((t) => t.id === id)?.name}”, kept with the song and scored. Compare it with the source under Your takes.</p>
-      {:else if render.kind === "failed"}
-        <p class="muted" in:enter>Couldn't render: {render.message}</p>
+      {#if job.kind === "failed"}
+        <p class="muted" in:enter>Couldn't change the take: {job.message}</p>
       {/if}
       {#if notice.kind === "error"}
         <p class="muted">{notice.message}</p>
       {/if}
     {/if}
   {/if}
-  <Takes {host} {session} empty="Record or import a take in the Score tab; rendered edits appear here too." />
+  {#if take !== null}
+    <BottomAction>
+      <button class="press cta" disabled={!edit || job.kind === "rendering"} onclick={() => change((c) => withActive(c, "pitch", {}))}>
+        {job.kind === "rendering" ? "Rendering" : step.state === "Unset" ? "Apply edits to take" : "Update take"}
+      </button>
+      {#snippet side()}
+        {#if step.state !== "Unset"}
+          <Toggle checked={step.state === "Active"} label="On" onToggle={(on) => change((c) => withBypass(c, "pitch", !on))} />
+        {/if}
+      {/snippet}
+    </BottomAction>
+  {/if}
 </section>
 
 <style>
@@ -478,16 +515,6 @@
     display: flex;
     flex-direction: column;
     gap: 24px;
-  }
-  .controls,
-  .tools {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-  .spacer {
-    flex: 1;
   }
   .roll {
     position: relative;

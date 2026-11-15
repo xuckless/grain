@@ -1,7 +1,10 @@
 <script lang="ts">
   import type { MixParams, Project, Track, TrackMode, TrackSource, Transcriber, TransportSnapshot } from "@workstation/engine-api";
-  import DotSlider from "./DotSlider.svelte";
+  import Icon, { type IconName } from "./Icon.svelte";
+  import Knob from "./Knob.svelte";
   import type { Action } from "svelte/action";
+  import { gainToKnob, knobToGain, knobToPan, panToKnob } from "./knob";
+  import { timeToX, viewportGestures, xToTime, type View } from "./viewport";
   import { playhead } from "./clock";
   import { cachedLevels, dot, dotBar, drawDotWave, fit, WAVE_STEP_PX } from "./grain";
   import { detailDelay, enter, reveal, rubberBand, springBack } from "./motion";
@@ -10,26 +13,37 @@
   import { colour, displayRank, stemHue, trackHue } from "./theme";
 
   /**
-   * The Mix view (design: Components → Tracks): one row per stem with mute, solo, gain and pan,
-   * a dot waveform in the stem's hue, and a grey copy that wipes over it when the track is
-   * inaudible (rule 17). Scrubbing any lane moves the playhead directly (rule 14) and rubber-bands
-   * past either end (rule 19). "MIDI" transcribes a track (basic-pitch, or the drum classifier)
-   * into a MIDI lane under it, exportable as a .mid file (AGENTS.md §4.3).
+   * The Mix view (design: Components → Tracks; AGENTS.md §8.6): one compact row per stem: the
+   * instrument icon in the stem's hue, mute and solo, gain and pan knobs, then a dot waveform in
+   * the stem's hue with a grey copy that wipes over it when the track is inaudible (rule 17). Rows
+   * share the window's height. Lanes follow the shared timeline viewport (⌘-scroll or pinch to
+   * zoom, horizontal scroll to pan). Scrubbing any lane moves the playhead directly (rule 14) and
+   * rubber-bands past either end (rule 19). The MIDI button transcribes a track (basic-pitch, or
+   * the drum classifier) into a MIDI lane under it, exportable as a .mid file (AGENTS.md §4.3).
    */
   let {
     project,
     snapshot,
     transcriber,
+    view,
+    onView,
     onSeek,
     onMix,
+    onMixCommit,
     onProject,
     onModels,
   }: {
     project: Project;
     snapshot: TransportSnapshot;
     transcriber: Transcriber;
+    /** The shared timeline viewport. */
+    view: View;
+    onView: (v: View) => void;
     onSeek: (frame: number) => void;
+    /** A mix change to hear now (at most one per frame while a knob turns). */
     onMix: (track: number, params: MixParams) => void;
+    /** A finished mix change, for undo. */
+    onMixCommit: (track: number, before: MixParams, after: MixParams) => void;
     /** The engine returned an updated project (a new MIDI layer). */
     onProject: (project: Project) => void;
     /** Opens the model manager. */
@@ -68,14 +82,16 @@
     }
   }
 
-  const LANE_H = 52;
+  /** Shortest and tallest lane; rows share the window's height between these. */
+  const LANE_MIN = 44;
+  const LANE_MAX = 132;
+  const ROW_GAP = 8;
+  const ROW_PAD = 12;
   const RULER_H = 28;
   const RUBBER_LIMIT_PX = 24;
-  /** Fader law (design: Components → Gain): slider position 0–1 maps to −60…+6 dB, 0 = silent. */
-  const DB_FLOOR = -60;
-  const DB_SPAN = 66;
-  const gainToFader = (g: number) => (g <= 0 ? 0 : Math.max(0, Math.min(1, (20 * Math.log10(g) - DB_FLOOR) / DB_SPAN)));
-  const faderToGain = (v: number) => (v <= 0 ? 0 : 10 ** ((DB_FLOOR + DB_SPAN * v) / 20));
+
+  const ICONS: Record<string, IconName> = { Vocals: "mic", Drums: "drums", Bass: "bass", Guitar: "guitar", Piano: "piano", Other: "waves" };
+  const iconOf = (source: TrackSource): IconName => (source.kind === "Stem" ? ICONS[source.stem] : "waves");
 
   type Scrub =
     | { kind: "idle" }
@@ -84,6 +100,7 @@
   let scrub = $state<Scrub>({ kind: "idle" });
 
   let width = $state(0);
+  let height = $state(0);
   let rulerCanvas = $state<HTMLCanvasElement | undefined>();
   let refCanvas = $state<HTMLCanvasElement | undefined>();
   /** Replays the lanes' reveal for a new song only (not on every project update). */
@@ -98,6 +115,18 @@
   /** Tracks in display order; `index` stays the engine's track index for mix commands. */
   const rows = $derived(project.tracks.map((track, index) => ({ track, index })).sort((a, b) => displayRank(a.track.source) - displayRank(b.track.source)));
   const columns = $derived(Math.ceil(width / WAVE_STEP_PX));
+  const midiRows = $derived(project.transcriptions.length);
+  /** Lane height: the rows (reference vocal + tracks) share what the ruler and MIDI lanes leave. */
+  const LANE_H = $derived.by(() => {
+    const n = rows.length + 1;
+    const free = height - RULER_H - midiRows * (MIDI_H + ROW_GAP) - n * (ROW_GAP + ROW_PAD);
+    return Math.round(Math.min(LANE_MAX, Math.max(LANE_MIN, free / n)));
+  });
+  /** The visible part of the song, as fractions (for waveform levels). */
+  const from = $derived(Math.max(0, view.start / duration));
+  const to = $derived(Math.min(1, (view.start + view.span) / duration));
+  /** x (px) of song time `s` in the lanes. */
+  const x = (s: number) => timeToX(view, s, width);
 
   function audible(t: Track): boolean {
     return t.mix.mode === "Soloed" || (t.mix.mode === "Normal" && !anySolo);
@@ -109,9 +138,10 @@
 
   /** Playhead x in a lane: the clock (extrapolated per frame), or the scrub position while
    * scrubbing; moved by transform only (AGENTS.md §10.1). */
-  const headX = (seconds: number): number => {
+  const headX = (seconds: number): number | null => {
     const s = scrub.kind === "idle" ? seconds : scrub.seconds;
-    return (s / duration) * width + (scrub.kind === "idle" ? 0 : scrub.overshootPx);
+    const px = x(s) + (scrub.kind === "idle" ? 0 : scrub.overshootPx);
+    return px < -2 || px > width + 2 ? null : px;
   };
 
   // Lanes are drawn only when what they show changes (never per frame).
@@ -119,7 +149,7 @@
     if (width <= 0 || !rulerCanvas) return;
     const c = fit(rulerCanvas, width, RULER_H);
     if (!c) return;
-    const x = (s: number) => (s / duration) * width;
+    void view;
     const beats = project.analysis.tempo.beats;
     const barPx = beats.length > 4 ? x(beats[4]) - x(beats[0]) : width;
     const labelEvery = Math.max(1, 2 ** Math.ceil(Math.log2(56 / Math.max(1, barPx))));
@@ -140,7 +170,7 @@
     const c = fit(refCanvas, width, LANE_H);
     const notes = project.analysis.reference_notes;
     if (!c || notes.length === 0) return;
-    const x = (s: number) => (s / duration) * width;
+    void view;
     const lo = Math.min(...notes.map((n) => n.midi)) - 1;
     const hi = Math.max(...notes.map((n) => n.midi)) + 1;
     const y = (m: number) => LANE_H - 8 - ((m - lo) / Math.max(1, hi - lo)) * (LANE_H - 16);
@@ -162,18 +192,18 @@
   };
 
   const waveArt = (t: Track, col: string): LaneArt => {
-    const levels = cachedLevels(t.peaks, columns);
-    return { width, key: [levels, t.mix.gain, col, width], draw: (c) => drawDotWave(c, width, LANE_H, levels, t.mix.gain, col) };
+    const levels = cachedLevels(t.peaks, columns, from, to);
+    const h = LANE_H;
+    return { width, key: [levels, t.mix.gain, col, width, h], draw: (c) => drawDotWave(c, width, h, levels, t.mix.gain, col) };
   };
 
   const midiArt = (t: Track): LaneArt => {
     const layer = layerOf(project, t.source);
     return {
       width,
-      key: [layer, width],
+      key: [layer, width, view],
       draw: (c) => {
         if (!layer) return;
-        const x = (s: number) => (s / duration) * width;
         const row = laneRows(layer);
         const hue = trackHue(t.source);
         for (const n of layer.notes) {
@@ -188,7 +218,7 @@
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const px = event.clientX - rect.left;
     const clamped = Math.min(rect.width, Math.max(0, px));
-    const seconds = (clamped / rect.width) * duration;
+    const seconds = Math.min(duration, Math.max(0, xToTime(view, clamped, rect.width)));
     scrub = { kind: "scrubbing", seconds, overshootPx: rubberBand(px - clamped, RUBBER_LIMIT_PX) };
     // The last frame is not seekable; stay one frame inside the song.
     onSeek(Math.min(Math.floor(duration * snapshot.sample_rate) - 1, Math.floor(seconds * snapshot.sample_rate)));
@@ -240,89 +270,95 @@
   </div>
 {/snippet}
 
-<div class="mix">
+<div class="mix" bind:clientHeight={height} use:viewportGestures={{ get: () => view, set: onView, duration }}>
   <div class="row ruler">
     <div class="controls"></div>
     <div class="lane-box" bind:clientWidth={width}>
       {#snippet rulerLane()}<canvas bind:this={rulerCanvas} style:height="{RULER_H}px"></canvas>{/snippet}
       {@render lane(rulerLane, RULER_H, "Playhead")}
     </div>
-    <div class="readout"></div>
   </div>
 
   <div class="row track" in:enter={{ delay: detailDelay(0) }}>
     <div class="controls">
-      <div class="name">
-        <span class="swatch" style:background={stemHue.Vocals}></span>
-        <span class="title">Reference vocal</span>
-      </div>
-      <span class="muted small">{project.analysis.reference_source === "VocalStem" ? "Melody from the vocal stem" : "Melody from the full mix (no stems): expect errors"}</span>
+      <span class="instrument" style:color={stemHue.Vocals} title="Reference vocal"><Icon name="mic" /></span>
+      <span class="title">Reference</span>
+      <span class="muted small">{project.analysis.reference_notes.length} notes</span>
     </div>
     <div class="lane-box">
       {#snippet refLane()}<canvas bind:this={refCanvas} use:reveal={revealKey} style:height="{LANE_H}px"></canvas>{/snippet}
       {@render lane(refLane, LANE_H, "Reference vocal, playhead")}
     </div>
-    <div class="readout mono muted">{project.analysis.reference_notes.length} notes</div>
   </div>
 
   {#each rows as { track: t, index: i }, row (t.name)}
+    {@const hue = trackHue(t.source)}
+    {@const muted = t.mix.mode === "Muted"}
+    {@const soloed = t.mix.mode === "Soloed"}
     <div class="row track" in:enter={{ delay: detailDelay(row + 1) }}>
       <div class="controls">
-        <div class="name">
-          <span class="swatch" style:background={trackHue(t.source)}></span>
-          <span class="title">{t.name}</span>
-        </div>
-        <div class="buttons">
-          <button
-            class="press ms"
-            class:on={t.mix.mode === "Muted"}
-            aria-pressed={t.mix.mode === "Muted"}
-            aria-label="Mute {t.name}"
-            onclick={() => onMix(i, { ...t.mix, mode: toggled(t.mix.mode, "Muted") })}>M</button
-          >
-          <button
-            class="press ms"
-            class:on={t.mix.mode === "Soloed"}
-            aria-pressed={t.mix.mode === "Soloed"}
-            aria-label="Solo {t.name}"
-            onclick={() => onMix(i, { ...t.mix, mode: toggled(t.mix.mode, "Soloed") })}>S</button
-          >
-        </div>
-        <DotSlider
-          value={gainToFader(t.mix.gain)}
-          min={0}
-          max={1}
-          step={0.005}
-          width={150}
+        <span class="instrument" style:color={hue} title={t.name}><Icon name={iconOf(t.source)} /></span>
+        <span class="title">{t.name}</span>
+        <button
+          class="press icon ms"
+          class:on={muted}
+          aria-pressed={muted}
+          aria-label="Mute {t.name}"
+          title="Mute"
+          onclick={() => {
+            const after = { ...t.mix, mode: toggled(t.mix.mode, "Muted") };
+            onMix(i, after);
+            onMixCommit(i, t.mix, after);
+          }}><Icon name="mute" /></button
+        >
+        <button
+          class="press icon ms"
+          class:on={soloed}
+          aria-pressed={soloed}
+          aria-label="Solo {t.name}"
+          title="Solo"
+          onclick={() => {
+            const after = { ...t.mix, mode: toggled(t.mix.mode, "Soloed") };
+            onMix(i, after);
+            onMixCommit(i, t.mix, after);
+          }}><Icon name="solo" /></button
+        >
+        <Knob
+          value={gainToKnob(t.mix.gain)}
+          reset={gainToKnob(1)}
           label="{t.name} gain"
-          readout={formatDb(t.mix.gain)}
-          onChange={(v) => onMix(i, { ...t.mix, gain: faderToGain(v) })}
+          colour={hue}
+          format={(v) => formatDb(knobToGain(v))}
+          onChange={(v) => onMix(i, { ...t.mix, gain: knobToGain(v) })}
+          onCommit={(a, b) => onMixCommit(i, { ...t.mix, gain: knobToGain(a) }, { ...t.mix, gain: knobToGain(b) })}
         />
-        <DotSlider
-          value={t.mix.pan}
-          min={-1}
-          max={1}
-          step={0.02}
-          width={88}
+        <Knob
+          value={panToKnob(t.mix.pan)}
+          reset={0.5}
+          bipolar
           label="{t.name} pan"
-          readout={formatPan(t.mix.pan)}
-          onChange={(v) => onMix(i, { ...t.mix, pan: v })}
+          colour={hue}
+          format={(v) => formatPan(knobToPan(v))}
+          onChange={(v) => onMix(i, { ...t.mix, pan: knobToPan(v) })}
+          onCommit={(a, b) => onMixCommit(i, { ...t.mix, pan: knobToPan(a) }, { ...t.mix, pan: knobToPan(b) })}
         />
-        <span class="mono muted pan">{formatPan(t.mix.pan)}</span>
         {#if !layerOf(project, t.source)}
-          <button class="press quiet midi" disabled={jobOf(t).kind === "transcribing"} title="Transcribe {t.name} to MIDI" onclick={() => transcribe(t)}>
-            {jobOf(t).kind === "transcribing" ? "Transcribing" : "MIDI"}
-          </button>
+          <button
+            class="press icon quiet"
+            disabled={jobOf(t).kind === "transcribing"}
+            aria-label="Transcribe {t.name} to MIDI"
+            title={jobOf(t).kind === "transcribing" ? "Transcribing…" : "Transcribe to MIDI"}
+            onclick={() => transcribe(t)}><Icon name="midi" /></button
+          >
         {/if}
       </div>
       <div class="lane-box">
         {#snippet trackLane()}
-          <canvas use:reveal={revealKey} use:art={waveArt(t, trackHue(t.source))} style:height="{LANE_H}px"></canvas>
+          <canvas use:reveal={revealKey} use:art={waveArt(t, hue)} style:height="{LANE_H}px"></canvas>
           <canvas class="mask" class:on={!audible(t)} use:art={waveArt(t, colour.disabled)} style:height="{LANE_H}px"></canvas>
         {/snippet}
         {@render lane(trackLane, LANE_H, `${t.name} lane, playhead`)}
       </div>
-      <div class="readout mono muted">{formatDb(t.mix.gain)}</div>
     </div>
     {@const job = jobOf(t)}
     {@const layer = layerOf(project, t.source)}
@@ -339,7 +375,6 @@
           {#snippet midiLane()}<canvas use:reveal={`${t.name}:${layer.notes.length}`} use:art={midiArt(t)} style:height="{MIDI_H}px"></canvas>{/snippet}
           {@render lane(midiLane, MIDI_H, `${t.name} MIDI lane, playhead`)}
         </div>
-        <div class="readout"></div>
       </div>
     {/if}
     {#if job.kind === "needsModel"}
@@ -361,25 +396,28 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    height: calc(100vh - 210px);
+    min-height: 360px;
   }
   .row {
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 16px;
     box-sizing: border-box;
-    padding: 0 12px 0 24px;
+    padding: 0 12px 0 12px;
   }
   .track {
-    height: 68px;
+    padding-top: 6px;
+    padding-bottom: 6px;
     background: var(--c-surface);
     border-radius: 12px;
   }
   .controls {
-    width: 640px;
+    width: 316px;
     flex: none;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 4px;
   }
   .ruler .controls {
     height: 1px;
@@ -390,12 +428,12 @@
   }
   .midi-row .controls {
     gap: 12px;
-    padding-left: 22px;
+    padding-left: 8px;
     box-sizing: border-box;
   }
   .notice {
     gap: 12px;
-    padding-left: 46px;
+    padding-left: 56px;
   }
   .spacer {
     flex: 1;
@@ -404,41 +442,24 @@
     font-size: 13px;
     line-height: 18px;
   }
-  .midi {
-    flex: none;
-  }
-  .name {
-    width: 136px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: none;
-  }
-  .swatch {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+  .instrument {
+    width: 36px;
+    height: 44px;
+    display: grid;
+    place-items: center;
     flex: none;
   }
   .title {
-    font-size: 15px;
-    line-height: 22px;
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    line-height: 20px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .buttons {
-    display: flex;
-    gap: 4px;
-    flex: none;
-  }
   .ms {
-    width: 44px;
-    height: 44px;
-    border-radius: 8px;
-    background: var(--c-raised);
-    font-size: 13px;
-    font-weight: 500;
+    color: var(--c-muted);
     transition:
       background-color var(--dur-colour) var(--ease-out),
       color var(--dur-colour) var(--ease-out),
@@ -447,9 +468,6 @@
   .ms.on {
     background: var(--c-text);
     color: var(--c-ground);
-  }
-  .pan {
-    width: 32px;
   }
   .lane-box {
     flex: 1;
@@ -476,10 +494,5 @@
   }
   .mask.on {
     clip-path: inset(0 0 0 0);
-  }
-  .readout {
-    width: 72px;
-    flex: none;
-    text-align: right;
   }
 </style>

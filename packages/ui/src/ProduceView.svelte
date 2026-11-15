@@ -1,14 +1,16 @@
 <script lang="ts">
-  import type { ChainPick, ChainPreset, ChainReport, ChainSettings, EditSource, EngineHost, GeneratorState, Instrument, Interval, MixParams, TakeAdded } from "@workstation/engine-api";
+  import type { ChainPick, ChainPreset, ChainSettings, EditSource, EngineHost, GeneratorState, Instrument, Interval, MixParams, TakeAdded, TakeChain } from "@workstation/engine-api";
   import DotSlider from "./DotSlider.svelte";
   import Menu from "./Menu.svelte";
+  import TakePicker from "./TakePicker.svelte";
   import Toggle from "./Toggle.svelte";
-  import Takes from "./Takes.svelte";
+  import Toolbar, { type OverflowItem } from "./Toolbar.svelte";
+  import { commitChain, selectedTakeId, takeById, withActive, withBypass, withUnset, type ChainJob, type StepKey } from "./chain";
   import { listener } from "./context";
   import { madeFrom } from "./listen";
   import { dotFill } from "./grain";
   import { enter } from "./motion";
-  import { sourceFromId, sourceId, sourceOptions } from "./pitch";
+  import { sourceFromId, sourceId } from "./pitch";
   import {
     CHAIN_CONTROLS,
     INSTRUMENTS,
@@ -24,23 +26,22 @@
     jobNext,
     meterRows,
     presetLabel,
-    produceSource,
     producedTakes,
     randomSeed,
     type Job,
     type JobEvent,
     type TaskKind,
   } from "./produce";
-  import { applyTake } from "./recorder";
   import { errorMessage, formatPan, formatTime, type Session } from "./state";
   import { takeTrack } from "./takes";
   import { colour } from "./theme";
 
   /**
-   * The Produce view (AGENTS.md §8): clean up a take (DeepFilterNet), run it through the vocal
-   * chain (offline, or live on the monitor), sing harmonies from the singer's own voice, export
-   * the melody as MIDI, and generate backing with ACE-Step. Every result is a new take or track
-   * that keeps how it was made (model, prompt, seed, settings); the source is never changed.
+   * The Produce view (AGENTS.md §8, §8.6): stacked cards over the selected take (the ★ master
+   * unless another is picked). Clean up (DeepFilterNet) and the vocal chain (offline, or live on
+   * the monitor) are steps of the take's processing chain (§8.7): applied in place, bypassable,
+   * undoable. Harmonies from the singer's own voice and ACE-Step generation make new tracks that
+   * keep how they were made (model, prompt, seed, settings).
    */
   let {
     host,
@@ -65,26 +66,23 @@
 
   // ---- Source ---------------------------------------------------------------------------------
 
-  let picked = $state<EditSource | null>(null);
+  const take = $derived(selectedTakeId(project, session.take));
+  const takeChain = $derived(takeById(project, take)?.chain ?? null);
+  /** What harmony, MIDI and generation start from: the take, or the vocal stem without one. */
   const source = $derived.by<EditSource | null>(() => {
-    const p = picked;
-    if (p && (p.kind === "VocalStem" || project.takes.some((t) => t.id === p.id))) return p;
-    return produceSource(project);
+    if (take !== null) return { kind: "Take", id: take };
+    return project.analysis.reference_notes.length > 0 ? { kind: "VocalStem" } : null;
   });
-  const sources = $derived(sourceOptions(project));
 
-  /** Shows a new take or track; sung takes (cleaned, chained) are also scored in the Score tab. */
-  function adopt(added: TakeAdded, sung: boolean) {
-    if (sung) applyTake(session, added);
-    else session.saved(added.project);
+  /** A new track (harmony, generation): shown and saved. */
+  function adopt(added: TakeAdded) {
+    session.saved(added.project);
   }
 
   /** Runs one job: `work` resolves with what to tell the job. */
   async function run(job: Job, set: (j: Job) => void, work: () => Promise<JobEvent>) {
     const started = jobNext(job, { kind: "start" });
     if (!started) return;
-    // Results don't become the source: the view stays on what was being worked on.
-    if (source) picked = $state.snapshot(source) as EditSource;
     set(started);
     let event: JobEvent;
     try {
@@ -95,20 +93,20 @@
     set(jobNext(started, event) ?? started);
   }
 
-  // ---- Clean up -------------------------------------------------------------------------------
+  // ---- Chain steps (Clean up, Vocal chain) -----------------------------------------------------
 
-  let clean = $state<Job>({ kind: "idle" });
+  let job = $state<ChainJob>({ kind: "idle" });
+
+  async function change(step: StepKey, next: (c: TakeChain) => TakeChain) {
+    if (take === null || !takeChain || job.kind === "rendering") return;
+    job = { kind: "rendering", take, step };
+    job = await commitChain(host, session, session.project, take, next($state.snapshot(takeChain) as TakeChain), step);
+  }
 
   function cleanUp() {
-    const from = source;
     const d = producer.denoise;
-    if (!from || d.kind === "unavailable") return;
-    void run(clean, (j) => (clean = j), async () => {
-      const out = await d.run(from, score());
-      if (out.kind === "NeedsModel") return { kind: "needsModel", model: out.model };
-      adopt(out.added, true);
-      return { kind: "added", take: out.added.take };
-    });
+    if (d.kind === "unavailable") return;
+    void change("clean", (c) => withActive(c, "clean", { model: d.model }));
   }
 
   // ---- Vocal chain ----------------------------------------------------------------------------
@@ -116,7 +114,6 @@
   let preset = $state<ChainPreset>("Auto");
   type ChainState = { kind: "measuring" } | { kind: "ready"; pick: ChainPick; settings: ChainSettings } | { kind: "failed"; message: string };
   let chain = $state<ChainState>({ kind: "measuring" });
-  let report = $state<ChainReport | null>(null);
   let asked = 0;
 
   /** The source as a stable id, so adding a take doesn't re-measure. */
@@ -129,9 +126,10 @@
     if (id === null) return;
     const n = ++asked;
     chain = { kind: "measuring" };
-    report = null;
+    // A take already through the chain starts from its applied settings.
+    const applied = takeChain?.vocal.state !== "Unset" ? takeChain?.vocal.params : undefined;
     producer.chainPick(sourceFromId(id), p).then(
-      (pick) => n === asked && (chain = { kind: "ready", pick, settings: pick.settings }),
+      (pick) => n === asked && (chain = { kind: "ready", pick, settings: applied && applied.preset === p ? applied.settings : pick.settings }),
       (e) => n === asked && (chain = { kind: "failed", message: errorMessage(e) }),
     );
   });
@@ -142,21 +140,13 @@
     if (live.kind === "on") void sendChain(chain.settings);
   }
 
-  let chained = $state<Job>({ kind: "idle" });
-
   function applyChain() {
-    const from = source;
-    if (!from || chain.kind !== "ready") return;
+    if (chain.kind !== "ready") return;
     const settings = $state.snapshot(chain.settings) as ChainSettings;
-    void run(chained, (j) => (chained = j), async () => {
-      const out = await producer.chainApply(from, preset, settings, score());
-      adopt(out.added, true);
-      report = out.report;
-      return { kind: "added", take: out.added.take };
-    });
+    void change("vocal", (c) => withActive(c, "vocal", { preset, settings }));
   }
 
-  const meters = $derived(chain.kind === "ready" ? meterRows(report?.before ?? chain.pick.measures, report?.after ?? null) : []);
+  const meters = $derived(chain.kind === "ready" ? meterRows(chain.pick.measures, null) : []);
 
   /** The chain on the live monitor (the voice heard dry, then through the chain). */
   type Live = { kind: "off" } | { kind: "switching" } | { kind: "on" } | { kind: "failed"; message: string };
@@ -204,7 +194,7 @@
     lastInterval = interval;
     void run(harmony, (j) => (harmony = j), async () => {
       const added = await producer.harmony(from, interval, score());
-      adopt(added, false);
+      adopt(added);
       return { kind: "added", take: added.take };
     });
   }
@@ -242,7 +232,7 @@
     const t = generationTask(task, $state.snapshot(from) as EditSource, instrument, repaintStart, repaintEnd);
     void run(generation, (j) => (generation = j), async () => {
       const added = await generator.generate(t, prompt, seed, score(), (s) => (genState = s));
-      adopt(added, false);
+      adopt(added);
       seed = randomSeed();
       return { kind: "added", take: added.take };
     });
@@ -259,11 +249,41 @@
   const listen = listener();
 
   const nameOf = (id: number) => project.takes.find((t) => t.id === id)?.name ?? "";
+
+  const hints = [
+    "Clean up and the vocal chain change the selected take in place (the ★ master unless you pick another), in this order after its pitch edits and auto-tune. The recording underneath is kept: switch a step off, remove it, or ⌘Z.",
+    "Harmony and Generate add new tracks; mix them in Mix.",
+  ];
+  const overflow = $derived<OverflowItem[]>([
+    { label: "Export melody as MIDI", run: () => exportMidi(null), disabled: source ? null : "Nothing to export" },
+    { label: `Export ${intervalLabel(lastInterval)} as MIDI`, run: () => exportMidi(lastInterval), disabled: source ? null : "Nothing to export" },
+  ]);
 </script>
+
+{#snippet stepControls(step: "clean" | "vocal")}
+  {@const st = takeChain?.[step] ?? { state: "Unset" }}
+  {#if st.state !== "Unset"}
+    <Toggle checked={st.state === "Active"} label="On" onToggle={(on) => change(step, (c) => withBypass(c, step, !on))} />
+    <button class="press quiet" disabled={job.kind === "rendering"} onclick={() => change(step, (c) => withUnset(c, step))}>Remove</button>
+  {/if}
+{/snippet}
+
+{#snippet chainOutcome(step: StepKey)}
+  {#if job.kind === "rendering" && job.step === step}
+    <p class="muted" in:enter>Rendering the take</p>
+  {:else if job.kind === "needsModel" && step === "clean"}
+    <p class="muted" in:enter>
+      This needs the <span class="mono">{job.model}</span> model.
+      <button class="press quiet inline" onclick={onModels}>Open Models</button>
+    </p>
+  {:else if job.kind === "failed"}
+    <p class="muted" in:enter>Couldn't change the take: {job.message}</p>
+  {/if}
+{/snippet}
 
 {#snippet outcome(job: Job, verb: string)}
   {#if job.kind === "done"}
-    <p class="muted" in:enter>Added “{nameOf(job.take)}”. The source is unchanged.</p>
+    <p class="muted" in:enter>Added “{nameOf(job.take)}” as a new track.</p>
   {:else if job.kind === "failed"}
     <p class="muted" in:enter>Couldn't {verb}: {job.message}</p>
   {:else if job.kind === "needsModel"}
@@ -275,24 +295,25 @@
 {/snippet}
 
 <section class="produce">
+  <Toolbar {hints} {overflow}>
+    <TakePicker {host} {session} />
+  </Toolbar>
   {#if source === null}
     <div class="caption">
       <h2>Nothing to produce yet</h2>
       <p class="muted">Record or import a take in the Score tab, or import a song with a vocal, to clean it up, shape it and add harmonies or backing.</p>
     </div>
   {:else}
-    <div class="controls">
-      <Menu label="Source" value={sid ?? ""} options={sources} onPick={(id) => (picked = sourceFromId(id))} />
-      <p class="muted">Everything here makes a new take or track; the source is never changed.</p>
-    </div>
-
     <div class="card">
       <div class="head">
         <h3>Clean up</h3>
         <span class="muted small">DeepFilterNet 3 noise suppression</span>
         <span class="spacer"></span>
-        {#if producer.denoise.kind === "available"}
-          <button class="press primary big" onclick={cleanUp} disabled={clean.kind === "running"}>{clean.kind === "running" ? "Cleaning up" : "Clean up take"}</button>
+        {#if producer.denoise.kind === "available" && take !== null}
+          {@render stepControls("clean")}
+          {#if takeChain?.clean.state === "Unset"}
+            <button class="press primary big" onclick={cleanUp} disabled={job.kind === "rendering"}>Clean up take</button>
+          {/if}
         {/if}
       </div>
       {#if producer.denoise.kind === "unavailable"}
@@ -300,7 +321,7 @@
       {:else}
         <p class="muted">Removes room noise, hum and hiss under the voice (held to −30 dB, so breaths stay natural).</p>
       {/if}
-      {@render outcome(clean, "clean it up")}
+      {@render chainOutcome("clean")}
     </div>
 
     <div class="card">
@@ -312,7 +333,10 @@
         <Menu label="Preset" value={preset} options={PRESETS.map((p) => ({ id: p, label: p === "Auto" ? "Auto (from this take)" : presetLabel(p) }))} onPick={(p) => (preset = p)} />
         <Toggle checked={live.kind === "on"} label="Hear it live" onToggle={(on) => void setLive(on)} />
         <span class="spacer"></span>
-        <button class="press primary big" onclick={applyChain} disabled={chain.kind !== "ready" || chained.kind === "running"}>{chained.kind === "running" ? "Rendering" : "Apply to take"}</button>
+        {#if take !== null}
+          {@render stepControls("vocal")}
+          <button class="press primary big" onclick={applyChain} disabled={chain.kind !== "ready" || job.kind === "rendering"}>{takeChain?.vocal.state === "Unset" ? "Apply to take" : "Update take"}</button>
+        {/if}
       </div>
       {#if live.kind === "on"}
         <p class="muted small">Live on your voice over the song. Headphones only: speakers feed back.</p>
@@ -334,17 +358,15 @@
           {/each}
         </div>
         <div class="meters" aria-label="Before and after">
-          <span></span><span class="label">Before</span><span class="label">{report ? "After" : ""}</span>
+          <span></span><span class="label">This take</span><span></span>
           {#each meters as m (m.label)}
             <span class="label">{m.label}</span>
             <span class="meter"><canvas use:dotFill={{ fraction: m.beforeFill, lit: colour.muted }}></canvas><span class="mono small">{m.before}</span></span>
-            <span class="meter">
-              {#if report}<canvas use:dotFill={{ fraction: m.afterFill, lit: colour.text }}></canvas><span class="mono small">{m.after}</span>{/if}
-            </span>
+            <span class="meter"></span>
           {/each}
         </div>
       {/if}
-      {@render outcome(chained, "render the chain")}
+      {@render chainOutcome("vocal")}
     </div>
 
     <div class="card">
@@ -356,9 +378,6 @@
         {#each INTERVALS as i (i)}
           <button class="press raised big" onclick={() => sing(i)} disabled={harmony.kind === "running"}>{intervalLabel(i)}</button>
         {/each}
-        <span class="spacer"></span>
-        <button class="press quiet" onclick={() => exportMidi(null)}>Melody MIDI</button>
-        <button class="press quiet" onclick={() => exportMidi(lastInterval)}>{intervalLabel(lastInterval)} MIDI</button>
       </div>
       {#if harmony.kind === "running"}<p class="muted">Singing the harmony</p>{/if}
       {@render outcome(harmony, "sing the harmony")}
@@ -428,7 +447,7 @@
             <button
               class="press quiet small-button"
               title={from ? "Play the source, then this" : "Play this alone"}
-              onclick={() => listen({ kind: "play", items: [...(from ? [from] : []), { kind: "Take", id: t.id }], mode: "Solo" })}
+              onclick={() => listen({ kind: "play", items: [...(from ? [from] : []), { kind: "Take", id: t.id }], mode: "Voice" })}
             >
               {from ? "Compare" : "Play"}
             </button>
@@ -441,7 +460,6 @@
     </div>
   {/if}
 
-  <Takes {host} {session} empty="Record or import a take in the Score tab; cleaned and chained versions appear here too." />
 </section>
 
 <style>

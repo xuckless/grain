@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EditNote, PitchEdit } from "@workstation/engine-api";
-import { advance, commit, decideDrag, dragged, historyOf, hitTest, HISTORY_LIMIT, inScale, pan, redo, select, targetIds, undo, zoom } from "./pitch.ts";
+import { advance, decideDrag, dragged, hitTest, inScale, pan, select, targetIds, zoom } from "./pitch.ts";
 
 function note(id: number, start: number, end: number, pitch: number): EditNote {
   return { id, start, end, centre: pitch, pitch, drift: 1, modulation: 1, transition: 0, formant: 0, out_start: start, out_end: end };
@@ -13,35 +13,6 @@ function edit(notes: EditNote[]): PitchEdit {
 }
 
 const a = edit([note(1, 0, 1, 60), note(2, 1.5, 2, 64)]);
-const b = edit([{ ...note(1, 0, 1, 60), pitch: 62 }, note(2, 1.5, 2, 64)]);
-const c = edit([{ ...note(1, 0, 1, 60), pitch: 63 }, note(2, 1.5, 2, 64)]);
-
-test("undo and redo walk the snapshots", () => {
-  let h = commit(commit(historyOf(a), b), c);
-  h = undo(h)!;
-  assert.equal(h.present, b);
-  h = undo(h)!;
-  assert.equal(h.present, a);
-  assert.equal(undo(h), null);
-  h = redo(h)!;
-  assert.equal(h.present, b);
-  // A new change drops the redo branch.
-  h = commit(h, c);
-  assert.equal(redo(h), null);
-});
-
-test("a slider's repeated changes are one undo step", () => {
-  let h = commit(historyOf(a), b, "mod:1");
-  h = commit(h, c, "mod:1");
-  assert.equal(h.past.length, 1);
-  assert.equal(undo(h)!.present, a);
-});
-
-test("history keeps at most the limit", () => {
-  let h = historyOf(a);
-  for (let i = 0; i < HISTORY_LIMIT + 10; i++) h = commit(h, i % 2 ? a : b);
-  assert.equal(h.past.length, HISTORY_LIMIT);
-});
 
 test("selection: click picks, shift toggles, empty click clears; tools fall back to all notes", () => {
   let s = select({ kind: "none" }, 1, false);
@@ -93,13 +64,4 @@ test("scale masks", () => {
   assert.ok(inScale(cMajor, 60));
   assert.ok(!inScale(cMajor, 61));
   assert.ok(inScale(cMajor, 71));
-});
-
-test("the default source prefers original takes, then the vocal stem, never an edited copy first", async () => {
-  const { defaultSource } = await import("./pitch.ts");
-  const take = (id: number, source: object) => ({ id, source }) as never;
-  const project = (takes: never[], notes = 1) => ({ takes, analysis: { reference_notes: new Array(notes) } }) as never;
-  assert.deepEqual(defaultSource(project([take(1, { kind: "Recorded" }), take(2, { kind: "Edited", from: { kind: "Take", id: 1 } })])), { kind: "Take", id: 1 });
-  assert.deepEqual(defaultSource(project([take(2, { kind: "Edited", from: { kind: "VocalStem" } })])), { kind: "VocalStem" });
-  assert.equal(defaultSource(project([], 0)), null);
 });

@@ -1,9 +1,13 @@
 <script lang="ts">
   import type { EngineHost, LiveFrame, PlayerCommand, TransportSnapshot } from "@workstation/engine-api";
+  import BackingMenu from "./BackingMenu.svelte";
+  import BottomAction from "./BottomAction.svelte";
   import Grain from "./Grain.svelte";
+  import Icon from "./Icon.svelte";
   import LyricsPanel from "./LyricsPanel.svelte";
-  import RecordingSetup from "./RecordingSetup.svelte";
   import SettingsControls from "./SettingsControls.svelte";
+  import TakePicker from "./TakePicker.svelte";
+  import Toolbar from "./Toolbar.svelte";
   import { listener, services } from "./context";
   import { frameFeedback, type Feedback } from "./feedback";
   import { PitchTrail, type TrailPoint } from "./grain";
@@ -23,7 +27,7 @@
   } from "./karaoke";
   import { currentLine, sungFraction } from "./lyrics";
   import { enter } from "./motion";
-  import { applyTake, armTake, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
+  import { applyTake, armTake, backingHint, cancelTake, eachFrame, effectiveBacking, finishTake, runCommands } from "./recorder";
   import { clock } from "./clock";
   import Takes from "./Takes.svelte";
   import { errorMessage, formatTime, transportSeconds, type Session } from "./state";
@@ -35,6 +39,9 @@
    * by the same per-frame rule the offline scorer uses. Notes fill with their verdict as the
    * song passes them; hits burst and build a streak. Two lyric lines wipe word by word. Every
    * run (count-in to pause or finish) is saved as a take and scored offline, so it shows in Score.
+   * Seek by dragging the lane, clicking the ruler or clicking a lyric line; Sing starts with a
+   * 2 s pre-roll. With a loop set (A, then B), every pass is saved as its own take and the next
+   * pass counts in again from A (AGENTS.md §8.6).
    */
   let { host, session, snapshot }: { host: EngineHost; session: Session; snapshot: TransportSnapshot } = $props();
 
@@ -94,7 +101,6 @@
   // ---- Session --------------------------------------------------------------------------------
 
   let karaoke = $state<Karaoke>({ kind: "idle" });
-  let calibrating = $state(false);
 
   function karaokeEvent(e: KaraokeEvent): boolean {
     const next = karaokeNext(karaoke, e);
@@ -116,10 +122,19 @@
     }
   }
 
+  /** Seconds heard before singing starts. */
+  const PRE_ROLL = 2;
+
+  const seekTo = (s: number) => run([{ kind: "Seek", frame: Math.max(0, Math.min(project.frames - 1, Math.floor(s * snapshot.sample_rate))) }]);
+
   async function start() {
     listen({ kind: "stop" });
     const fresh = karaoke.kind !== "paused";
-    if (!karaokeEvent(fresh ? { kind: "start" } : { kind: "resume" })) return;
+    if (session.mic.kind !== "free" || !karaokeEvent(fresh ? { kind: "start" } : { kind: "resume" })) return;
+    session.mic = { kind: "recording" };
+    // The pre-roll: start a little before where the singer will come in.
+    const from = loop && fresh ? loop.start : seconds;
+    await seekTo(from - PRE_ROLL);
     if (fresh) {
       performance_ = newPerformance(notes);
       trail.clear();
@@ -133,6 +148,11 @@
       karaokeEvent({ kind: "fail", message: errorMessage(e) });
     }
   }
+
+  // The microphone is free again whenever no run is live.
+  $effect(() => {
+    if (!isLive(karaoke) && session.mic.kind === "recording") session.mic = { kind: "free" };
+  });
 
   /** Saves the run that just ended as a take; it's scored offline and shows in Score. */
   async function saveRun(): Promise<boolean> {
@@ -181,6 +201,65 @@
     else karaokeEvent(e);
   });
 
+  // ---- Loop A/B: each pass is a take -----------------------------------------------------------
+
+  const loop = $derived(session.loop);
+  type LoopMark = { kind: "none" } | { kind: "a"; start: number };
+  let marking = $state<LoopMark>({ kind: "none" });
+
+  function markLoop() {
+    if (loop) {
+      session.loop = null;
+      marking = { kind: "none" };
+    } else if (marking.kind === "none") marking = { kind: "a", start: seconds };
+    else {
+      const [a, b] = [marking.start, seconds].sort((x, y) => x - y);
+      if (b - a > 0.5) session.loop = { start: a, end: b };
+      marking = { kind: "none" };
+    }
+  }
+
+  // Passing B while singing saves the pass and counts in again from A.
+  let passing = false;
+  $effect(() => {
+    if (!loop || karaoke.kind !== "singing" || seconds < loop.end || passing) return;
+    passing = true;
+    void (async () => {
+      await pause();
+      // `pause` moved the machine on; read it afresh.
+      if ((karaoke as Karaoke).kind === "paused") {
+        await seekTo(loop.start - PRE_ROLL);
+        await start();
+      }
+      passing = false;
+    })();
+  });
+
+  // ---- Seeking: drag the lane, click the ruler, click a lyric line -----------------------------
+
+  type Scrub = { kind: "idle" } | { kind: "dragging"; x0: number; from: number; pointer: number };
+  let scrub = $state<Scrub>({ kind: "idle" });
+  /** Seconds of song across the lane (the trail's window). */
+  const LANE_SECONDS = 8;
+
+  function laneDown(e: PointerEvent) {
+    if (live || e.button !== 0) return;
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    scrub = { kind: "dragging", x0: e.clientX, from: seconds, pointer: e.pointerId };
+  }
+  function laneMove(e: PointerEvent) {
+    if (scrub.kind !== "dragging" || e.pointerId !== scrub.pointer || !lane) return;
+    // Dragging left moves later in the song, like pulling the lane along.
+    void seekTo(scrub.from - ((e.clientX - scrub.x0) / lane.clientWidth) * LANE_SECONDS);
+  }
+  const laneUp = () => (scrub = { kind: "idle" });
+
+  function rulerClick(e: MouseEvent) {
+    if (live) return;
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    void seekTo(((e.clientX - r.left) / r.width) * duration);
+  }
+
   // Live pitch while a run is recording.
   const polling = $derived(karaoke.kind === "countIn" || karaoke.kind === "singing");
   $effect(() => {
@@ -216,31 +295,28 @@
 
   const beats = $derived(beatsLeft(snapshot.transport, project.analysis.tempo.bpm, snapshot.sample_rate));
   const live = $derived(isLive(karaoke));
-  const busy = $derived(live || calibrating);
+  const busy = $derived(live || session.mic.kind === "calibrating");
+  const duration = $derived(project.frames / project.sample_rate);
+
+  const hints = $derived([
+    "Use headphones, so the backing doesn't bleed into the microphone.",
+    "Drag the lane or click the ruler to move; click a lyric line to start from it. Sing starts 2 s early so you hear the lead-in.",
+    "Loop: press once at A and again at B. Each pass is saved as its own take.",
+    ...(backingHint(session) ? [backingHint(session)!] : []),
+  ]);
 </script>
 
 <section class="karaoke">
-  <div class="controls">
+  <Toolbar {hints}>
+    <BackingMenu {session} disabled={live} />
+    <TakePicker {host} {session} />
     <SettingsControls {session} disabled={live} />
-    <span class="spacer"></span>
-    {#if karaoke.kind === "singing" || karaoke.kind === "pausing"}
-      <button class="press raised big" onclick={pause} disabled={karaoke.kind === "pausing"}>Pause</button>
-    {:else if !live}
-      <button
-        class="press primary big"
-        onclick={start}
-        disabled={busy || mic.kind !== "available"}
-        title={mic.kind === "unavailable" ? mic.reason : undefined}
-      >
-        {karaoke.kind === "paused" ? "Resume" : "Sing"}
-      </button>
-    {/if}
-    {#if live || karaoke.kind === "paused"}
-      <button class="press raised big" onclick={finish} disabled={karaoke.kind === "pausing" || karaoke.kind === "finishing"}>Finish</button>
-    {/if}
-  </div>
+    <button class="press" class:loop-on={loop !== null || marking.kind === "a"} disabled={live} title={loop ? "Clear the loop" : marking.kind === "a" ? "Set B here" : "Set A here"} onclick={markLoop}>
+      <Icon name="loop" />{loop ? `${formatTime(loop.start)}–${formatTime(loop.end)}` : marking.kind === "a" ? "Set B" : "Loop"}
+    </button>
+  </Toolbar>
 
-  <div class="lane" bind:this={lane}>
+  <div class="lane" bind:this={lane} role="slider" tabindex="-1" aria-label="Drag to move through the song" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(seconds)} onpointerdown={laneDown} onpointermove={laneMove} onpointerup={laneUp} onpointercancel={laneUp}>
     <Grain behaviour={trail} style="width: 100%; height: 300px" label="Pitch lane: the song's notes, and your voice as a trail" />
     <div class="hud">
       <div class="stat">
@@ -257,10 +333,16 @@
     </div>
   </div>
 
+  <button class="ruler" aria-label="Song position: click to move there" disabled={live} onclick={rulerClick}>
+    {#if loop}<span class="loop" style:left="{(loop.start / duration) * 100}%" style:width="{((loop.end - loop.start) / duration) * 100}%"></span>{/if}
+    <span class="fill" style:transform="scaleX({Math.min(1, seconds / duration)})"></span>
+  </button>
+
   <div class="lyrics" aria-live="off">
     {#if lyrics.kind === "Synced"}
       {#each visible as line, k (line.lrc_start + ":" + k)}
-        <p class="line" class:next={k === 1} in:enter>
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <p class="line" class:next={k === 1} in:enter onclick={() => !live && void seekTo(line.syllables[0]?.start ?? line.lrc_start)}>
           {#if line.syllables.length === 0}
             <span class="muted">♪</span>
           {:else}
@@ -298,33 +380,75 @@
     {:else if karaoke.kind === "failed"}
       <p class="muted">{karaoke.message}</p>
     {:else}
-      <p class="muted">Sing from the playhead: seek where you want to start, then press Sing. Use headphones, so the backing doesn't bleed into the microphone.</p>
+      <p class="muted">Sing from the playhead: move to where you want to start, then press Sing.</p>
     {/if}
   </div>
 
   {#if !live}
     <Takes {host} {session} onUse={useForScoring} empty="Each run you sing is saved here as a take, ready to play back." />
     <div class="setup">
-      <RecordingSetup {host} {session} busy={live} bind:calibrating beforeCalibrate={async () => listen({ kind: "stop" })} />
       <LyricsPanel {host} {session} locked={live} />
     </div>
   {/if}
+
+  <BottomAction>
+    {#if karaoke.kind === "singing" || karaoke.kind === "pausing"}
+      <button class="press cta" onclick={pause} disabled={karaoke.kind === "pausing"}><Icon name="pause" />Pause</button>
+    {:else}
+      <button class="press cta sing" onclick={start} disabled={busy || mic.kind !== "available" || karaoke.kind === "finishing"} title={mic.kind === "unavailable" ? mic.reason : undefined}>
+        <Icon name="record" />{karaoke.kind === "paused" ? "Resume" : "Sing"}
+      </button>
+    {/if}
+    {#snippet side()}
+      {#if live || karaoke.kind === "paused"}
+        <button class="press raised big" onclick={finish} disabled={karaoke.kind === "pausing" || karaoke.kind === "finishing"}>Finish</button>
+      {/if}
+    {/snippet}
+  </BottomAction>
 </section>
 
 <style>
+  .ruler {
+    position: relative;
+    height: 16px;
+    border: 0;
+    padding: 0;
+    background: var(--c-surface);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .ruler .fill {
+    position: absolute;
+    inset: 0;
+    background: var(--c-raised);
+    transform-origin: left;
+  }
+  .ruler .loop {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--c-near);
+    opacity: 0.35;
+    z-index: 1;
+  }
+  .loop-on {
+    color: var(--c-near);
+  }
+  .line {
+    cursor: pointer;
+  }
+  .lane {
+    touch-action: none;
+    cursor: grab;
+  }
+  :global(.cta.sing) {
+    gap: 8px;
+  }
   .karaoke {
     display: flex;
     flex-direction: column;
     gap: 24px;
-  }
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    flex-wrap: wrap;
-  }
-  .spacer {
-    flex: 1;
   }
   .lane {
     position: relative;

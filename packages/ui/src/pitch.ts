@@ -1,40 +1,8 @@
 // The Pitch view's state machines and pure helpers (AGENTS.md §7.1). The engine owns every pitch
-// decision (snapping, curves, rendering); this drives selection, dragging, undo/redo, the view
-// window and the render job.
+// decision (snapping, curves, rendering); this drives selection, dragging and the view window.
+// Undo and redo are the session's (history.ts).
 
-import type { EditNote, EditSource, PitchEdit, Project } from "@workstation/engine-api";
-import { sungTakes } from "./listen.ts";
-
-// ---- Undo / redo ------------------------------------------------------------------------------
-
-/** Most edit-list snapshots kept for undo. */
-export const HISTORY_LIMIT = 100;
-
-/** Edit-list snapshots. `key`: what made `present`; a change with the same key (a slider being
- * dragged) replaces it instead of adding a step. */
-export type History = { past: PitchEdit[]; present: PitchEdit; future: PitchEdit[]; key: string | null };
-
-export function historyOf(edit: PitchEdit): History {
-  return { past: [], present: edit, future: [], key: null };
-}
-
-/** `next` becomes the present. `key` coalesces repeated changes of one control into one step. */
-export function commit(h: History, next: PitchEdit, key: string | null = null): History {
-  if (key !== null && key === h.key) return { ...h, present: next, future: [] };
-  return { past: [...h.past, h.present].slice(-HISTORY_LIMIT), present: next, future: [], key };
-}
-
-export function undo(h: History): History | null {
-  const prev = h.past.at(-1);
-  if (!prev) return null;
-  return { past: h.past.slice(0, -1), present: prev, future: [h.present, ...h.future], key: null };
-}
-
-export function redo(h: History): History | null {
-  const next = h.future[0];
-  if (!next) return null;
-  return { past: [...h.past, h.present], present: next, future: h.future.slice(1), key: null };
-}
+import type { EditNote, EditSource, PitchEdit } from "@workstation/engine-api";
 
 // ---- Selection ------------------------------------------------------------------------------
 
@@ -192,22 +160,10 @@ export function dragged(n: EditNote, d: Drag): { pitch: number; start: number; e
   }
 }
 
-// ---- Rendering and sources ------------------------------------------------------------------
-
-/** Rendering the edits into a new take. `take`: the take it made. */
-export type RenderState = { kind: "idle" } | { kind: "rendering" } | { kind: "rendered"; take: number } | { kind: "failed"; message: string };
+// ---- Loading and sources --------------------------------------------------------------------
 
 /** Loading a source's view. */
 export type Loading<T> = { kind: "loading" } | { kind: "ready"; value: T } | { kind: "failed"; message: string };
-
-export type SourceOption = { id: string; label: string };
-
-/** Sources the editor (and Produce) can open: the vocal stem (when the song has a melody) and
- * every sung take (harmony and generated tracks aren't takes, see `sungTakes`). */
-export function sourceOptions(project: Project): SourceOption[] {
-  const vocal = project.analysis.reference_notes.length > 0 ? [{ id: "vocal", label: "Vocal stem" }] : [];
-  return [...vocal, ...sungTakes(project).map((t) => ({ id: `take:${t.id}`, label: t.name }))];
-}
 
 export function sourceId(s: EditSource): string {
   return s.kind === "VocalStem" ? "vocal" : `take:${s.id}`;
@@ -215,16 +171,6 @@ export function sourceId(s: EditSource): string {
 
 export function sourceFromId(id: string): EditSource {
   return id === "vocal" ? { kind: "VocalStem" } : { kind: "Take", id: Number(id.slice("take:".length)) };
-}
-
-/** The source opened first: the newest take that isn't an edited copy, else the vocal stem,
- * else the newest edited take. */
-export function defaultSource(project: Project): EditSource | null {
-  const original = project.takes.filter((t) => t.source.kind !== "Edited").at(-1);
-  if (original) return { kind: "Take", id: original.id };
-  if (project.analysis.reference_notes.length > 0) return { kind: "VocalStem" };
-  const any = project.takes.at(-1);
-  return any ? { kind: "Take", id: any.id } : null;
 }
 
 /** Pitch classes set in `mask` (bit 0 = C). */
