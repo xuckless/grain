@@ -606,6 +606,8 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
 - **Latency calibration:** measure round-trip latency with a loopback chirp test (⚙ Settings → Calibrate), and store it per input/output device pair. Recordings are compensated automatically. With "Calibrate before each recording" on (the default), Sing and Retake first run the same chirp test (`takes.ts` `calibrateBeforeRecording`; karaoke state Calibrating → CountIn, `AutoCalibration`: Calibrating → Ready(latency, Measured | Previous | Estimated)). It takes about 1.6 s (0.5 s chirp, then up to 1.1 s for its echo). Not hearing it (headphones on, volume low) never blocks: the device's stored latency is used, with a toast and an (i) note.
 - **Known exception (web):** the worklet's message handler copies a song's tracks, or a new take, into wasm memory when it arrives (`load`, `addTrack`). That allocates on the audio thread between render quanta, not inside `process()`. Desktop hands takes to the callback pre-built through a ring and keeps the audio alive on the control side.
 - Use `f32` everywhere in DSP. Keep the internal sample rate the same as the device rate; resample files on load with `rubato`, never in the callback.
+- **No panic may reach CoreAudio.** Unwinding out of an `extern "C"` audio callback aborts the app (it did, on a Continuity iPhone microphone). The vendored `third_party/coreaudio-rs` (its `NOTICE.md`) runs every callback in `catch_unwind`, and `engine-native::capture` wraps its own too.
+- **Input devices (desktop, `engine-native::capture`):** every take, calibration and monitor stream opens the system's default input afresh. On macOS that's the one picked in System Settings › Sound or Control Center (an iPhone via Continuity included): ⚙ Settings › Microphone shows it, and "Change…" opens that pane. Any device format (f32, i16, i32, u16) is mixed to mono in the callback without allocating. A stream turns `StreamState::Failed` (`engine-core::input`) on a device error, a caught panic, a switch of the default input or 2 s without audio. Karaoke then ends a take like a Pause (saved), drops a retake (its original kept) and says why. Panics are logged to `<app data>/logs/panic.log`.
 - **Web:** `SharedArrayBuffer` needs cross-origin isolation, so the web host must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
 
 ---
@@ -772,6 +774,9 @@ Keep this table current: update the Status column whenever a milestone moves.
 
 ### Everything still open (project-wide)
 
+- **Microphone:** Windows and Linux use the system default input with no in-app picker yet
+  (macOS hands the choice to System Settings, §9); live monitoring doesn't yet report a failed
+  input stream to the UI (Karaoke runs do).
 - **Import/separation:** Deno for yt-dlp isn't bundled; Best vocals is slow on CPU (~7 min);
   CoreML stays off (NaN); take pre-processing (§5.1) isn't applied.
 - **Scoring/karaoke:** ML forced alignment of words; SwiftF0 live; our own AEC; the live preview
