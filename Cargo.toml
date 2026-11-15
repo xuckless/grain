@@ -10,7 +10,7 @@ members = [
     "apps/desktop/src-tauri",
 ]
 # Vendored third-party code (not linted as ours).
-exclude = ["third_party/deep-filter-rt"]
+exclude = ["third_party/deep-filter-rt", "third_party/coreaudio-rs"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,3 +25,8 @@ ingest = { path = "crates/ingest" }
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# cpal's CoreAudio backend, with a guard that stops a panic in an audio callback from aborting
+# the app (third_party/coreaudio-rs/NOTICE.md).
+[patch.crates-io]
+coreaudio-rs = { path = "third_party/coreaudio-rs" }
