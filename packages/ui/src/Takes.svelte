@@ -1,13 +1,15 @@
 <script lang="ts">
   import type { EngineHost, Take } from "@workstation/engine-api";
   import type { Action } from "svelte/action";
+  import Confirm from "./Confirm.svelte";
   import Icon from "./Icon.svelte";
   import { clock, onFrame } from "./clock";
   import { listener, services } from "./context";
   import { dotRow } from "./grain";
   import { isListening, listenProgress, madeFrom, sungTakes, LISTEN_MODES, type ListenItem } from "./listen";
-  import { enter, popover } from "./motion";
+  import { enter } from "./motion";
   import { errorMessage, type Session } from "./state";
+  import { deleteTake } from "./takeops";
 
   /**
    * The song's takes, newest first, each playable on its own or over the backing (the one
@@ -74,9 +76,7 @@
     edit = { kind: "saving", id };
     if (session.listening.kind !== "idle" && isListening(session.listening, item(id))) listen({ kind: "stop" });
     try {
-      session.saved(await host.takes.remove(id));
-      if (session.score.kind === "scored" && session.score.take === id) session.score = { kind: "none" };
-      if (session.take === id) session.take = null;
+      await deleteTake(host.takes, session, id);
     } catch (e) {
       toast(`Couldn't delete the take: ${errorMessage(e)}`, "error");
     }
@@ -154,14 +154,13 @@
             <div class="delete">
               <button class="press quiet small-button" disabled={edit.kind === "saving"} aria-expanded={edit.kind === "confirmingDelete" && edit.id === t.id} onclick={() => (edit = { kind: "confirmingDelete", id: t.id })}>Delete</button>
               {#if edit.kind === "confirmingDelete" && edit.id === t.id}
-                <div class="confirm" role="dialog" aria-label="Delete this take?" transition:popover>
-                  <strong>Delete “{t.name}”?</strong>
-                  <span class="muted">Its audio is removed from the song. This can't be undone.</span>
-                  <div class="row">
-                    <button class="press quiet" onclick={() => (edit = { kind: "idle" })}>Cancel</button>
-                    <button class="press primary" onclick={() => void remove(t.id)}>Delete</button>
-                  </div>
-                </div>
+                <Confirm
+                  title={`Delete “${t.name}”?`}
+                  body="It leaves the song. ⌘Z brings it back until you close the song."
+                  confirm="Delete"
+                  onCancel={() => (edit = { kind: "idle" })}
+                  onConfirm={() => void remove(t.id)}
+                />
               {/if}
             </div>
           </div>
@@ -257,34 +256,5 @@
   }
   .delete {
     position: relative;
-  }
-  .confirm {
-    position: absolute;
-    right: 0;
-    top: 52px;
-    width: 300px;
-    box-sizing: border-box;
-    padding: 16px 18px;
-    background: var(--c-raised);
-    border-radius: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    transform-origin: top right;
-    z-index: 40;
-  }
-  .confirm strong {
-    font-weight: 500;
-  }
-  .row {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 12px;
-  }
-  .row button {
-    height: 40px;
-    padding: 0 14px;
-    border-radius: 10px;
   }
 </style>

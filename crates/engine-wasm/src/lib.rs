@@ -66,8 +66,15 @@ pub struct WasmSong {
     /// Each take's audio through its processing chain (AGENTS.md §8.7), rendered by the compute
     /// worker and handed back with `setProcessed`; `None`: the raw take is what plays.
     processed: Vec<Option<Vec<f32>>>,
+    /// Takes deleted or retaken this session, with their audio, so ⌘Z can bring them back
+    /// (AGENTS.md §8.7). They aren't saved: reopening the song forgets them.
+    aside: Vec<take::SetAside>,
+    aside_audio: TakeAudio,
     export: ExportJob,
 }
+
+/// Each take's raw and processed audio, by take id.
+type TakeAudio = std::collections::HashMap<u32, (Vec<f32>, Option<Vec<f32>>)>;
 
 /// A mixdown in progress (AGENTS.md §8.8), advanced a chunk per call so the main thread keeps
 /// its frames.
@@ -98,6 +105,8 @@ impl WasmSong {
             audio,
             takes: Vec::new(),
             processed: Vec::new(),
+            aside: Vec::new(),
+            aside_audio: TakeAudio::new(),
             export: ExportJob::Idle,
         }
     }
@@ -281,14 +290,42 @@ impl WasmSong {
         to_js(&self.project)
     }
 
-    /// Deletes take `id` and its audio; returns the `Project`. The player's tracks are indexed
-    /// by position, so the host reloads them.
+    /// Changes which takes the song holds, keeping each take's audio with it; returns the
+    /// `Project`. The player's tracks are indexed by position, so the host reloads them.
+    fn rearrange_takes(
+        &mut self,
+        f: impl FnOnce(&mut Project, &mut Vec<take::SetAside>) -> Result<(), take::TakeError>,
+    ) -> Result<JsValue, JsError> {
+        let mut audio: TakeAudio = std::mem::take(&mut self.aside_audio);
+        let ids = self.project.takes.iter().map(|t| t.id);
+        audio.extend(ids.zip(self.takes.drain(..).zip(self.processed.drain(..))));
+        let changed = f(&mut self.project, &mut self.aside);
+        for t in &self.project.takes {
+            let (raw, processed) = audio.remove(&t.id).expect("every take has its audio");
+            self.takes.push(raw);
+            self.processed.push(processed);
+        }
+        self.aside_audio = audio;
+        changed.map_err(js_err)?;
+        to_js(&self.project)
+    }
+
+    /// Deletes take `id`; its audio is kept for this session so `restoreTake` can undo it.
     #[wasm_bindgen(js_name = deleteTake)]
     pub fn delete_take(&mut self, id: u32) -> Result<JsValue, JsError> {
-        let i = take::remove_take(&mut self.project, id).map_err(js_err)?;
-        self.takes.remove(i);
-        self.processed.remove(i);
-        to_js(&self.project)
+        self.rearrange_takes(|p, aside| take::set_aside(p, aside, id))
+    }
+
+    /// Puts a deleted take back where it was.
+    #[wasm_bindgen(js_name = restoreTake)]
+    pub fn restore_take(&mut self, id: u32) -> Result<JsValue, JsError> {
+        self.rearrange_takes(|p, aside| take::put_back(p, aside, id))
+    }
+
+    /// Take `replacement` takes over take `target`'s place (a retake, or undoing or redoing one).
+    #[wasm_bindgen(js_name = replaceTake)]
+    pub fn replace_take(&mut self, target: u32, replacement: u32) -> Result<JsValue, JsError> {
+        self.rearrange_takes(|p, aside| take::replace_take(p, aside, target, replacement))
     }
 
     #[wasm_bindgen(js_name = setLyrics)]
@@ -767,6 +804,8 @@ impl SongRestorer {
             project: self.project,
             audio,
             takes: self.takes,
+            aside: Vec::new(),
+            aside_audio: TakeAudio::new(),
             export: ExportJob::Idle,
         })
     }

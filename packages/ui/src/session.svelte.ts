@@ -11,6 +11,8 @@ import type { Backing } from "./takes";
 import { emptyHistory, record, type Command, type History } from "./history";
 import { fitView, type View } from "./viewport";
 import type { MonitorState } from "./autotune";
+import type { RunSpan } from "./karaoke";
+import { loadCalibrateFirst } from "./prefs";
 
 /** Who has the microphone: nobody, a take being recorded, or a latency calibration. */
 export type MicUse = { kind: "free" } | { kind: "recording" } | { kind: "calibrating" };
@@ -40,6 +42,11 @@ export class Session {
   mic = $state<MicUse>({ kind: "free" });
   /** The Karaoke loop (A–B, song seconds), also an export range. */
   loop = $state.raw<{ start: number; end: number } | null>(null);
+  /** Run a quick latency calibration when a recording starts (Settings; remembered, prefs.ts). */
+  calibrateFirst = $state(loadCalibrateFirst());
+  /** The song span each take recorded this session covered, so a retake sings it again
+   * (karaoke.ts `retakeSpan`; older takes fall back to their sung span). */
+  spans = $state.raw<ReadonlyMap<number, RunSpan>>(new Map());
   /** ⌘Z / ⇧⌘Z (history.ts). */
   history = $state.raw<History>(emptyHistory);
 

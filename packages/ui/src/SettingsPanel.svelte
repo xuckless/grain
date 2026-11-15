@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EngineHost, Latency } from "@workstation/engine-api";
   import Toggle from "./Toggle.svelte";
+  import { saveCalibrateFirst } from "./prefs";
   import { monitorMode, switchMonitor } from "./autotune";
   import { services } from "./context";
   import { LISTEN_MODES } from "./listen";
@@ -124,6 +125,17 @@
           Calibrate once per microphone and output: unplug your headphones, or hold them against the microphone, so it can hear the test chirp.
         {/if}
       </p>
+      <div class="row">
+        <Toggle
+          checked={session.calibrateFirst}
+          label="Calibrate before each recording"
+          onToggle={(on) => {
+            session.calibrateFirst = on;
+            saveCalibrateFirst(on);
+          }}
+        />
+      </div>
+      <p class="muted">A short test sound (under 2 s) before Sing and Retake. If it isn't heard (headphones on), your last latency is used and recording goes ahead.</p>
     </section>
 
     <section>

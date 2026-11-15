@@ -405,7 +405,8 @@ mod tests {
         set_master(&mut p, Some(a)).unwrap();
         assert_eq!(master(&p), Some(a));
         assert!(set_master(&mut p, Some(99)).is_err());
-        crate::take::remove_take(&mut p, a).unwrap();
+        crate::take::set_aside(&mut p, &mut Vec::new(), a).unwrap();
+        assert_eq!(p.master_take, None);
         assert_eq!(master(&p), Some(b));
     }
 

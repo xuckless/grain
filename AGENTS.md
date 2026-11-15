@@ -482,16 +482,25 @@ Every session view is built from the same three parts, so the views read as one 
 - **Disabled controls** keep their shape and dim their label to `--c-disabled`, which holds
   4:1 or better on ground, surface and raised. Switches sit on a translucent-white track, so the
   off state reads on any background.
-- **Bottom action** (`BottomAction.svelte`): the view's one primary action, centred and sticky at
-  the bottom (`.cta`), with an optional `side` snippet for its companions (Pause/Finish, a
-  step's On toggle). Score: ▶ Play take. Karaoke: ● Sing / Pause (Finish beside). Auto-tune:
-  Apply to take. Pitch: Apply edits to take. Mix and Produce have none (Produce's cards each
-  carry their own apply).
+- **Bottom action** (`BottomAction.svelte`): the view's one primary action (`.cta`), with an
+  optional `side` snippet for its companions (Pause/Finish, a step's On toggle). The view hands
+  it to SessionScreen through the footer slot (`context.ts` `Footer`: None | Shown(owner)), which
+  draws it as the window's **footer**: its own row of the screen's flex column, a solid
+  ground-coloured strip across the full width, so the scrolling content always ends above it and
+  never shows behind or below it. Score: ▶ Play take. Karaoke: ● Sing / Pause (Finish, Retake
+  beside). Auto-tune: Apply to take. Pitch: Apply edits to take. Mix and Produce have none
+  (Produce's cards each carry their own apply).
+- **Short jobs** (`Working.svelte`): saving a take and calibrating float a card in Home's import
+  style (Gather grains over a dot progress bar) over the lane; jobs with no fraction ease towards
+  full, and done fills it with a hit burst ("Take saved"). The footer button says what's happening
+  (Calibrating…, Saving take…).
 - **⚙ Settings** (`SettingsPanel.svelte`, from the top bar): playback mode, microphone latency
-  with calibration (§9), and live monitoring. Calibration exists only here; `Session.mic`
-  (Free | Recording | Calibrating) keeps calibration and recording apart.
-- **The take picker** (`TakePicker.svelte`): `Session.take` (`null` = the ★ master) and the star
-  that makes the picked take the master (`TakeStore.setMaster`, undoable).
+  with calibration (§9), "Calibrate before each recording" (default on, `prefs.ts`), and live
+  monitoring. `Session.mic` (Free | Recording | Calibrating) keeps calibration and recording
+  apart; a karaoke run's own calibration counts as Recording (the run holds the microphone).
+- **The take picker** (`TakePicker.svelte`): `Session.take` (`null` = the ★ master), the star
+  that makes the picked take the master (`TakeStore.setMaster`, undoable), and a delete on each
+  take in its list (asked first, undoable), like the takes list's.
 - **Shared timeline viewport** (`viewport.ts`, `Session.viewport`): one `View { start, span,
   overshoot }` for Mix, Auto-tune and Pitch, so a zoom carries across views. ⌘/Ctrl-scroll or a
   trackpad pinch zooms around the pointer, horizontal (or ⇧) scroll pans, `ZoomControls` zoom
@@ -547,7 +556,18 @@ simplest that serves singing; reordering isn't offered. Each step is `Step<T>`: 
 - **What is never done any more:** "(tuned)", "(edited)", "(cleaned)", "(chained)" copies. Old
   projects load with every chain unset and no star; their derived takes stay as plain takes with
   their names (tested). Harmony and Generate still create tracks.
+- **Delete and retake** (`takeops.ts`, `engine-core::take::{set_aside, put_back, replace_take}`):
+  a deleted take is **set aside**, not destroyed: out of the project with its slot, pitch-editor
+  list and ★, its audio kept (desktop: on disk; web: in memory) until the song closes, so ⌘Z
+  (`Delete` command) puts it back exactly. A deleted ★ falls back to the newest take. **Retake**
+  (Karaoke) sings the picked take's span again (the span its run covered this session, else its
+  sung span with the pre-roll; `karaoke.ts` `retakeSpan`) as a `Pass` of kind Retake(target, end)
+  in the karaoke machine: no pause, Cancel keeps the original, and the run ends at the span's end.
+  The new take is saved like any take first; only then does `TakeStore.replace(target, new)` move
+  it into the target's slot with its name and ★ and set the target aside (one `Replace` command;
+  undo swaps back). A crash or failed save before that leaves the original in the song.
 - **Contract:** `TakeStore.setChain(id, chain) → ChainOutcome` (Rendered(project) | NeedsModel),
+  `TakeStore.remove(id)`, `TakeStore.restore(id)`, `TakeStore.replace(target, replacement)`,
   `TakeStore.setMaster(id | null)`; both save at once like every take change. The UI goes through
   `chain.ts` `commitChain` (one `ChainJob`: Idle | Rendering | NeedsModel | Failed per view).
 
@@ -583,7 +603,7 @@ On the audio thread (cpal callback / AudioWorklet `process()`):
 - **No allocation, locks, syscalls, logging or panics.** Preallocate everything. Use `rtrb` or SPSC rings for audio data and lock-free triple buffers for parameters and UI snapshots.
 - **No ML inference** on the audio thread. Inference runs on a worker thread, and results come back through rings.
 - Block sizes vary. AudioWorklet's render quantum is 128 frames; do not assume more. Desktop targets 128–256 frames.
-- **Latency calibration:** measure round-trip latency with a loopback chirp test (the Score view's Calibrate), and store it per input/output device pair. Recordings are compensated automatically.
+- **Latency calibration:** measure round-trip latency with a loopback chirp test (⚙ Settings → Calibrate), and store it per input/output device pair. Recordings are compensated automatically. With "Calibrate before each recording" on (the default), Sing and Retake first run the same chirp test (`takes.ts` `calibrateBeforeRecording`; karaoke state Calibrating → CountIn, `AutoCalibration`: Calibrating → Ready(latency, Measured | Previous | Estimated)). It takes about 1.6 s (0.5 s chirp, then up to 1.1 s for its echo). Not hearing it (headphones on, volume low) never blocks: the device's stored latency is used, with a toast and an (i) note.
 - **Known exception (web):** the worklet's message handler copies a song's tracks, or a new take, into wasm memory when it arrives (`load`, `addTrack`). That allocates on the audio thread between render quanta, not inside `process()`. Desktop hands takes to the callback pre-built through a ring and keeps the audio alive on the control side.
 - Use `f32` everywhere in DSP. Keep the internal sample rate the same as the device rate; resample files on load with `rubato`, never in the callback.
 - **Web:** `SharedArrayBuffer` needs cross-origin isolation, so the web host must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.

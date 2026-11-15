@@ -94,6 +94,34 @@ export function calibrationNext(s: Calibration, e: CalibrationEvent): Calibratio
   }
 }
 
+/** The quick calibration before each recording: Calibrating → Ready. `source`: whether the chirp
+ * was heard (Measured), or the device's stored latency is used instead (Previous: calibrated or set
+ * before; Estimated: never calibrated). Not hearing the chirp never blocks a recording. */
+export type AutoCalibration =
+  | { kind: "calibrating" }
+  | { kind: "ready"; latency: Latency; source: "Measured" | "Previous" | "Estimated" };
+
+/** The microphone calls the auto-calibration uses (the host's loopback test, unchanged). */
+export type LatencyMeter = { measureLatency(): Promise<Latency>; latency(): Promise<Latency> };
+
+/** Plays the loopback chirp and stores what it measures; when it isn't heard (headphones on,
+ * volume low), keeps the latency stored for this device. */
+export async function calibrateBeforeRecording(mic: LatencyMeter): Promise<Extract<AutoCalibration, { kind: "ready" }>> {
+  try {
+    return { kind: "ready", latency: await mic.measureLatency(), source: "Measured" };
+  } catch {
+    const latency = await mic.latency();
+    return { kind: "ready", latency, source: latency.source.kind === "Default" ? "Estimated" : "Previous" };
+  }
+}
+
+/** What the (i) popover says about a calibration that used a stored latency. */
+export function calibrationNote(c: AutoCalibration): string | null {
+  if (c.kind !== "ready" || c.source === "Measured") return null;
+  const what = c.source === "Previous" ? "your last latency" : "an estimated latency";
+  return `Couldn't hear the test sound before your last take (headphones on, or the volume low), so it used ${what} (${c.latency.ms.toFixed(0)} ms). To measure it, unplug your headphones or turn the volume up.`;
+}
+
 /** Step of the manual latency nudge, ms. */
 export const LATENCY_NUDGE_MS = 5;
 

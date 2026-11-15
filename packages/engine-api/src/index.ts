@@ -331,8 +331,16 @@ export type ChainOutcome = { kind: "Rendered"; project: Project } | { kind: "Nee
 
 export type TakeStore = {
   rename(id: number, name: string): Promise<Project>;
-  /** Deletes take `id` and its audio. The player is rebuilt without it, so playback stops. */
+  /** Deletes take `id`. Its audio is kept until the song closes, so `restore` can undo it. The
+   * player is rebuilt without it, so playback stops. A deleted ★ master falls back to the newest
+   * remaining take. */
   remove(id: number): Promise<Project>;
+  /** Puts deleted take `id` back where it was (its slot, pitch edits and ★). */
+  restore(id: number): Promise<Project>;
+  /** Take `replacement` takes over take `target`'s place and `target` is set aside (kept like a
+   * deleted take). A just-recorded retake moves into the slot with the target's name and ★;
+   * undoing or redoing one swaps the two back. Saved at once. */
+  replace(target: number, replacement: number): Promise<Project>;
   /** Replaces take `id`'s processing chain (AGENTS.md §8.7) and renders it off the main thread,
    * re-running only from the first step that changed; saved at once. One call at a time. */
   setChain(id: number, chain: TakeChain): Promise<ChainOutcome>;

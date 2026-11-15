@@ -287,19 +287,103 @@ pub fn rename_take(project: &mut Project, id: u32, name: &str) -> Result<(), Tak
     Ok(())
 }
 
-/// Removes take `id` and its pitch-editor list. Returns the index it had in `project.takes`
-/// (the player's track order: song tracks, then takes). Takes made from it keep their audio.
-pub fn remove_take(project: &mut Project, id: u32) -> Result<usize, TakeError> {
-    let i = project
+/// A take taken out of the song by a delete or a retake, kept with what puts it back exactly
+/// where it was (its slot, its pitch-editor list and its ★), so the change can be undone
+/// (AGENTS.md §8.7). Hosts keep its audio until the song closes; only then is it gone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetAside {
+    pub take: Take,
+    /// Its index in `project.takes` (the player's track order: song tracks, then takes).
+    pub index: usize,
+    pub edits: Vec<crate::edit::PitchEdit>,
+    /// Whether it was the starred master.
+    pub was_master: bool,
+}
+
+/// Takes take `id` out of the song into `aside`. A starred master falls back to the newest
+/// remaining take (`master_take` is cleared). Takes made from it keep their audio.
+pub fn set_aside(
+    project: &mut Project,
+    aside: &mut Vec<SetAside>,
+    id: u32,
+) -> Result<(), TakeError> {
+    let index = project
         .takes
         .iter()
         .position(|t| t.id == id)
         .ok_or(TakeError::Unknown(id))?;
-    project.takes.remove(i);
+    let take = project.takes.remove(index);
+    let source = EditSource::Take { id };
+    let (edits, kept) = std::mem::take(&mut project.pitch_edits)
+        .into_iter()
+        .partition(|e| e.source == source);
+    project.pitch_edits = kept;
+    let was_master = project.master_take == Some(id);
+    if was_master {
+        project.master_take = None;
+    }
+    aside.push(SetAside {
+        take,
+        index,
+        edits,
+        was_master,
+    });
+    Ok(())
+}
+
+/// Puts take `id` back from `aside`: its slot, its edits, and its ★ if it had it.
+pub fn put_back(
+    project: &mut Project,
+    aside: &mut Vec<SetAside>,
+    id: u32,
+) -> Result<(), TakeError> {
+    let k = aside
+        .iter()
+        .position(|a| a.take.id == id)
+        .ok_or(TakeError::Unknown(id))?;
+    let a = aside.remove(k);
     project
-        .pitch_edits
-        .retain(|e| e.source != EditSource::Take { id });
-    Ok(i)
+        .takes
+        .insert(a.index.min(project.takes.len()), a.take);
+    project.pitch_edits.extend(a.edits);
+    if a.was_master {
+        project.master_take = Some(id);
+    }
+    Ok(())
+}
+
+/// Take `replacement` takes over take `target`'s place, and `target` is set aside. A retake
+/// (`replacement` in the song, just recorded) moves into `target`'s slot with its name and ★;
+/// undoing or redoing one (`replacement` set aside) puts it back where it was.
+pub fn replace_take(
+    project: &mut Project,
+    aside: &mut Vec<SetAside>,
+    target: u32,
+    replacement: u32,
+) -> Result<(), TakeError> {
+    if target == replacement {
+        return Err(TakeError::Unknown(replacement));
+    }
+    if aside.iter().any(|a| a.take.id == replacement) {
+        set_aside(project, aside, target)?;
+        return put_back(project, aside, replacement);
+    }
+    let j = project
+        .takes
+        .iter()
+        .position(|t| t.id == replacement)
+        .ok_or(TakeError::Unknown(replacement))?;
+    set_aside(project, aside, target)?;
+    let out = aside.last().expect("just set aside");
+    let (index, name, was_master) = (out.index, out.take.name.clone(), out.was_master);
+    let j = if j > index { j - 1 } else { j };
+    let mut t = project.takes.remove(j);
+    t.name = name;
+    project.takes.insert(index.min(project.takes.len()), t);
+    if was_master {
+        project.master_take = Some(replacement);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -373,18 +457,63 @@ mod tests {
         let edit = crate::edit::edit_of(&project, EditSource::Take { id: a }).unwrap();
         crate::edit::store(&mut project, edit).unwrap();
         assert_eq!(project.pitch_edits.len(), 1);
-        assert_eq!(remove_take(&mut project, a).unwrap(), 0);
+        let mut aside = Vec::new();
+        set_aside(&mut project, &mut aside, a).unwrap();
         assert_eq!(project.takes.len(), 1);
         assert_eq!(project.takes[0].id, b);
         assert!(project.pitch_edits.is_empty());
         assert!(matches!(
-            remove_take(&mut project, a),
+            set_aside(&mut project, &mut aside, a),
             Err(TakeError::Unknown(_))
         ));
+        // Undo: back in its slot with its edits.
+        put_back(&mut project, &mut aside, a).unwrap();
+        assert_eq!(
+            project.takes.iter().map(|t| t.id).collect::<Vec<_>>(),
+            [a, b]
+        );
+        assert_eq!(project.pitch_edits.len(), 1);
+        assert!(aside.is_empty());
+        set_aside(&mut project, &mut aside, a).unwrap();
         assert!(matches!(
             rename_take(&mut project, a, "x"),
             Err(TakeError::Unknown(_))
         ));
+    }
+
+    #[test]
+    fn a_retake_takes_over_the_slot_name_and_star_and_undoes() {
+        let mut project = song();
+        let audio = melody(4.0);
+        let add = |p: &mut Project| {
+            add_take(
+                p,
+                TakeSource::Recorded { latency_ms: 0.0 },
+                &audio,
+                TrackedPitch::yin(&audio, SR),
+            )
+        };
+        let a = add(&mut project);
+        let b = add(&mut project);
+        rename_take(&mut project, a, "Verse").unwrap();
+        project.master_take = Some(a);
+        let retake = add(&mut project);
+        let ids = |p: &Project| p.takes.iter().map(|t| t.id).collect::<Vec<_>>();
+        let mut aside = Vec::new();
+        replace_take(&mut project, &mut aside, a, retake).unwrap();
+        assert_eq!(ids(&project), [retake, b]);
+        assert_eq!(project.takes[0].name, "Verse");
+        assert_eq!(project.master_take, Some(retake));
+        // Undo: the original is back, starred; the retake is kept aside for redo.
+        replace_take(&mut project, &mut aside, retake, a).unwrap();
+        assert_eq!(ids(&project), [a, b]);
+        assert_eq!(project.master_take, Some(a));
+        // Redo.
+        replace_take(&mut project, &mut aside, a, retake).unwrap();
+        assert_eq!(ids(&project), [retake, b]);
+        assert_eq!(project.master_take, Some(retake));
+        assert_eq!(aside.len(), 1);
+        assert!(replace_take(&mut project, &mut aside, b, b).is_err());
     }
 
     #[test]

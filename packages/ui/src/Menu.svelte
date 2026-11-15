@@ -2,13 +2,21 @@
   import Icon from "./Icon.svelte";
   import { dur, enter, popover } from "./motion";
 
-  /** A dropdown listbox (design: Components → Menu). Opens from its trigger (rules 10–12). */
+  /** A dropdown listbox (design: Components → Menu). Opens from its trigger (rules 10–12).
+   * `remove`: a delete button on each row (it closes the menu; the caller confirms). */
   let {
     label,
     value,
     options,
     onPick,
-  }: { label: string; value: T; options: readonly { id: T; label: string }[]; onPick: (id: T) => void } = $props();
+    remove,
+  }: {
+    label: string;
+    value: T;
+    options: readonly { id: T; label: string }[];
+    onPick: (id: T) => void;
+    remove?: { label: (o: { id: T; label: string }) => string; run: (id: T) => void };
+  } = $props();
 
   type MenuState = { kind: "closed" } | { kind: "open" };
   let menu = $state<MenuState>({ kind: "closed" });
@@ -46,10 +54,23 @@
   {#if menu.kind === "open"}
     <div class="list" role="listbox" aria-label={label} transition:popover>
       {#each options as o, i (o.id)}
-        <button class="item" role="option" aria-selected={o.id === value} onclick={() => pick(o.id)} in:enter={{ delay: i * dur.stagger, detail: true }}>
-          <span>{o.label}</span>
-          {#if o.id === value}<Icon name="check" size={14} />{/if}
-        </button>
+        <div class="row" in:enter={{ delay: i * dur.stagger, detail: true }}>
+          <button class="item" role="option" aria-selected={o.id === value} onclick={() => pick(o.id)}>
+            <span>{o.label}</span>
+            {#if o.id === value}<Icon name="check" size={14} />{/if}
+          </button>
+          {#if remove}
+            <button
+              class="press icon quiet remove"
+              aria-label={remove.label(o)}
+              title={remove.label(o)}
+              onclick={() => {
+                menu = { kind: "closed" };
+                remove.run(o.id);
+              }}><Icon name="trash" size={16} /></button
+            >
+          {/if}
+        </div>
       {/each}
     </div>
   {/if}
@@ -96,7 +117,23 @@
     display: flex;
     flex-direction: column;
   }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .remove {
+    width: 36px;
+    height: 36px;
+    flex: none;
+    color: var(--c-muted);
+  }
+  .remove:hover {
+    color: var(--c-text);
+  }
   .item {
+    flex: 1;
+    min-width: 0;
     height: 40px;
     border-radius: 8px;
     padding: 0 12px;

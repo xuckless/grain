@@ -378,6 +378,17 @@ export async function createWebHost(): Promise<EngineHost> {
   }
 
   /** Saves the loaded song to OPFS (a no-op where OPFS is unavailable). */
+  /** Changes which takes the song holds, then reloads the player (its tracks are indexed by
+   * position) and saves. */
+  async function rearrangeTakes(change: (song: WasmSong) => void): Promise<Project> {
+    const song = loadedSong();
+    await stopPlayback();
+    change(song);
+    const project = toPlayer(song);
+    await persist();
+    return project;
+  }
+
   async function persist(): Promise<void> {
     if (session.kind !== "loaded" || opfs.kind !== "available") return;
     session.id ??= crypto.randomUUID();
@@ -673,14 +684,9 @@ export async function createWebHost(): Promise<EngineHost> {
         await persist();
         return project;
       },
-      async remove(id) {
-        const song = loadedSong();
-        await stopPlayback();
-        song.deleteTake(id);
-        const project = toPlayer(song);
-        await persist();
-        return project;
-      },
+      remove: (id) => rearrangeTakes((song) => song.deleteTake(id)),
+      restore: (id) => rearrangeTakes((song) => song.restoreTake(id)),
+      replace: (target, replacement) => rearrangeTakes((song) => song.replaceTake(target, replacement)),
       async setChain(id, chain) {
         if (chain.clean.state === "Active") throw new Error(CLEAN_UNAVAILABLE);
         const song = loadedSong();

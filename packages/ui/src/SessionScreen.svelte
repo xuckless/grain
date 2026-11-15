@@ -5,6 +5,7 @@
   import SettingsPanel from "./SettingsPanel.svelte";
   import { commitChain, takeById } from "./chain";
   import { describe, redo, stateFor, undo, type Command, type Direction } from "./history";
+  import { applyTakeCommand } from "./takeops";
   import PitchView from "./PitchView.svelte";
   import ProduceView from "./ProduceView.svelte";
   import Grain from "./Grain.svelte";
@@ -14,7 +15,7 @@
   import ScoreView from "./ScoreView.svelte";
   import Tabs from "./Tabs.svelte";
   import TopBar from "./TopBar.svelte";
-  import { provideListen, services } from "./context";
+  import { provideFooter, provideListen, services, type Footer } from "./context";
   import { listenCommands, listenNext, observeListening, type ListenEvent } from "./listen";
   import { runCommands } from "./recorder";
   import { Orb } from "./grain";
@@ -58,6 +59,15 @@
   let saveButton = $state<HTMLButtonElement | undefined>();
   let saves = $state(0);
   let closeRoot = $state<HTMLDivElement | undefined>();
+  /** The current view's bottom action (BottomAction.svelte). The newest view to show one owns it;
+   * a view leaving mid-crossfade only clears the bar if it is still its own. */
+  let footer = $state.raw<Footer>({ kind: "none" });
+  provideFooter({
+    show: (owner, main, side) => (footer = { kind: "shown", owner, main, side }),
+    hide: (owner) => {
+      if (footer.kind === "shown" && footer.owner === owner) footer = { kind: "none" };
+    },
+  });
 
   const project = $derived(session.project);
   const title = $derived(songTitle(project));
@@ -140,6 +150,9 @@
         return session.saved(await host.takes.setMaster(stateFor(c, direction)));
       case "Rename":
         return session.saved(await host.takes.rename(c.take, stateFor(c, direction)));
+      case "Delete":
+      case "Replace":
+        return applyTakeCommand(host.takes, session, c, direction);
       case "PitchEdit": {
         await host.pitchEditor.set(stateFor(c, direction));
         session.pitchRevision += 1;
@@ -304,6 +317,13 @@
       {/key}
     </div>
   </div>
+  {#if footer.kind === "shown"}
+    <footer class="bottom" transition:enter>
+      <div class="side"></div>
+      <div class="main">{@render footer.main()}</div>
+      <div class="side end">{@render footer.side?.()}</div>
+    </footer>
+  {/if}
 </div>
 
 <style>
@@ -423,13 +443,52 @@
     min-height: 0;
     overflow: auto;
     box-sizing: border-box;
-    padding: 8px 24px 32px;
+    padding: 8px 24px 24px;
     display: flex;
     flex-direction: column;
     gap: 24px;
   }
   .stage {
     display: grid;
+  }
+  /* The footer is its own row of the window's flex column: a solid strip across the full width,
+     so the scrolling content above always ends at its top edge. */
+  .bottom {
+    flex: none;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 24px 16px;
+    background: var(--c-ground);
+    box-shadow: 0 -1px 0 color-mix(in srgb, var(--c-text) 6%, transparent);
+  }
+  .side {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .end {
+    justify-content: flex-end;
+  }
+  .main :global(.cta) {
+    height: 56px;
+    min-width: 200px;
+    padding: 0 28px;
+    border: 0;
+    border-radius: 28px;
+    background: var(--c-text);
+    color: var(--c-ground);
+    font-size: 17px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+  .main :global(.cta:disabled) {
+    background: var(--c-surface);
+    color: var(--c-disabled);
   }
   .layer {
     grid-area: 1 / 1;

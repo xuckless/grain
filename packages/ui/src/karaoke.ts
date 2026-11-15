@@ -3,77 +3,125 @@
 // (§5's per-frame rule, `Microphone.live`); hit / near / miss come from `feedback.ts`. Pure
 // functions with no Svelte or host imports, so they are unit-tested under Node.
 
-import type { FrameTotals, LiveFrame, Note, OctaveMode, Transport } from "@workstation/engine-api";
+import type { FrameTotals, LiveFrame, Note, OctaveMode, Project, Transport } from "@workstation/engine-api";
 import { frameFeedback, liveNoteFeedback, type Feedback } from "./feedback.ts";
+import { itemSpan } from "./listen.ts";
 
 // ---------------------------------------------------------------------------------------------
-// Session: Idle → CountIn → Singing ⇄ Paused → Finished (+ Failed). Every uninterrupted run
-// (count-in to pause or finish) is recorded and saved as a take, so pausing never loses singing.
+// Session: Idle → [Calibrating] → CountIn → Singing ⇄ Paused → Finished (+ Failed). Every
+// uninterrupted run (count-in to pause or finish) is recorded and saved as a take, so pausing
+// never loses singing. A run is a `Pass`: a new take, or a retake of an existing one, which sings
+// that take's span again and replaces it once saved. A retake can be cancelled (the original is
+// untouched) but not paused. Sing and Retake start with a quick latency calibration when the
+// singer has it on (Settings → Calibrate before each recording).
+
+export type Pass =
+  | { kind: "take" }
+  /** Re-records take `target` over its span, ending at song time `end` (seconds). */
+  | { kind: "retake"; target: number; end: number };
 
 export type Karaoke =
   | { kind: "idle" }
+  /** Measuring the round-trip latency before the count-in. */
+  | { kind: "calibrating"; pass: Pass }
   /** `heard`: the transport has shown the count-in (an earlier poll may predate it). */
-  | { kind: "countIn"; heard: boolean }
-  | { kind: "singing" }
+  | { kind: "countIn"; heard: boolean; pass: Pass }
+  | { kind: "singing"; pass: Pass }
   /** The run is being saved before the pause takes hold. */
   | { kind: "pausing" }
   /** `frame`: where the song resumes. */
   | { kind: "paused"; frame: number }
-  /** The last run is being saved. */
-  | { kind: "finishing" }
+  /** The last run is being saved (and, for a retake, swapped in). */
+  | { kind: "finishing"; pass: Pass }
   | { kind: "finished" }
   | { kind: "failed"; message: string };
 
 export type KaraokeEvent =
-  | { kind: "start" }
+  /** Sing (`calibrate`: measure the latency first). */
+  | { kind: "start"; calibrate: boolean }
+  | { kind: "retake"; target: number; end: number; calibrate: boolean }
+  | { kind: "calibrated" }
   | { kind: "countInHeard" }
   | { kind: "countInElapsed" }
   | { kind: "pause" }
   | { kind: "paused"; frame: number }
   | { kind: "resume" }
   | { kind: "finish" }
+  /** Drops the run without saving it (a retake, or a run still calibrating). */
+  | { kind: "cancel" }
   | { kind: "saved" }
   | { kind: "reset" }
   | { kind: "fail"; message: string };
 
+const begin = (pass: Pass, calibrate: boolean): Karaoke => (calibrate ? { kind: "calibrating", pass } : { kind: "countIn", heard: false, pass });
+
 export function karaokeNext(s: Karaoke, e: KaraokeEvent): Karaoke | null {
+  const ready = s.kind === "idle" || s.kind === "finished" || s.kind === "failed";
   switch (e.kind) {
     case "start":
-      return s.kind === "idle" || s.kind === "finished" || s.kind === "failed" ? { kind: "countIn", heard: false } : null;
+      return ready ? begin({ kind: "take" }, e.calibrate) : null;
+    case "retake":
+      return ready || s.kind === "paused" ? begin({ kind: "retake", target: e.target, end: e.end }, e.calibrate) : null;
+    case "calibrated":
+      return s.kind === "calibrating" ? { kind: "countIn", heard: false, pass: s.pass } : null;
     case "countInHeard":
-      return s.kind === "countIn" && !s.heard ? { kind: "countIn", heard: true } : null;
+      return s.kind === "countIn" && !s.heard ? { ...s, heard: true } : null;
     case "countInElapsed":
-      return s.kind === "countIn" && s.heard ? { kind: "singing" } : null;
+      return s.kind === "countIn" && s.heard ? { kind: "singing", pass: s.pass } : null;
     case "pause":
-      return s.kind === "singing" ? { kind: "pausing" } : null;
+      return s.kind === "singing" && s.pass.kind === "take" ? { kind: "pausing" } : null;
     case "paused":
       return s.kind === "pausing" ? { kind: "paused", frame: e.frame } : null;
     case "resume":
-      return s.kind === "paused" ? { kind: "countIn", heard: false } : null;
+      return s.kind === "paused" ? { kind: "countIn", heard: false, pass: { kind: "take" } } : null;
     case "finish":
-      if (s.kind === "countIn" || s.kind === "singing") return { kind: "finishing" };
+      if (s.kind === "countIn" || s.kind === "singing") return { kind: "finishing", pass: s.pass };
       return s.kind === "paused" ? { kind: "finished" } : null;
+    case "cancel":
+      if (s.kind === "calibrating") return { kind: "idle" };
+      return (s.kind === "countIn" || s.kind === "singing") && s.pass.kind === "retake" ? { kind: "idle" } : null;
     case "saved":
       return s.kind === "finishing" ? { kind: "finished" } : null;
     case "reset":
       return s.kind === "finished" || s.kind === "failed" ? { kind: "idle" } : null;
     case "fail":
-      return s.kind === "countIn" || s.kind === "singing" || s.kind === "pausing" || s.kind === "finishing" ? { kind: "failed", message: e.message } : null;
+      return s.kind === "calibrating" || s.kind === "countIn" || s.kind === "singing" || s.kind === "pausing" || s.kind === "finishing"
+        ? { kind: "failed", message: e.message }
+        : null;
   }
 }
 
-/** Whether a run is recording (the microphone is open). */
+/** Whether a run holds the microphone (calibrating or recording). */
 export function isLive(s: Karaoke): boolean {
-  return s.kind === "countIn" || s.kind === "singing" || s.kind === "pausing" || s.kind === "finishing";
+  return s.kind === "calibrating" || s.kind === "countIn" || s.kind === "singing" || s.kind === "pausing" || s.kind === "finishing";
+}
+
+/** The pass being sung, while one is. */
+export function livePass(s: Karaoke): Pass | null {
+  return s.kind === "calibrating" || s.kind === "countIn" || s.kind === "singing" || s.kind === "finishing" ? s.pass : null;
 }
 
 /** What the transport says: the count-in started or ended, or the song stopped (its end, or the
- * Stop button), which finishes the performance. */
-export function observeKaraoke(s: Karaoke, t: Transport): KaraokeEvent | null {
+ * Stop button), which finishes the performance. A retake also finishes at the end of its span. */
+export function observeKaraoke(s: Karaoke, t: Transport, seconds: number): KaraokeEvent | null {
   if (s.kind === "countIn" && !s.heard) return t.kind === "CountIn" ? { kind: "countInHeard" } : null;
   if (s.kind === "countIn" && t.kind === "Playing") return { kind: "countInElapsed" };
   if ((s.kind === "countIn" || s.kind === "singing") && (t.kind === "Stopped" || t.kind === "Paused")) return { kind: "finish" };
+  if (s.kind === "singing" && s.pass.kind === "retake" && seconds >= s.pass.end) return { kind: "finish" };
   return null;
+}
+
+/** The song span a run covered (seconds, pre-roll included): where a retake sings again. */
+export type RunSpan = { from: number; to: number };
+
+/** Where a retake of take `id` sings: the span its run covered when it was recorded this session,
+ * else the span it is sung over, with the pre-roll before it. `null`: no such take. */
+export function retakeSpan(project: Project, spans: ReadonlyMap<number, RunSpan>, id: number, preRoll: number): RunSpan | null {
+  const known = spans.get(id);
+  if (known) return known;
+  if (!project.takes.some((t) => t.id === id)) return null;
+  const sung = itemSpan(project, { kind: "Take", id });
+  return { from: Math.max(0, sung.start - preRoll), to: sung.end };
 }
 
 // ---------------------------------------------------------------------------------------------
