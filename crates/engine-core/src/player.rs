@@ -237,6 +237,15 @@ impl Player {
         Ok(())
     }
 
+    /// Swaps track `index`'s audio (a take re-rendered through its chain, AGENTS.md §8.7),
+    /// keeping its mix. Returns the old audio so the caller drops it off the audio thread.
+    pub fn replace_audio(&mut self, index: usize, audio: Arc<[f32]>) -> Option<Arc<[f32]>> {
+        let track = self.tracks.get_mut(index)?;
+        self.length = self.length.max(audio.len() as u32);
+        track.right = audio.clone();
+        Some(std::mem::replace(&mut track.left, audio))
+    }
+
     pub fn transport(&self) -> Transport {
         self.transport
     }
@@ -417,26 +426,16 @@ impl Player {
 
     /// Mixes the song from `frame` into `left`/`right`; returns the frames rendered.
     fn render_song(&mut self, frame: u32, left: &mut [f32], right: &mut [f32]) -> usize {
-        let any_solo = self.tracks.iter().any(|t| t.mix.mode == TrackMode::Soloed);
         let start = frame as usize;
         let block = left.len().min((self.length as usize).saturating_sub(start));
-        for track in &self.tracks {
-            let audible = match track.mix.mode {
-                TrackMode::Soloed => true,
-                TrackMode::Normal => !any_solo,
-                TrackMode::Muted => false,
-            };
-            if !audible {
-                continue;
-            }
-            let gl = track.mix.gain * (1.0 - track.mix.pan).min(1.0);
-            let gr = track.mix.gain * (1.0 + track.mix.pan).min(1.0);
-            let end = (start + block).min(track.left.len());
-            for (i, s) in (start..end).enumerate() {
-                left[i] += gl * track.left[s];
-                right[i] += gr * track.right[s];
-            }
-        }
+        mix_block(
+            self.tracks
+                .iter()
+                .map(|t| (&t.left[..], &t.right[..], t.mix)),
+            start,
+            &mut left[..block],
+            &mut right[..block],
+        );
         let next = (start + block) as u32;
         self.transport = if next >= self.length {
             Transport::Stopped
@@ -448,6 +447,35 @@ impl Player {
             left.len()
         } else {
             block
+        }
+    }
+}
+
+/// The mixing law (AGENTS.md §9): adds every audible track from song frame `start` into
+/// `left`/`right` at its gain, with linear pan (centre is full level on both sides). Solo wins
+/// over Normal; Muted is silent. Shared by the player and export, so a mixdown is what you hear.
+pub fn mix_block<'a>(
+    tracks: impl Iterator<Item = (&'a [f32], &'a [f32], MixParams)> + Clone,
+    start: usize,
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    let any_solo = tracks.clone().any(|(_, _, m)| m.mode == TrackMode::Soloed);
+    for (l, r, mix) in tracks {
+        let audible = match mix.mode {
+            TrackMode::Soloed => true,
+            TrackMode::Normal => !any_solo,
+            TrackMode::Muted => false,
+        };
+        if !audible {
+            continue;
+        }
+        let gl = mix.gain * (1.0 - mix.pan).min(1.0);
+        let gr = mix.gain * (1.0 + mix.pan).min(1.0);
+        let end = (start + left.len()).min(l.len());
+        for (i, s) in (start..end).enumerate() {
+            left[i] += gl * l[s];
+            right[i] += gr * r[s];
         }
     }
 }

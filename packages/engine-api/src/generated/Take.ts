@@ -2,6 +2,7 @@
 import type { MixParams } from "./MixParams";
 import type { PitchTrack } from "./PitchTrack";
 import type { PitchTracker } from "./PitchTracker";
+import type { TakeChain } from "./TakeChain";
 import type { TakeSource } from "./TakeSource";
 
 export type Take = { id: number, name: string, source: TakeSource, 
@@ -17,4 +18,9 @@ pitch_tracker: PitchTracker, pitch: PitchTrack,
  * Sung takes are muted in normal playback (A/B auditions solo them); harmony and
  * generated tracks play with the song.
  */
-mix: MixParams, };
+mix: MixParams, 
+/**
+ * The non-destructive processing chain over the raw take (AGENTS.md §8.7). Projects saved
+ * before it existed load with every step unset.
+ */
+chain: TakeChain, };

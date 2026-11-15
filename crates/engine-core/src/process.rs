@@ -23,19 +23,14 @@ use std::sync::Arc;
 use ts_rs::TS;
 
 /// One chain step's state. `Bypassed` keeps the parameters so switching it back on restores them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[serde(tag = "state", content = "params")]
 #[ts(export)]
 pub enum Step<T> {
+    #[default]
     Unset,
     Active(T),
     Bypassed(T),
-}
-
-impl<T> Default for Step<T> {
-    fn default() -> Self {
-        Self::Unset
-    }
 }
 
 impl<T> Step<T> {
@@ -86,7 +81,10 @@ pub struct TakeChain {
 impl TakeChain {
     /// Whether any step changes the raw take.
     pub fn is_neutral(&self) -> bool {
-        self.pitch.active().is_none() && self.tune.active().is_none() && self.clean.active().is_none() && self.vocal.active().is_none()
+        self.pitch.active().is_none()
+            && self.tune.active().is_none()
+            && self.clean.active().is_none()
+            && self.vocal.active().is_none()
     }
 }
 
@@ -131,8 +129,12 @@ pub enum ProcessError {
     Stage(String),
 }
 
-fn take<'a>(project: &'a Project, id: u32) -> Result<&'a Take, ProcessError> {
-    project.takes.iter().find(|t| t.id == id).ok_or(TakeError::Unknown(id).into())
+fn take(project: &Project, id: u32) -> Result<&Take, ProcessError> {
+    project
+        .takes
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or(TakeError::Unknown(id).into())
 }
 
 /// The steps that run for take `id`, in order (bypassed and unset steps are skipped).
@@ -152,7 +154,10 @@ pub fn plan(project: &Project, id: u32) -> Result<Vec<Stage>, ProcessError> {
         out.push(Stage::Pitch(e));
     }
     if let Some(settings) = t.chain.tune.active() {
-        out.push(Stage::Tune { settings: *settings, track });
+        out.push(Stage::Tune {
+            settings: *settings,
+            track,
+        });
     }
     if let Some(c) = t.chain.clean.active() {
         out.push(Stage::Clean(c.clone()));
@@ -164,7 +169,12 @@ pub fn plan(project: &Project, id: u32) -> Result<Vec<Stage>, ProcessError> {
 }
 
 /// Runs one core stage (everything but Clean up, which the host supplies).
-pub fn run_core_stage(project: &Project, id: u32, stage: &Stage, input: &[f32]) -> Result<Vec<f32>, ProcessError> {
+pub fn run_core_stage(
+    project: &Project,
+    id: u32,
+    stage: &Stage,
+    input: &[f32],
+) -> Result<Vec<f32>, ProcessError> {
     let t = take(project, id)?;
     match stage {
         Stage::Pitch(e) => Ok(edit::render(e, &t.pitch, input, project.sample_rate)),
@@ -184,18 +194,18 @@ pub struct ChainCache {
 }
 
 impl ChainCache {
-    /// The processed take: `raw` through `plan`, reusing cached steps up to the first that
-    /// changed. `run` renders one stage.
+    /// The processed take: `raw` (take `id`'s raw audio, which never changes) through `plan`,
+    /// reusing cached steps up to the first that changed. `run` renders one stage.
     pub fn render(
         &mut self,
+        id: u32,
         raw: &Arc<[f32]>,
         plan: &[Stage],
         mut run: impl FnMut(&Stage, &[f32]) -> Result<Vec<f32>, ProcessError>,
     ) -> Result<Arc<[f32]>, ProcessError> {
         let mut upstream = {
             let mut h = DefaultHasher::new();
-            raw.len().hash(&mut h);
-            (Arc::as_ptr(raw) as *const f32 as usize).hash(&mut h);
+            (id, raw.len()).hash(&mut h);
             h.finish()
         };
         let mut current = raw.clone();
@@ -222,8 +232,20 @@ impl ChainCache {
 pub fn master(project: &Project) -> Option<u32> {
     project
         .master_take
-        .filter(|id| project.takes.iter().any(|t| t.id == *id && t.source.is_sung()))
-        .or_else(|| project.takes.iter().rev().find(|t| t.source.is_sung()).map(|t| t.id))
+        .filter(|id| {
+            project
+                .takes
+                .iter()
+                .any(|t| t.id == *id && t.source.is_sung())
+        })
+        .or_else(|| {
+            project
+                .takes
+                .iter()
+                .rev()
+                .find(|t| t.source.is_sung())
+                .map(|t| t.id)
+        })
 }
 
 /// Stars take `id` as the master (`None` clears the star: the newest take is used).
@@ -237,7 +259,11 @@ pub fn set_master(project: &mut Project, id: Option<u32>) -> Result<(), ProcessE
 
 /// Replaces take `id`'s chain.
 pub fn set_chain(project: &mut Project, id: u32, chain: TakeChain) -> Result<(), ProcessError> {
-    let t = project.takes.iter_mut().find(|t| t.id == id).ok_or(TakeError::Unknown(id))?;
+    let t = project
+        .takes
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or(TakeError::Unknown(id))?;
     t.chain = chain;
     Ok(())
 }
@@ -261,24 +287,41 @@ mod tests {
         let mut p = project::build(
             SongSource::File { name: "s".into() },
             &SongAudio::Unseparated {
-                mix: StereoAudio { sample_rate: SR, left: tone.clone(), right: tone.clone() },
+                mix: StereoAudio {
+                    sample_rate: SR,
+                    left: tone.clone(),
+                    right: tone.clone(),
+                },
             },
             TrackedPitch::yin(&tone, SR),
         );
-        let id = add_take(&mut p, TakeSource::Recorded { latency_ms: 0.0 }, &tone, TrackedPitch::yin(&tone, SR));
+        let id = add_take(
+            &mut p,
+            TakeSource::Recorded { latency_ms: 0.0 },
+            &tone,
+            TrackedPitch::yin(&tone, SR),
+        );
         (p, id, tone.into())
     }
 
     fn vocal(preset: ChainPreset) -> VocalStep {
-        VocalStep { preset, settings: chain::settings(preset, &chain::measure(&[0.1; 1600], SR), 120.0) }
+        VocalStep {
+            preset,
+            settings: chain::settings(preset, &chain::measure(&[0.1; 1600], SR), 120.0),
+        }
     }
 
     #[test]
     fn a_neutral_chain_is_the_raw_take() {
         let (p, id, raw) = song_with_take();
         let mut cache = ChainCache::default();
-        let out = cache.render(&raw, &plan(&p, id).unwrap(), |s, i| run_core_stage(&p, id, s, i)).unwrap();
+        let out = cache
+            .render(id, &raw, &plan(&p, id).unwrap(), |s, i| {
+                run_core_stage(&p, id, s, i)
+            })
+            .unwrap();
         assert!(Arc::ptr_eq(&out, &raw));
+        // The cache is keyed by take, not by buffer: a fresh copy of the raw audio still hits.
         assert_eq!(cache.renders, 0);
     }
 
@@ -294,13 +337,16 @@ mod tests {
         let mut cache = ChainCache::default();
         fn go(cache: &mut ChainCache, raw: &Arc<[f32]>, p: &Project, id: u32) -> Arc<[f32]> {
             cache
-                .render(raw, &plan(p, id).unwrap(), |s, i| run_core_stage(p, id, s, i))
+                .render(id, raw, &plan(p, id).unwrap(), |s, i| {
+                    run_core_stage(p, id, s, i)
+                })
                 .unwrap()
         }
         go(&mut cache, &raw, &p, id);
         assert_eq!(cache.renders, 2);
-        // Same chain again: nothing re-renders.
-        go(&mut cache, &raw, &p, id);
+        // Same chain again, from a fresh copy of the raw audio (as hosts decode it): nothing
+        // re-renders.
+        go(&mut cache, &Arc::from(raw.to_vec()), &p, id);
         assert_eq!(cache.renders, 2);
         // Only the vocal chain (the last step) changes: one render.
         chain.vocal = Step::Active(vocal(ChainPreset::Ballad));
@@ -326,7 +372,9 @@ mod tests {
             TakeChain {
                 pitch: Step::Active(PitchStep {}),
                 tune: Step::Active(TuneSettings::default()),
-                clean: Step::Active(CleanStep { model: "dfn".into() }),
+                clean: Step::Active(CleanStep {
+                    model: "dfn".into(),
+                }),
                 vocal: Step::Active(vocal(ChainPreset::Natural)),
             },
         )
@@ -347,7 +395,12 @@ mod tests {
     #[test]
     fn the_master_is_the_starred_take_or_the_newest() {
         let (mut p, a, raw) = song_with_take();
-        let b = add_take(&mut p, TakeSource::Recorded { latency_ms: 0.0 }, &raw, TrackedPitch::yin(&raw, SR));
+        let b = add_take(
+            &mut p,
+            TakeSource::Recorded { latency_ms: 0.0 },
+            &raw,
+            TrackedPitch::yin(&raw, SR),
+        );
         assert_eq!(master(&p), Some(b));
         set_master(&mut p, Some(a)).unwrap();
         assert_eq!(master(&p), Some(a));

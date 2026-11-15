@@ -4,11 +4,13 @@
 //! `wasm32-unknown-unknown` (AGENTS.md §3).
 
 pub mod align;
+pub mod archive;
 pub mod audio;
 pub mod chain;
 pub mod cue;
 pub mod drums;
 pub mod edit;
+pub mod export;
 pub mod generate;
 pub mod harmony;
 pub mod key;

@@ -33,4 +33,8 @@ pitch_edits: Array<PitchEdit>,
 /**
  * MIDI layers, at most one per track (see [`crate::midi`]).
  */
-transcriptions: Array<Transcription>, };
+transcriptions: Array<Transcription>, 
+/**
+ * The starred master take (see [`crate::process::master`]); `None`: the newest take.
+ */
+master_take: number | null, };

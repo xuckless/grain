@@ -320,21 +320,15 @@ pub fn preview(
     })
 }
 
-/// Renders take `id` tuned (offline, high quality): `timeline` is the take's audio on the song
-/// timeline at the project rate. Returns the new take's timeline audio; the original is left as
-/// it is (AGENTS.md §7: non-destructive).
-pub fn render(
+/// Renders a take tuned (offline, high quality) following `track`: the take's pitch, or its
+/// pitch after the pitch editor's edits when the tuner runs after them in the take's chain
+/// (AGENTS.md §8.7). `timeline` is the take's audio on the song timeline at the project rate.
+pub fn render_track(
     project: &Project,
-    id: u32,
+    track: &PitchTrack,
     timeline: &[f32],
     settings: TuneSettings,
-) -> Result<Vec<f32>, TakeError> {
-    Ok(render_track(project, take_pitch(project, id)?, timeline, settings))
-}
-
-/// [`render`] following `track` (the take's pitch, or its pitch after the pitch editor's edits
-/// when the tuner runs after them in the take's chain, AGENTS.md §8.7).
-pub fn render_track(project: &Project, track: &PitchTrack, timeline: &[f32], settings: TuneSettings) -> Vec<f32> {
+) -> Vec<f32> {
     let settings = settings.clamped();
     let curve: Vec<f32> = correction_curve(track, &project.analysis.reference_notes, settings)
         .iter()

@@ -323,21 +323,6 @@ pub fn seed_from_tune(
     store(project, edit)
 }
 
-/// Renders the saved (or fresh) edit list of `source` over `audio` (its timeline audio).
-pub fn render_source(
-    project: &Project,
-    source: EditSource,
-    audio: &[f32],
-) -> Result<Vec<f32>, EditError> {
-    let edit = edit_of(project, source)?;
-    Ok(render(
-        &edit,
-        source_track(project, source)?,
-        audio,
-        project.sample_rate,
-    ))
-}
-
 /// Sung pitch of a frame, if voiced.
 fn voiced(f: &PitchFrame) -> Option<f32> {
     match f {
