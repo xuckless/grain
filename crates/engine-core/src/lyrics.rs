@@ -388,28 +388,28 @@ mod tests {
     #[test]
     fn splits_cjk_by_character_and_latin_by_word() {
         assert_eq!(
-            texts(&split_units("ちょっと冷たいけど")),
-            vec!["ちょっ", "と", "冷", "た", "い", "け", "ど"]
+            texts(&split_units("ちょっと青いそら")),
+            vec!["ちょっ", "と", "青", "い", "そ", "ら"]
         );
         assert_eq!(
-            texts(&split_units("「愛するための」代償なら")),
-            vec!["「愛", "す", "る", "た", "め", "の」", "代", "償", "な", "ら"]
+            texts(&split_units("「歩くための」靴なら")),
+            vec!["「歩", "く", "た", "め", "の」", "靴", "な", "ら"]
         );
         assert_eq!(
-            texts(&split_units("ねえ ダーリン")),
-            vec!["ね", "え ", "ダー", "リ", "ン"]
+            texts(&split_units("ねえ コーヒー")),
+            vec!["ね", "え ", "コー", "ヒー"]
         );
         assert_eq!(
-            texts(&split_units("Oh 星屑もない")),
-            vec!["Oh ", "星", "屑", "も", "な", "い"]
+            texts(&split_units("Oh 雨もない")),
+            vec!["Oh ", "雨", "も", "な", "い"]
         );
         assert_eq!(
             texts(&split_units("Hello, my (dear) world!")),
             vec!["Hello, ", "my ", "(dear) ", "world!"]
         );
         for line in [
-            "ふたりぼっちの世界でずっと",
-            "Let it be, let it be",
+            "あさのひかりでずっと",
+            "Ride it out, ride it out",
             " 「x」 ",
         ] {
             assert_eq!(split_units(line).concat(), line);
