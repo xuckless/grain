@@ -223,3 +223,10 @@ samples/
 
 # Desktop sidecars (scripts/fetch_sidecars.py)
 apps/desktop/src-tauri/binaries/
+
+# Local-only research notes and stray weights
+docs/research/
+models/**/*.onnx
+models/**/*.safetensors
+models/**/*.pt
+models/**/*.th
